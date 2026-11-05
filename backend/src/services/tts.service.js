@@ -106,6 +106,8 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
   await new Promise((resolve) => setTimeout(resolve, 100));
 
   const sentenceBoundaries = metadataItems.filter((b) => b.Type === 'SentenceBoundary');
+  const wordBoundaries = metadataItems.filter((b) => b.Type === 'WordBoundary');
+
   const segments = [];
   if (sentenceBoundaries.length > 0) {
     for (const b of sentenceBoundaries) {
@@ -120,7 +122,28 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
     segments.push({ start: 0, end: Math.max(1, words / 2.5), text: stripMarkdown(chunkText) });
   }
 
-  return { buffer: Buffer.concat(audioChunks), segments };
+  const wordSegments = [];
+  if (wordBoundaries.length > 0) {
+    for (const b of wordBoundaries) {
+      const text = stripMarkdown(b.Data.text.Text);
+      if (!text) continue;
+      wordSegments.push({
+        start: Number((b.Data.Offset / KHz100ns).toFixed(3)),
+        end: Number(((b.Data.Offset + b.Data.Duration) / KHz100ns).toFixed(3)),
+        text,
+      });
+    }
+  } else {
+    // Fallback: at least one segment for the whole chunk.
+    wordSegments.push({ start: 0, end: segments[0]?.end || 1, text: stripMarkdown(chunkText) });
+  }
+
+  const chunkEnd =
+    segments.length > 0
+      ? segments[segments.length - 1].end
+      : (wordSegments.length > 0 ? wordSegments[wordSegments.length - 1].end : Math.max(1, chunkText.split(/\s+/).length / 2.5));
+
+  return { buffer: Buffer.concat(audioChunks), segments, wordSegments, chunkEnd };
 };
 
 export const synthesizeSpeech = async (text, voice, options = {}) => {
@@ -133,6 +156,7 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
 
   const results = [];
   const allSegments = [];
+  const allWordSegments = [];
   let offset = 0;
 
   for (const chunk of chunks) {
@@ -145,8 +169,20 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
         text: seg.text,
       });
     }
-    if (result.segments.length > 0) {
+    for (const seg of result.wordSegments || []) {
+      allWordSegments.push({
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+        text: seg.text,
+      });
+    }
+    if (result.chunkEnd && result.chunkEnd > 0) {
+      offset += 0; // already included in segments; keep offset from last segment below
+    }
+    if (allSegments.length > 0) {
       offset = allSegments[allSegments.length - 1].end;
+    } else if (allWordSegments.length > 0) {
+      offset = allWordSegments[allWordSegments.length - 1].end;
     }
     if (report) {
       try {
@@ -180,8 +216,10 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   }
 
   const finalSegments = allSegments.filter((s) => s.text);
+  const finalWordSegments = allWordSegments.filter((s) => s.text);
   return {
     buffer: finalBuffer,
     segments: finalSegments.length > 0 ? finalSegments : [{ start: 0, end: 0, text: clean }],
+    wordSegments: finalWordSegments,
   };
 };

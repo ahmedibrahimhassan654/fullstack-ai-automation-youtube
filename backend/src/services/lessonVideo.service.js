@@ -10,6 +10,25 @@ import { synthesizeSpeech, VOICES } from './tts.service.js';
 
 const TEMP_DIR = os.tmpdir();
 
+const toVtt = (segments) => {
+  const format = (value) => {
+    const total = Math.max(0, value || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = Math.floor(total % 60);
+    const millis = Math.floor((total - Math.floor(total)) * 1000);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+  };
+  let out = 'WEBVTT\\n\\n';
+  (segments || []).forEach((segment, index) => {
+    if (!segment?.text) return;
+    const start = format(segment.start);
+    const end = format(Math.max(segment.end, segment.start + 0.2));
+    out += `${index + 1}\\n${start} --> ${end}\\n${segment.text}\\n\\n`;
+  });
+  return out;
+};
+
 function cleanupFiles(files) {
   for (const file of files) {
     try {
@@ -63,7 +82,7 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
   await report(30);
 
   const voice = VOICES[language] || VOICES.en;
-  const { buffer: audioBuffer, segments: lessonSegments } = await synthesizeSpeech(script, voice, {
+  const { buffer: audioBuffer, segments: lessonSegments, wordSegments: lessonWordSegments } = await synthesizeSpeech(script, voice, {
     onProgress: async (value) => {
       await onProgress?.(30 + Math.round(value * 0.2));
     },
@@ -72,6 +91,7 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
 
   const audioFile = path.join(TEMP_DIR, `lesson-${video._id}-${language}-${Date.now()}.mp3`);
   const outputFile = path.join(TEMP_DIR, `lesson-video-${video._id}-${language}-${Date.now()}.mp4`);
+  let subtitleFile = null;
   fs.writeFileSync(audioFile, audioBuffer);
   await report(58);
 
@@ -128,6 +148,26 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
       unique_filename: true,
       overwrite: false,
     });
+    await report(92);
+
+    const subtitleSegments = (lessonWordSegments && lessonWordSegments.length ? lessonWordSegments : lessonSegments) || [];
+    const subtitleContent = toVtt(subtitleSegments);
+    subtitleFile = path.join(TEMP_DIR, `lesson-${video._id}-${language}-${Date.now()}.vtt`);
+    fs.writeFileSync(subtitleFile, subtitleContent);
+    let subtitlesUrl = null;
+    try {
+      const subtitleUpload = await uploadFile(subtitleFile, {
+        resource_type: 'raw',
+        folder: `${env.cloudinaryFolder}/lessons`,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      });
+      subtitlesUrl = subtitleUpload.secure_url;
+    } catch (subtitleError) {
+      // Subtitle upload is optional; never fail the whole lesson because of it.
+      console.error('[lessonVideo] subtitle upload failed:', subtitleError?.message);
+    }
     await report(95);
 
     return {
@@ -138,8 +178,9 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
       voice,
       script,
       segments: lessonSegments || [],
+      subtitlesUrl,
     };
   } finally {
-    cleanupFiles([audioFile, outputFile]);
+    cleanupFiles([audioFile, outputFile, subtitleFile]);
   }
 };

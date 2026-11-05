@@ -31,6 +31,7 @@ type LessonVideo = {
   durationSeconds?: number;
   script?: string;
   segments?: LessonSegment[];
+  subtitlesUrl?: string | null;
 };
 
 export default function LessonVideoCard({ lesson }: { lesson: LessonVideo }) {
@@ -74,7 +75,17 @@ export default function LessonVideoCard({ lesson }: { lesson: LessonVideo }) {
         </a>
       </div>
 
-      <video ref={videoRef} src={lesson.url} controls className="w-full rounded-md border" />
+      <video ref={videoRef} src={lesson.url} controls className="w-full rounded-md border" crossOrigin="anonymous">
+        {lesson.subtitlesUrl && (
+          <track
+            kind="subtitles"
+            src={lesson.subtitlesUrl}
+            srcLang={lesson.language}
+            label={LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language}
+            default
+          />
+        )}
+      </video>
 
       <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-2">
         {segments.length ? (

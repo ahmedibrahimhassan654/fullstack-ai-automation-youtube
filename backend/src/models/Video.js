@@ -71,6 +71,7 @@ const lessonVideoSchema = new mongoose.Schema(
     voice: { type: String, default: null },
     script: { type: String, default: '' },
     segments: { type: [transcriptSegmentSchema], default: [] },
+    subtitlesUrl: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
