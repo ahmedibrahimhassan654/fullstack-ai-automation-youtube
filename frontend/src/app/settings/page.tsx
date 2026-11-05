@@ -38,13 +38,20 @@ export default function SettingsPage() {
     const res = await api.get<{ url: string }>('/api/auth/youtube/connect');
     if (res.success && res.data?.url) {
       window.location.href = res.data.url;
+    } else {
+      toast.error(res.message || 'Failed to start YouTube connection.');
     }
   };
 
   const disconnect = async () => {
-    await api.post('/api/auth/youtube/disconnect');
-    const res = await api.get<YtStatus>('/api/auth/youtube/status');
-    if (res.success && res.data) setStatus(res.data as YtStatus);
+    const res = await api.post('/api/auth/youtube/disconnect');
+    if (res.success) {
+      toast.success(res.message || 'YouTube disconnected.');
+    } else {
+      toast.error(res.message || 'Failed to disconnect YouTube.');
+    }
+    const statusRes = await api.get<YtStatus>('/api/auth/youtube/status');
+    if (statusRes.success && statusRes.data) setStatus(statusRes.data as YtStatus);
     await refreshUser();
   };
 

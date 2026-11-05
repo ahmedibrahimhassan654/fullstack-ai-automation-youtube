@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const load = async () => {
     const r = await api.get<{ items: VideoRow[] }>('/api/videos');
     if (r.success) setVideos((r.data as { items: VideoRow[] }).items || []);
+    else toast.error(r.message || 'Failed to load videos.');
     setLoading(false);
   };
 

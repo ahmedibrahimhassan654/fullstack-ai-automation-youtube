@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/toast-provider';
 
 type Stats = {
   users: { total: number; admins: number; active: number; connectedYouTube: number };
@@ -32,6 +33,7 @@ type VideoRow = {
 };
 
 export default function AdminPage() {
+  const toast = useToast();
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [videos, setVideos] = useState<VideoRow[]>([]);
@@ -45,8 +47,11 @@ export default function AdminPage() {
       api.get<{ items: VideoRow[] }>('/api/admin/videos'),
     ]);
     if (s.success) setStats(s.data as Stats);
+    else toast.error(s.message || 'Failed to load stats.');
     if (u.success) setUsers((u.data as { items: UserRow[] }).items || []);
+    else toast.error(u.message || 'Failed to load users.');
     if (v.success) setVideos((v.data as { items: VideoRow[] }).items || []);
+    else toast.error(v.message || 'Failed to load videos.');
     setLoading(false);
   };
 
@@ -56,12 +61,23 @@ export default function AdminPage() {
 
   const toggleRole = async (id: string, role: 'user' | 'admin') => {
     const newRole = role === 'admin' ? 'user' : 'admin';
-    await api.patch(`/api/admin/users/${id}/role`, { role: newRole });
+    const res = await api.patch(`/api/admin/users/${id}/role`, { role: newRole });
+    if (res.success) {
+      toast.success(res.message || `Role updated to ${newRole}.`);
+    } else {
+      toast.error(res.message || 'Failed to update user role.');
+    }
     await load();
   };
 
   const toggleStatus = async (id: string, isActive: boolean) => {
-    await api.patch(`/api/admin/users/${id}/status`, { isActive: !isActive });
+    const next = !isActive;
+    const res = await api.patch(`/api/admin/users/${id}/status`, { isActive: next });
+    if (res.success) {
+      toast.success(res.message || `User ${next ? 'activated' : 'deactivated'}.`);
+    } else {
+      toast.error(res.message || 'Failed to update user status.');
+    }
     await load();
   };
 

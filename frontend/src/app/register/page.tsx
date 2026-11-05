@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/toast-provider';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 
 export default function RegisterPage() {
   const { register } = useAuth();
+  const toast = useToast();
   const router = useRouter();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -25,9 +27,12 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       await register(name, email, password);
+      toast.success('Account created successfully.');
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      const message = err instanceof Error ? err.message : 'Registration failed';
+      setError(message);
+      toast.error(message);
     } finally {
       setSubmitting(false);
     }
