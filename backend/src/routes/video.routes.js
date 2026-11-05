@@ -18,7 +18,6 @@ router.post('/upload', (req, res, next) => {
 router.patch('/:id', video.updateVideo);
 router.post('/:id/process', video.processVideo);
 router.post('/:id/ask', video.answerVideoQuestion);
-router.post('/:id/dub', video.dubVideo);
 router.post('/:id/lesson', video.generateLesson);
 router.get('/:id', video.getVideo);
 router.delete('/:id', video.deleteVideo);
