@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
 import { api } from "@/lib/api";
@@ -48,7 +48,7 @@ export default function NewVideoPage() {
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const progressNotified = useRef(false);
   const toggleTarget = (code: string) => {
     setTargetLanguages((prev) =>
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
@@ -65,7 +65,8 @@ export default function NewVideoPage() {
     setError(null);
     setUploading(true);
     setProgress(0);
-    toast.info("Upload started…");
+    progressNotified.current = false;
+    toast.success("Upload started…");
 
     const formData = new FormData();
     formData.append("video", file);
@@ -77,10 +78,17 @@ export default function NewVideoPage() {
 
     attachments.forEach((f) => formData.append("attachments", f));
 
+    const handleProgress = (pct: number) => {
+      setProgress(pct);
+      if (pct >= 10 && !progressNotified.current) {
+        progressNotified.current = true;
+        toast.info("Upload in progress…");
+      }
+    };
     const res = await api.upload<{ video: { _id: string } }>(
       "/api/videos/upload",
       formData,
-      setProgress,
+      handleProgress,
     );
     setUploading(false);
     if (res.success && (res.data as { video?: { _id: string } })?.video?._id) {
