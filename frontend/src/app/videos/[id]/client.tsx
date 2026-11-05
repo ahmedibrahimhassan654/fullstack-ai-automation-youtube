@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
+import { Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import LessonVideoCard from "./lesson-card";
@@ -626,11 +627,19 @@ export default function VideoDetailClient({ id }: { id: string }) {
                       }}
                       disabled={generatingLesson || video.lessonGeneration?.status === "processing"}
                     >
-                      {video.lessonGeneration?.status === "processing"
-                        ? `Generating… ${video.lessonGeneration.progress ?? 0}%`
-                        : generatingLesson
-                          ? "Starting…"
-                          : "Generate new lesson video"}
+                      {video.lessonGeneration?.status === "processing" ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          {`Generating… ${video.lessonGeneration.progress ?? 0}%`}
+                        </>
+                      ) : generatingLesson ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Starting…
+                        </>
+                      ) : (
+                        "Generate new lesson video"
+                      )}
                     </Button>
                   </div>
 

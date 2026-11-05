@@ -63,7 +63,11 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
   await report(30);
 
   const voice = VOICES[language] || VOICES.en;
-  const { buffer: audioBuffer, segments: lessonSegments } = await synthesizeSpeech(script, voice);
+  const { buffer: audioBuffer, segments: lessonSegments } = await synthesizeSpeech(script, voice, {
+    onProgress: async (value) => {
+      await onProgress?.(30 + Math.round(value * 0.2));
+    },
+  });
   await report(50);
 
   const audioFile = path.join(TEMP_DIR, `lesson-${video._id}-${language}-${Date.now()}.mp3`);

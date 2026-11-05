@@ -42,6 +42,7 @@ const escapeXml = (text) =>
 const KHz100ns = 10000000;
 
 export const synthesizeSpeech = async (text, voice, options = {}) => {
+  const report = options.onProgress;
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
@@ -49,11 +50,12 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   });
 
   const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
-  const rate = options.rate || '-8%';
+  const rate = options.rate || '0%';
   const clean = stripMarkdown(text);
   const chunks = clean.match(/.{1,2500}/gs) || [clean];
   const buffers = [];
   const rawBoundaries = [];
+  let completedChunks = 0;
 
   for (const chunk of chunks) {
     const trimmed = chunk.trim();
@@ -90,6 +92,12 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
     const [audioChunks, items] = await Promise.all([audioPromise, metadataPromise]);
     buffers.push(Buffer.concat(audioChunks));
     rawBoundaries.push(...items);
+    completedChunks += 1;
+    try {
+      await options.onProgress?.(Math.round((completedChunks / Math.max(chunks.length, 1)) * 100));
+    } catch {
+      // ignore
+    }
   }
 
   if (buffers.length === 0) throw new Error('No speech could be generated');
