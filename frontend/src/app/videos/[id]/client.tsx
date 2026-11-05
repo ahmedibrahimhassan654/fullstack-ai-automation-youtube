@@ -205,6 +205,10 @@ export default function VideoDetailClient({ id }: { id: string }) {
             lessonGeneration: data.lessonGeneration ?? prev.lessonGeneration,
             dubs: data.dubs ?? prev.dubs,
             lessonVideos: data.lessonVideos ?? prev.lessonVideos,
+            transcript: data.transcript ?? prev.transcript,
+            transcriptSegments: data.transcriptSegments ?? prev.transcriptSegments,
+            translations: data.translations ?? prev.translations,
+            aiMetadata: data.aiMetadata ?? prev.aiMetadata,
           };
         });
       } catch {

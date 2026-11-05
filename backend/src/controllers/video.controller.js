@@ -22,6 +22,10 @@ const emitVideoProgress = (video) => {
     lessonGeneration: video.lessonGeneration,
     dubs: video.dubs,
     lessonVideos: video.lessonVideos,
+    transcript: video.transcript,
+    transcriptSegments: video.transcriptSegments,
+    translations: video.translations,
+    aiMetadata: video.aiMetadata,
   };
   publishProgress(`video:${videoId}`, payload);
   if (video.user) publishProgress(`user:${video.user}`, payload);
