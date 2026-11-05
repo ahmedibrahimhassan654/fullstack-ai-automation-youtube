@@ -208,6 +208,39 @@ export const translateTranscriptSegments = async ({ segments, targetLanguage }) 
   return output;
 };
 
+export const generateEducationalScript = async ({ video, targetLanguage }) => {
+  const translation = (video.translations || []).find((t) => t.language === targetLanguage);
+  const transcript = translation?.transcript || video.transcript || '';
+  const ai = video.aiMetadata || {};
+
+  const content = await callChatCompletion(
+    [
+      {
+        role: 'system',
+        content:
+          `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. ` +
+          'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained. ' +
+          'Include a short hook, learning objectives, lesson explanation, key takeaways, and a quick recap. ' +
+          'Return plain narration text only (no markdown headings or stage directions).',
+      },
+      {
+        role: 'user',
+        content: [
+          `Title: ${video.title || 'Untitled lesson'}`,
+          `Summary: ${ai.summary || 'N/A'}`,
+          `Key points: ${Array.isArray(ai.keyPoints) ? ai.keyPoints.join('; ') : 'N/A'}`,
+          `Action items: ${Array.isArray(ai.actionItems) ? ai.actionItems.join('; ') : 'N/A'}`,
+          `Chapters: ${Array.isArray(ai.chapters) ? ai.chapters.map((c) => `${c.time} ${c.title}`).join('; ') : 'N/A'}`,
+          `Transcript (${targetLanguage}): ${trim(transcript, 12000)}`,
+        ].join('\\n'),
+      },
+    ],
+    { temperature: 0.4, maxTokens: 2200 },
+  );
+
+  return String(content || '').trim();
+};
+
 export const answerQuestion = async ({ transcript, question }) => {
   if (!transcript) {
     const err = new Error('No transcript available for this video');

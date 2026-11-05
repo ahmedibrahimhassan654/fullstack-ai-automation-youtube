@@ -5,6 +5,7 @@ import { env } from '../config/env.js';
 import { transcribeAudio } from '../services/transcription.service.js';
 import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '../services/aiMetadata.service.js';
 import { generateDubbedVideo } from '../services/dubbing.service.js';
+import { generateLessonVideo } from '../services/lessonVideo.service.js';
 
 const STAGE_LABELS = {
   queued: 'Queued for processing',
@@ -589,6 +590,93 @@ export const dubVideo = asyncHandler(async (req, res) => {
   res.status(202).json({
     success: true,
     message: `Dubbing started for ${language}`,
+    data: { video: await Video.findById(video._id).lean() },
+  });
+});
+
+const runLessonGeneration = async (videoId, language) => {
+  const video = await Video.findById(videoId);
+  if (!video) return;
+
+  try {
+    video.lessonGeneration = {
+      language,
+      status: 'processing',
+      progress: 10,
+      error: null,
+      startedAt: video.lessonGeneration?.startedAt || new Date(),
+      completedAt: null,
+    };
+    await video.save();
+
+    const lesson = await generateLessonVideo({ video, language });
+
+    video.lessonGeneration = {
+      language,
+      status: 'completed',
+      progress: 100,
+      error: null,
+      startedAt: video.lessonGeneration?.startedAt || new Date(),
+      completedAt: new Date(),
+    };
+    const existing = (video.lessonVideos || []).filter((d) => d.language !== language);
+    video.lessonVideos = [...existing, lesson];
+    await video.save();
+  } catch (error) {
+    video.lessonGeneration = {
+      language,
+      status: 'failed',
+      progress: video.lessonGeneration?.progress || 0,
+      error: error?.message || 'Lesson generation failed',
+      startedAt: video.lessonGeneration?.startedAt || new Date(),
+      completedAt: new Date(),
+    };
+    await video.save();
+  }
+};
+
+export const generateLesson = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error('Video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    const err = new Error('Not authorized to generate a lesson video');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.body?.language || video.targetLanguages?.[0] || video.transcriptLanguage || 'en').trim();
+  if (!language) {
+    const err = new Error('Target language is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!(video.aiMetadata?.summary || video.transcript)) {
+    const err = new Error('Process the video first to generate AI metadata');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  video.lessonGeneration = {
+    language,
+    status: 'processing',
+    progress: 5,
+    error: null,
+    startedAt: new Date(),
+    completedAt: null,
+  };
+  await video.save();
+
+  runLessonGeneration(video._id, language).catch((err) => {
+    console.error('[generateLesson] pipeline error:', err);
+  });
+
+  res.status(202).json({
+    success: true,
+    message: `Lesson video generation started for ${language}`,
     data: { video: await Video.findById(video._id).lean() },
   });
 });

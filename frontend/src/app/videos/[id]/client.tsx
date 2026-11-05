@@ -20,6 +20,8 @@ type TranscriptSegment = { start: number; end: number; text: string };
 type Translation = { language: string; transcript?: string; segments?: TranscriptSegment[] };
 type Dub = { language: string; url: string; voice?: string; durationSeconds?: number; createdAt?: string };
 type DubbingState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
+type LessonVideo = { language: string; url: string; voice?: string; durationSeconds?: number; script?: string; createdAt?: string };
+type LessonGenerationState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
 type AiMetadata = {
   titles?: string[];
   descriptions?: string[];
@@ -57,6 +59,8 @@ type VideoDetail = {
   lastError?: { message?: string } | null;
   dubs?: Dub[];
   dubbing?: DubbingState;
+  lessonVideos?: LessonVideo[];
+  lessonGeneration?: LessonGenerationState;
   aiMetadata?: AiMetadata | null;
 };
 
@@ -95,6 +99,8 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [selectedLanguage, setSelectedLanguage] = useState("");
   const [dubLanguage, setDubLanguage] = useState("");
   const [dubbing, setDubbing] = useState(false);
+  const [lessonLanguage, setLessonLanguage] = useState("");
+  const [generatingLesson, setGeneratingLesson] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -109,6 +115,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
       setDubLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
+      setLessonLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -174,6 +181,24 @@ export default function VideoDetailClient({ id }: { id: string }) {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [id, video?.dubbing?.status]);
+
+  useEffect(() => {
+    if (!video?.lessonGeneration || video.lessonGeneration.status !== "processing") return;
+    const timer = window.setInterval(async () => {
+      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
+      if (res.success && res.data?.video) {
+        setVideo(res.data.video);
+        if (res.data.video.lessonGeneration?.status && res.data.video.lessonGeneration.status !== "processing") {
+          if (res.data.video.lessonGeneration.status === "completed") {
+            toast.success(`Generated lesson video ready in ${res.data.video.lessonGeneration.language}.`);
+          } else if (res.data.video.lessonGeneration.status === "failed") {
+            toast.error(res.data.video.lessonGeneration.error || "Lesson generation failed.");
+          }
+        }
+      }
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [id, video?.lessonGeneration?.status]);
 
   const availableLanguages = video
     ? (() => {
@@ -555,6 +580,92 @@ export default function VideoDetailClient({ id }: { id: string }) {
                             </a>
                             <video src={dub.url} controls className="hidden" />
                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Generated educational lesson video</CardTitle>
+                  <CardDescription>
+                    Build a new lesson video from the AI metadata and translated transcript.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label htmlFor="lessonLanguage">Lesson language</Label>
+                    <select
+                      id="lessonLanguage"
+                      value={lessonLanguage}
+                      onChange={(e) => setLessonLanguage(e.target.value)}
+                      className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
+                        .filter((value, index, array) => value && array.indexOf(value) === index)
+                        .map((code) => (
+                          <option key={code} value={code}>
+                            {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
+                          </option>
+                        ))}
+                    </select>
+                    <Button
+                      onClick={async () => {
+                        setGeneratingLesson(true);
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage });
+                        if (res.success) {
+                          toast.success(res.message || "Lesson generation started.");
+                          if (res.data?.video) setVideo(res.data.video);
+                        } else {
+                          toast.error(res.message || "Failed to start lesson generation.");
+                        }
+                        setGeneratingLesson(false);
+                      }}
+                      disabled={generatingLesson || video.lessonGeneration?.status === "processing"}
+                    >
+                      {video.lessonGeneration?.status === "processing"
+                        ? `Generating… ${video.lessonGeneration.progress ?? 0}%`
+                        : generatingLesson
+                          ? "Starting…"
+                          : "Generate new lesson video"}
+                    </Button>
+                  </div>
+
+                  {video.lessonGeneration?.status === "processing" && (
+                    <p className="text-sm text-muted-foreground">
+                      AI is writing the lesson and synthesizing voice for {video.lessonGeneration.language}. You can leave this page.
+                    </p>
+                  )}
+                  {video.lessonGeneration?.status === "failed" && video.lessonGeneration.error && (
+                    <p className="text-sm text-destructive">Last lesson error: {video.lessonGeneration.error}</p>
+                  )}
+
+                  {video.lessonVideos?.length ? (
+                    <div className="space-y-4">
+                      {video.lessonVideos.map((lesson, index) => (
+                        <div key={`${lesson.language}-${index}`} className="space-y-3 rounded-md border p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-medium">
+                                {LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language} ({lesson.language})
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {lesson.voice || "generated voice"}{lesson.durationSeconds ? ` • ${lesson.durationSeconds}s` : ""}
+                              </p>
+                            </div>
+                            <a href={lesson.url} target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+                              Open generated file
+                            </a>
+                          </div>
+                          <video src={lesson.url} controls className="w-full rounded-md border" />
+                          {lesson.script && (
+                            <details className="text-xs">
+                              <summary className="cursor-pointer text-muted-foreground">Generated lesson transcript/script</summary>
+                              <p className="mt-2 whitespace-pre-wrap">{lesson.script}</p>
+                            </details>
+                          )}
                         </div>
                       ))}
                     </div>
