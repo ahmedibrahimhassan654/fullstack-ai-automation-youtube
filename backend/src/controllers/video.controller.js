@@ -3,6 +3,7 @@ import Video from '../models/Video.js';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { transcribeAudio } from '../services/transcription.service.js';
+import { analyzeTranscript, answerQuestion } from '../services/aiMetadata.service.js';
 
 const STAGE_LABELS = {
   queued: 'Queued for processing',
@@ -282,10 +283,43 @@ const runPipeline = async (videoId) => {
     video.transcriptLanguage = result.language || video.originalLanguage || 'en';
     video.currentStage = 'transcribed';
     video.progress = 40;
-    video.processingCompletedAt = null;
     await video.save();
 
-    // Subsequent steps (AI analysis, translation, publishing) will be appended here.
+    // AI analysis (titles, summary, chapters, tags, key points, action items,
+    // decisions, open questions) using the transcript.
+    video.currentStage = 'analysis';
+    video.progress = 65;
+    await video.save();
+
+    if (video.transcript.trim()) {
+      const ai = await analyzeTranscript({
+        transcript: video.transcript,
+        title: video.title,
+        originalLanguage: video.transcriptLanguage || video.originalLanguage || 'en',
+      });
+
+      video.aiMetadata = {
+        ...video.aiMetadata,
+        titles: ai.titles,
+        descriptions: ai.descriptions,
+        tags: ai.tags,
+        chapters: ai.chapters,
+        summary: ai.summary,
+        keyPoints: ai.keyPoints,
+        actionItems: ai.actionItems,
+        decisions: ai.decisions,
+        openQuestions: ai.openQuestions,
+        language: video.transcriptLanguage || 'en',
+        model: ai.model,
+        generatedAt: new Date(),
+      };
+    }
+
+    video.status = 'completed';
+    video.currentStage = 'analyzed';
+    video.progress = 100;
+    video.processingCompletedAt = new Date();
+    await video.save();
   } catch (error) {
     video.status = 'failed';
     video.currentStage = 'failed';
@@ -335,6 +369,33 @@ export const processVideo = asyncHandler(async (req, res) => {
     success: true,
     message: 'Processing started',
     data: { video },
+  });
+});
+
+export const answerVideoQuestion = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id).select('+transcript');
+  if (!video) {
+    const err = new Error('Video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    const err = new Error('Not authorized');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const question = String(req.body?.question || '').trim();
+  if (!question) {
+    const err = new Error('Question is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const answer = await answerQuestion({ transcript: video.transcript, question });
+  res.status(200).json({
+    success: true,
+    data: { answer, question, videoId: video._id },
   });
 });
 
