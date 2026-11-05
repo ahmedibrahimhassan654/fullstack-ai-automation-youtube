@@ -15,7 +15,8 @@ const stripMarkdown = (text) =>
     .trim();
 
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'openai/gpt-oss-120b';
+const GROQ_MODEL_QUALITY = env.aiModelQuality || 'openai/gpt-oss-120b';
+const GROQ_MODEL_FAST = env.aiModelFast || 'openai/gpt-oss-20b';
 
 const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
 
@@ -32,7 +33,7 @@ const callChatCompletion = async (messages, extra = {}) => {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: env.ollamaModel,
+        model: extra.model || env.ollamaModel,
         messages,
         temperature: extra.temperature ?? 0.2,
         max_tokens: extra.maxTokens ?? 2048,
@@ -55,6 +56,8 @@ const callChatCompletion = async (messages, extra = {}) => {
     throw err;
   }
 
+  const model = extra.model || GROQ_MODEL_QUALITY;
+
   const response = await fetch(GROQ_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -62,7 +65,7 @@ const callChatCompletion = async (messages, extra = {}) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model,
       messages,
       temperature: extra.temperature ?? 0.2,
       max_tokens: extra.maxTokens ?? 2048,
@@ -160,7 +163,7 @@ If a field has no items, return an empty array. Do not include markdown outside 
     actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map((v) => stripMarkdown(v)) : [],
     decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map((v) => stripMarkdown(v)) : [],
     openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.map((v) => stripMarkdown(v)) : [],
-    model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL,
+    model: resolveProvider() === 'ollama' ? (env.ollamaModel || env.aiModelQuality) : (env.aiModelQuality || GROQ_MODEL_QUALITY),
   };
 };
 
@@ -251,7 +254,11 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
         ].join('\\n'),
       },
     ],
-    { temperature: 0.4, maxTokens: 2200 },
+    {
+      temperature: 0.4,
+      maxTokens: 1400,
+      model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL_FAST,
+    },
   );
 
   return stripMarkdown(content);

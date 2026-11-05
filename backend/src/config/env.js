@@ -26,6 +26,8 @@ export const env = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   // AI provider selection: 'groq' (default) or 'ollama'
   aiProvider: (process.env.AI_PROVIDER || 'groq').toLowerCase(),
+  aiModelFast: process.env.AI_MODEL_FAST || 'openai/gpt-oss-20b',
+  aiModelQuality: process.env.AI_MODEL_QUALITY || 'openai/gpt-oss-120b',
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
   ollamaApiKey: process.env.OLLAMA_API_KEY || '',
   ollamaModel: process.env.OLLAMA_MODEL || 'llama3.2',
