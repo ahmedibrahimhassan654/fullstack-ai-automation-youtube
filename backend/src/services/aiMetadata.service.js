@@ -9,7 +9,7 @@ const callChatCompletion = async (messages, extra = {}) => {
   const provider = resolveProvider();
 
   if (provider === 'ollama') {
-    const baseUrl = env.ollamaBaseUrl.replace(/\\/$/, '');
+    const baseUrl = env.ollamaBaseUrl.replace(/\/$/, '');
     const url = `${baseUrl}/v1/chat/completions`;
     const headers = { 'Content-Type': 'application/json' };
     if (env.ollamaApiKey) headers.Authorization = `Bearer ${env.ollamaApiKey}`;
