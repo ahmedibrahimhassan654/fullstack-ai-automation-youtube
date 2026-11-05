@@ -1,4 +1,9 @@
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { spawn } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
 
 export const VOICES = {
   en: 'en-US-AriaNeural',
@@ -41,8 +46,30 @@ const escapeXml = (text) =>
 
 const KHz100ns = 10000000;
 
-export const synthesizeSpeech = async (text, voice, options = {}) => {
-  const report = options.onProgress;
+const runFfmpegConcat = (inputFiles, outputFile) =>
+  new Promise((resolve, reject) => {
+    const listFile = path.join(os.tmpdir(), `concat-${Date.now()}.txt`);
+    fs.writeFileSync(listFile, inputFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'));
+    const proc = spawn(ffmpegStatic, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outputFile], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', (err) => reject(err));
+    proc.on('close', (code) => {
+      try {
+        fs.unlinkSync(listFile);
+      } catch {
+        // ignore
+      }
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg concat failed (${code}): ${stderr.slice(-500)}`));
+    });
+  });
+
+const synthesizeChunk = async (chunkText, voice, rate) => {
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
@@ -50,96 +77,111 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   });
 
   const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
+  const ssml =
+    `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
+    `<voice name="${voice}"><prosody rate="${rate}" pitch="+0Hz">${escapeXml(chunkText)}</prosody></voice></speak>`;
+
+  const { audioStream, metadataStream } = tts.rawToStream(ssml);
+  const audioChunks = [];
+  const metadataItems = [];
+
+  const audioPromise = new Promise((resolve, reject) => {
+    audioStream.on('data', (c) => audioChunks.push(c));
+    audioStream.on('end', () => resolve());
+    audioStream.on('error', reject);
+  });
+  if (metadataStream) {
+    metadataStream.on('data', (chunk) => {
+      try {
+        const json = JSON.parse(chunk.toString());
+        metadataItems.push(...(json.Metadata || []));
+      } catch {
+        // ignore malformed chunks
+      }
+    });
+    metadataStream.on('error', () => {});
+  }
+
+  await audioPromise;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const sentenceBoundaries = metadataItems.filter((b) => b.Type === 'SentenceBoundary');
+  const segments = [];
+  if (sentenceBoundaries.length > 0) {
+    for (const b of sentenceBoundaries) {
+      segments.push({
+        start: Number((b.Data.Offset / KHz100ns).toFixed(3)),
+        end: Number(((b.Data.Offset + b.Data.Duration) / KHz100ns).toFixed(3)),
+        text: stripMarkdown(b.Data.text.Text),
+      });
+    }
+  } else {
+    const words = chunkText.split(/\s+/).length;
+    segments.push({ start: 0, end: Math.max(1, words / 2.5), text: stripMarkdown(chunkText) });
+  }
+
+  return { buffer: Buffer.concat(audioChunks), segments };
+};
+
+export const synthesizeSpeech = async (text, voice, options = {}) => {
   const rate = options.rate || '0%';
+  const report = options.onProgress;
   const clean = stripMarkdown(text);
-  const chunks = clean.match(/.{1,2500}/gs) || [clean];
-  const buffers = [];
-  const rawBoundaries = [];
-  let completedChunks = 0;
+  const chunks = (clean.match(/.{1,4000}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
+
+  if (chunks.length === 0) throw new Error('No speech could be generated');
+
+  const results = [];
+  const allSegments = [];
+  let offset = 0;
 
   for (const chunk of chunks) {
-    const trimmed = chunk.trim();
-    if (!trimmed) continue;
-
-    const ssml =
-      `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
-      `<voice name="${voice}"><prosody rate="${rate}" pitch="+0Hz">${escapeXml(trimmed)}</prosody></voice></speak>`;
-
-    const { audioStream, metadataStream } = tts.rawToStream(ssml);
-
-    const audioChunks = [];
-    const metadataItems = [];
-
-    const audioPromise = new Promise((resolve, reject) => {
-      audioStream.on('data', (c) => audioChunks.push(c));
-      audioStream.on('end', () => resolve());
-      audioStream.on('error', reject);
-    });
-
-    if (metadataStream) {
-      metadataStream.on('data', (chunk) => {
-        try {
-          const json = JSON.parse(chunk.toString());
-          metadataItems.push(...(json.Metadata || []));
-        } catch {
-          // ignore malformed chunks
-        }
+    const result = await synthesizeChunk(chunk, voice, rate);
+    results.push(result);
+    for (const seg of result.segments) {
+      allSegments.push({
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+        text: seg.text,
       });
-      metadataStream.on('error', () => {});
     }
-
-    await audioPromise;
-    // Give trailing metadata a short chance to arrive.
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    const items = metadataItems;
-    buffers.push(Buffer.concat(audioChunks));
-    rawBoundaries.push(...items);
-    completedChunks += 1;
-    try {
-      await options.onProgress?.(Math.round((completedChunks / Math.max(chunks.length, 1)) * 100));
-    } catch {
-      // ignore
+    if (result.segments.length > 0) {
+      offset = allSegments[allSegments.length - 1].end;
     }
-  }
-
-  if (buffers.length === 0) throw new Error('No speech could be generated');
-
-  // Prefer sentence boundaries (cleaner chunks). Fall back to word boundaries grouped by
-  // punctuation, and finally to a single segment if no metadata was returned.
-  const sentenceBoundaries = rawBoundaries.filter((b) => b.Type === 'SentenceBoundary');
-  const wordBoundaries = rawBoundaries.filter((b) => b.Type === 'WordBoundary');
-
-  let segments = [];
-  if (sentenceBoundaries.length > 0) {
-    segments = sentenceBoundaries.map((b) => ({
-      start: Number((b.Data.Offset / KHz100ns).toFixed(3)),
-      end: Number(((b.Data.Offset + b.Data.Duration) / KHz100ns).toFixed(3)),
-      text: stripMarkdown(b.Data.text.Text),
-    }));
-  } else if (wordBoundaries.length > 0) {
-    // Group words into ~12-word phrases for readable highlighting.
-    const groups = [];
-    let current = [];
-    for (const wb of wordBoundaries) {
-      current.push(wb);
-      const word = wb.Data.text.Text;
-      if (current.length >= 12 || /[.!?،؟。]/.test(word)) {
-        groups.push(current);
-        current = [];
+    if (report) {
+      try {
+        await report(Math.round((results.length / chunks.length) * 100));
+      } catch {
+        // ignore
       }
     }
-    if (current.length > 0) groups.push(current);
-    segments = groups.map((group) => ({
-      start: Number((group[0].Data.Offset / KHz100ns).toFixed(3)),
-      end: Number(
-        ((group[group.length - 1].Data.Offset + group[group.length - 1].Data.Duration) / KHz100ns).toFixed(3),
-      ),
-      text: stripMarkdown(group.map((w) => w.Data.text.Text).join(' ')),
-    }));
-  } else {
-    segments = [{ start: 0, end: 0, text: clean }];
   }
 
-  return { buffer: Buffer.concat(buffers), segments };
+  const buffers = results.map((r) => r.buffer);
+  let finalBuffer;
+  if (buffers.length === 1) {
+    finalBuffer = buffers[0];
+  } else {
+    const files = buffers.map((b, i) => path.join(os.tmpdir(), `tts-chunk-${Date.now()}-${i}.mp3`));
+    files.forEach((f, i) => fs.writeFileSync(f, buffers[i]));
+    const out = path.join(os.tmpdir(), `tts-merged-${Date.now()}.mp3`);
+    try {
+      await runFfmpegConcat(files, out);
+      finalBuffer = fs.readFileSync(out);
+    } finally {
+      for (const f of [...files, out]) {
+        try {
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  const finalSegments = allSegments.filter((s) => s.text);
+  return {
+    buffer: finalBuffer,
+    segments: finalSegments.length > 0 ? finalSegments : [{ start: 0, end: 0, text: clean }],
+  };
 };
