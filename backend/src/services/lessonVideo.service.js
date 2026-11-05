@@ -10,7 +10,7 @@ import { synthesizeSpeech, VOICES } from './tts.service.js';
 
 const TEMP_DIR = os.tmpdir();
 
-const cleanup = (files) => {
+function cleanupFiles(files) {
   for (const file of files) {
     try {
       if (file && fs.existsSync(file)) fs.unlinkSync(file);
@@ -18,7 +18,7 @@ const cleanup = (files) => {
       // best effort
     }
   }
-};
+}
 
 const runFfmpeg = (args) =>
   new Promise((resolve, reject) => {
@@ -42,24 +42,37 @@ const uploadFile = (filePath, options) =>
     });
   });
 
-export const generateLessonVideo = async ({ video, language }) => {
+export const generateLessonVideo = async ({ video, language, onProgress }) => {
+  const report = async (value) => {
+    try {
+      await onProgress?.(value);
+    } catch {
+      // ignore progress update failures
+    }
+  };
+
   if (!isCloudinaryConfigured()) {
     const err = new Error('Cloudinary is not configured on the server');
     err.statusCode = 500;
     throw err;
   }
 
+  await report(15);
   const script = await generateEducationalScript({ video, targetLanguage: language });
   if (!script.trim()) throw new Error('Could not generate lesson script');
+  await report(30);
 
   const voice = VOICES[language] || VOICES.en;
   const { buffer: audioBuffer, segments: lessonSegments } = await synthesizeSpeech(script, voice);
+  await report(50);
+
   const audioFile = path.join(TEMP_DIR, `lesson-${video._id}-${language}-${Date.now()}.mp3`);
   const outputFile = path.join(TEMP_DIR, `lesson-video-${video._id}-${language}-${Date.now()}.mp4`);
-
   fs.writeFileSync(audioFile, audioBuffer);
+  await report(58);
 
   try {
+    await report(65);
     await runFfmpeg([
       '-y',
       '-i',
@@ -77,6 +90,7 @@ export const generateLessonVideo = async ({ video, language }) => {
       '-shortest',
       outputFile,
     ]);
+    await report(82);
 
     const result = await uploadFile(outputFile, {
       resource_type: 'video',
@@ -85,6 +99,7 @@ export const generateLessonVideo = async ({ video, language }) => {
       unique_filename: true,
       overwrite: false,
     });
+    await report(95);
 
     return {
       language,
@@ -99,13 +114,3 @@ export const generateLessonVideo = async ({ video, language }) => {
     cleanupFiles([audioFile, outputFile]);
   }
 };
-
-function cleanupFiles(files) {
-  for (const file of files) {
-    try {
-      if (file && fs.existsSync(file)) fs.unlinkSync(file);
-    } catch {
-      // best effort
-    }
-  }
-}

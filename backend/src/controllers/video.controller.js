@@ -609,7 +609,26 @@ const runLessonGeneration = async (videoId, language) => {
     };
     await video.save();
 
-    const lesson = await generateLessonVideo({ video, language });
+    const updateProgress = async (progress) => {
+      try {
+        const fresh = await Video.findById(videoId);
+        if (fresh) {
+          fresh.lessonGeneration = {
+            ...(fresh.lessonGeneration?.toObject?.() || fresh.lessonGeneration || {}),
+            progress,
+          };
+          await fresh.save();
+        }
+      } catch {
+        // best effort
+      }
+    };
+
+    const lesson = await generateLessonVideo({
+      video,
+      language,
+      onProgress: updateProgress,
+    });
 
     video.lessonGeneration = {
       language,

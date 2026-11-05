@@ -179,7 +179,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
           }
         }
       }
-    }, 4000);
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [id, video?.dubbing?.status]);
 
@@ -197,7 +197,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
           }
         }
       }
-    }, 4000);
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [id, video?.lessonGeneration?.status]);
 
@@ -635,9 +635,12 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   </div>
 
                   {video.lessonGeneration?.status === "processing" && (
-                    <p className="text-sm text-muted-foreground">
-                      AI is writing the lesson and synthesizing voice for {video.lessonGeneration.language}. You can leave this page.
-                    </p>
+                    <>
+                      <p className="text-sm text-muted-foreground">
+                        AI is writing the lesson and synthesizing voice for {video.lessonGeneration.language}. You can leave this page.
+                      </p>
+                      <Progress value={video.lessonGeneration.progress || 0} className="h-2" />
+                    </>
                   )}
                   {video.lessonGeneration?.status === "failed" && video.lessonGeneration.error && (
                     <p className="text-sm text-destructive">Last lesson error: {video.lessonGeneration.error}</p>
