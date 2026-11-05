@@ -50,6 +50,18 @@ const translationSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const dubSchema = new mongoose.Schema(
+  {
+    language: { type: String, required: true },
+    url: { type: String, required: true },
+    storagePath: { type: String, default: null },
+    durationSeconds: { type: Number, default: 0 },
+    voice: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const subtitleSchema = new mongoose.Schema(
   {
     language: { type: String, required: true },
@@ -133,6 +145,16 @@ const videoSchema = new mongoose.Schema(
     translations: { type: [translationSchema], default: [] },
     aiMetadata: { type: aiMetadataSchema, default: () => ({}) },
     subtitles: { type: [subtitleSchema], default: [] },
+    // Auto-dubbed video variants (video with replaced voice track).
+    dubs: { type: [dubSchema], default: [] },
+    dubbing: {
+      language: { type: String, default: null },
+      status: { type: String, enum: ['idle', 'processing', 'completed', 'failed'], default: 'idle' },
+      progress: { type: Number, default: 0, min: 0, max: 100 },
+      error: { type: String, default: null },
+      startedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null },
+    },
     // YouTube publishing
     youtubeVideoId: { type: String, default: null, index: true },
     youtubeUrl: { type: String, default: null },

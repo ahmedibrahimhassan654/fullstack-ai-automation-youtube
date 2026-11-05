@@ -4,6 +4,7 @@ import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { transcribeAudio } from '../services/transcription.service.js';
 import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '../services/aiMetadata.service.js';
+import { generateDubbedVideo } from '../services/dubbing.service.js';
 
 const STAGE_LABELS = {
   queued: 'Queued for processing',
@@ -496,6 +497,100 @@ export const updateVideo = asyncHandler(async (req, res) => {
   await video.save();
   const saved = await Video.findById(video._id).lean();
   res.status(200).json({ success: true, message: 'Video updated', data: { video: saved } });
+});
+
+const isOwnerOrAdminVideo = (video, user) =>
+  video.user.toString() === user._id.toString() || user.role === 'admin';
+
+const runDubbing = async (videoId, language) => {
+  const video = await Video.findById(videoId);
+  if (!video) return;
+
+  try {
+    video.dubbing = {
+      language,
+      status: 'processing',
+      progress: 10,
+      error: null,
+      startedAt: video.dubbing?.startedAt || new Date(),
+      completedAt: null,
+    };
+    await video.save();
+
+    const dub = await generateDubbedVideo({ video, language });
+
+    video.dubbing = {
+      language,
+      status: 'completed',
+      progress: 100,
+      error: null,
+      startedAt: video.dubbing?.startedAt || new Date(),
+      completedAt: new Date(),
+    };
+
+    const existing = (video.dubs || []).filter((d) => d.language !== language);
+    video.dubs = [...existing, dub];
+    await video.save();
+  } catch (error) {
+    video.dubbing = {
+      language,
+      status: 'failed',
+      progress: video.dubbing?.progress || 0,
+      error: error?.message || 'Dubbing failed',
+      startedAt: video.dubbing?.startedAt || new Date(),
+      completedAt: new Date(),
+    };
+    await video.save();
+  }
+};
+
+export const dubVideo = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error('Video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error('Not authorized to dub this video');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.body?.language || video.targetLanguages?.[0] || video.transcriptLanguage || 'en').trim();
+  if (!language) {
+    const err = new Error('Target language is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const hasTranslation = (video.translations || []).some((t) => t.language === language);
+  const hasTranscript = Boolean((video.transcript || '').trim());
+  if (!hasTranslation && !hasTranscript) {
+    const err = new Error('Process the video first to generate a transcript/translation');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  video.dubbing = {
+    language,
+    status: 'processing',
+    progress: 5,
+    error: null,
+    startedAt: new Date(),
+    completedAt: null,
+  };
+  await video.save();
+
+  runDubbing(video._id, language).catch((err) => {
+    console.error('[dubVideo] pipeline error:', err);
+  });
+
+  res.status(202).json({
+    success: true,
+    message: `Dubbing started for ${language}`,
+    data: { video: await Video.findById(video._id).lean() },
+  });
 });
 
 export const getProcessingLabel = (stage) => STAGE_LABELS[stage] || stage || 'Processing';

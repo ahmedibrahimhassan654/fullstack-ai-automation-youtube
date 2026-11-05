@@ -18,6 +18,8 @@ import { cn } from "@/lib/utils";
 type Chapter = { time: string; title: string };
 type TranscriptSegment = { start: number; end: number; text: string };
 type Translation = { language: string; transcript?: string; segments?: TranscriptSegment[] };
+type Dub = { language: string; url: string; voice?: string; durationSeconds?: number; createdAt?: string };
+type DubbingState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
 type AiMetadata = {
   titles?: string[];
   descriptions?: string[];
@@ -53,6 +55,8 @@ type VideoDetail = {
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
   lastError?: { message?: string } | null;
+  dubs?: Dub[];
+  dubbing?: DubbingState;
   aiMetadata?: AiMetadata | null;
 };
 
@@ -89,6 +93,8 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState("");
+  const [dubLanguage, setDubLanguage] = useState("");
+  const [dubbing, setDubbing] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -102,6 +108,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditCategory(v.youtubeCategoryId || "27");
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
+      setDubLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -149,6 +156,24 @@ export default function VideoDetailClient({ id }: { id: string }) {
   };
 
   const meta = video?.aiMetadata;
+
+  useEffect(() => {
+    if (!video?.dubbing || video.dubbing.status !== "processing") return;
+    const timer = window.setInterval(async () => {
+      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
+      if (res.success && res.data?.video) {
+        setVideo(res.data.video);
+        if (res.data.video.dubbing?.status && res.data.video.dubbing.status !== "processing") {
+          if (res.data.video.dubbing.status === "completed") {
+            toast.success(`Dubbed video ready in ${res.data.video.dubbing.language}.`);
+          } else if (res.data.video.dubbing.status === "failed") {
+            toast.error(res.data.video.dubbing.error || "Dubbing failed.");
+          }
+        }
+      }
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [id, video?.dubbing?.status]);
 
   const availableLanguages = video
     ? (() => {
@@ -455,6 +480,87 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   </CardContent>
                 </Card>
               )}
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Voice dubbing</CardTitle>
+                  <CardDescription>
+                    Generate a new voice track in the selected language and replace the video's audio.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label htmlFor="dubLanguage">Dub language</Label>
+                    <select
+                      id="dubLanguage"
+                      value={dubLanguage}
+                      onChange={(e) => setDubLanguage(e.target.value)}
+                      className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
+                        .filter((value, index, array) => value && array.indexOf(value) === index)
+                        .map((code) => (
+                          <option key={code} value={code}>
+                            {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
+                          </option>
+                        ))}
+                    </select>
+                    <Button
+                      onClick={async () => {
+                        setDubbing(true);
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: dubLanguage });
+                        if (res.success) {
+                          toast.success(res.message || "Dubbing started.");
+                          if (res.data?.video) setVideo(res.data.video);
+                        } else {
+                          toast.error(res.message || "Failed to start dubbing.");
+                        }
+                        setDubbing(false);
+                      }}
+                      disabled={dubbing || video.dubbing?.status === "processing"}
+                    >
+                      {video.dubbing?.status === "processing"
+                        ? `Dubbing… ${video.dubbing.progress ?? 0}%`
+                        : dubbing
+                          ? "Starting…"
+                          : "Generate dubbed video"}
+                    </Button>
+                  </div>
+
+                  {video.dubbing?.status === "processing" && (
+                    <p className="text-sm text-muted-foreground">
+                      Dubbing in progress for {video.dubbing.language}. You can leave this page; the result will appear here.
+                    </p>
+                  )}
+                  {video.dubbing?.status === "failed" && video.dubbing.error && (
+                    <p className="text-sm text-destructive">Last dubbing error: {video.dubbing.error}</p>
+                  )}
+
+                  {video.dubs?.length ? (
+                    <div className="space-y-2">
+                      <p className="font-medium text-sm">Dubbed variants</p>
+                      {video.dubs.map((dub, index) => (
+                        <div key={`${dub.language}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2">
+                          <div>
+                            <p className="text-sm font-medium">
+                              {LANGUAGES.find((l) => l.code === dub.language)?.label || dub.language} ({dub.language})
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {dub.voice || "voice track"}{dub.durationSeconds ? ` • ${dub.durationSeconds}s` : ""}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <a href={dub.url} target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+                              Open
+                            </a>
+                            <video src={dub.url} controls className="hidden" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
 
               {video.youtubeVideoId && (
                 <Card>
