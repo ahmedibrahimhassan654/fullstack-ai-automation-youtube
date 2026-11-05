@@ -75,25 +75,50 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
   fs.writeFileSync(audioFile, audioBuffer);
   await report(58);
 
+  const duration = Number(video.durationSeconds) || 0;
+  const ffmpegArgs =
+    duration > 0
+      ? [
+          '-y',
+          '-i',
+          video.publicUrl,
+          '-i',
+          audioFile,
+          '-filter_complex',
+          `[1:a]apad=whole_dur=${duration}[a]`,
+          '-map',
+          '0:v:0',
+          '-map',
+          '[a]',
+          '-c:v',
+          'copy',
+          '-c:a',
+          'aac',
+          '-t',
+          String(duration),
+          outputFile,
+        ]
+      : [
+          '-y',
+          '-i',
+          video.publicUrl,
+          '-i',
+          audioFile,
+          '-map',
+          '0:v:0',
+          '-map',
+          '1:a:0',
+          '-c:v',
+          'copy',
+          '-c:a',
+          'aac',
+          '-shortest',
+          outputFile,
+        ];
+
   try {
     await report(65);
-    await runFfmpeg([
-      '-y',
-      '-i',
-      video.publicUrl,
-      '-i',
-      audioFile,
-      '-map',
-      '0:v:0',
-      '-map',
-      '1:a:0',
-      '-c:v',
-      'copy',
-      '-c:a',
-      'aac',
-      '-shortest',
-      outputFile,
-    ]);
+    await runFfmpeg(ffmpegArgs);
     await report(82);
 
     const result = await uploadFile(outputFile, {

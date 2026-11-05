@@ -1,5 +1,7 @@
 import { env } from '../config/env.js';
 
+const EGYPTIAN_ARABIC_RULES = `You are an expert AI Audio Translation & Transcription Agent specializing in Egyptian Arabic. Follow these core principles: deliver authentic modern Egyptian Arabic (اللهجة المصرية); maintain Arabic grammar, pronouns, verb conjugations and gender agreement; identify technical English terms without natural Arabic translations and keep them in English when needed; adapt speech patterns into clear, natural, well-structured text while preserving educational intent.`;
+
 const stripMarkdown = (text) =>
   String(text || '')
     .replace(/```[\\s\\S]*?```/g, '')
@@ -230,16 +232,22 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
   const translation = (video.translations || []).find((t) => t.language === targetLanguage);
   const transcript = translation?.transcript || video.transcript || '';
   const ai = video.aiMetadata || {};
+  const duration = Math.max(1, Number(video.durationSeconds) || 120);
 
   const content = await callChatCompletion(
     [
       {
         role: 'system',
         content:
-          `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. ` +
-          'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained. ' +
-          'If the target language is Arabic, write in Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. ' +
-          'Include a short hook, learning objectives, lesson explanation, key takeaways, and a quick recap. ' +
+          (targetLanguage.startsWith('ar')
+            ? `${EGYPTIAN_ARABIC_RULES}\\n\\nYou are an excellent educational narrator. Write a complete spoken lesson script in Egyptian Arabic. `
+            : `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. `) +
+          'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained, and cover the entire lesson rather than only the opening. ' +
+          (targetLanguage.startsWith('ar')
+            ? 'Write Arabic with complete tashkeel/diacritics for pronunciation. Keep important technical English terms in English when they have no natural Arabic equivalent. '
+            : '') +
+          `The final spoken narration should last about ${duration} seconds, so write enough words to fill that duration. ` +
+          'Include a hook, objectives, a thorough explanation, key takeaways, and a recap. ' +
           'Return plain narration text only (no markdown headings or stage directions).',
       },
       {
@@ -256,7 +264,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
     ],
     {
       temperature: 0.4,
-      maxTokens: 700,
+      maxTokens: 4000,
       model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL_FAST,
     },
   );

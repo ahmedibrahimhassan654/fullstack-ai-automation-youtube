@@ -536,6 +536,27 @@ const runDubbing = async (videoId, language) => {
   const video = await Video.findById(videoId);
   if (!video) return;
 
+  // Translate on demand so dubbing works for languages requested at dub time.
+  const hasTranslation = (video.translations || []).some((t) => t.language === language);
+  if (!hasTranslation && language !== (video.originalLanguage || 'en') && Array.isArray(video.transcriptSegments) && video.transcriptSegments.length > 0) {
+    try {
+      const segments = await translateTranscriptSegments({ segments: video.transcriptSegments, targetLanguage: language });
+      video.translations = [
+        ...(video.translations || []),
+        {
+          language,
+          transcript: segments.map((s) => s.text).join(' '),
+          segments,
+        },
+      ];
+      await video.save();
+      emitVideoProgress(video);
+    } catch (translationError) {
+      // Fall back to the original transcript if translation is unavailable.
+      console.error('[runDubbing] translation failed:', translationError?.message);
+    }
+  }
+
   try {
     video.dubbing = {
       language,
