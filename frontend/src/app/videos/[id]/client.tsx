@@ -469,69 +469,6 @@ export default function VideoDetailClient({ id }: { id: string }) {
                 </Card>
               )}
 
-              {video.transcript && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Transcript and translations</CardTitle>
-                    <CardDescription>
-                      Switch language to view the translated subtitle track in sync with the video.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {availableLanguages.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Label htmlFor="transcriptLanguage">Transcript language</Label>
-                        <select
-                          id="transcriptLanguage"
-                          value={selectedLanguage}
-                          onChange={(e) => setSelectedLanguage(e.target.value)}
-                          className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                        >
-                          {availableLanguages.map((language) => (
-                            <option key={language.code} value={language.code}>
-                              {language.label} ({language.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {selectedLanguageData?.segments?.length ? (
-                      <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-2">
-                        {selectedLanguageData.segments.map((segment, index) => {
-                          const active =
-                            currentTime >= segment.start &&
-                            currentTime <= Math.max(segment.end, segment.start + 0.5);
-                          return (
-                            <button
-                              key={`${segment.start}-${index}`}
-                              type="button"
-                              onClick={() => {
-                                if (videoRef.current) {
-                                  videoRef.current.currentTime = segment.start;
-                                  void videoRef.current.play();
-                                }
-                              }}
-                              className={`block w-full rounded-md border px-2 py-1 text-left text-sm transition-colors ${
-                                active
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-transparent hover:bg-muted"
-                              }`}
-                            >
-                              <span className="mr-2 font-mono text-xs text-muted-foreground">
-                                {formatTime(segment.start)}
-                              </span>
-                              {segment.text}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-sm whitespace-pre-wrap">{selectedLanguageData?.text || video.transcript}</p>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
 
               <Card>
                 <CardHeader>
@@ -602,7 +539,29 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   {video.lessonVideos?.length ? (
                     <div className="space-y-4">
                       {video.lessonVideos.map((lesson, index) => (
-                        <LessonVideoCard key={`${lesson.language}-${index}`} videoId={id} lesson={lesson} />
+                        <details key={`${lesson.language}-${index}`} className="group rounded-md border bg-card">
+                          <summary className="cursor-pointer list-none p-4 font-medium">
+                            {LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language} ({lesson.language}) lesson video
+                          </summary>
+                          <div className="space-y-3 border-t p-3">
+                            <LessonVideoCard videoId={id} lesson={lesson} />
+                            <Button
+                              size="sm"
+                              onClick={async () => {
+                                const toastInstance = toast;
+                                const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lesson.language });
+                                if (res.success) {
+                                  toastInstance.success(res.message || `Regenerating lesson for ${lesson.language}.`);
+                                  if (res.data?.video) setVideo(res.data.video);
+                                } else {
+                                  toastInstance.error(res.message || "Failed to start lesson generation.");
+                                }
+                              }}
+                            >
+                              Regenerate video ({lesson.language})
+                            </Button>
+                          </div>
+                        </details>
                       ))}
                     </div>
                   ) : null}

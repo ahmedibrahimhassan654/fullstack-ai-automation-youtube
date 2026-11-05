@@ -44,7 +44,15 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
     if (!element) return;
     const onTimeUpdate = () => setCurrentTime(element.currentTime);
     element.addEventListener("timeupdate", onTimeUpdate);
-    return () => element.removeEventListener("timeupdate", onTimeUpdate);
+    const onLoaded = () => {
+      const track = element.textTracks?.[0];
+      if (track) track.mode = "showing";
+    };
+    element.addEventListener("loadedmetadata", onLoaded);
+    return () => {
+      element.removeEventListener("timeupdate", onTimeUpdate);
+      element.removeEventListener("loadedmetadata", onLoaded);
+    };
   }, []);
 
   const formatTime = (seconds: number) => {
