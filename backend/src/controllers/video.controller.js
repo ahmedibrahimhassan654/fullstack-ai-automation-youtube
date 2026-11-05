@@ -3,9 +3,29 @@ import Video from '../models/Video.js';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { transcribeAudio } from '../services/transcription.service.js';
+import { publishProgress, subscribeProgress } from '../lib/progressBus.js';
 import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '../services/aiMetadata.service.js';
 import { generateDubbedVideo } from '../services/dubbing.service.js';
 import { generateLessonVideo } from '../services/lessonVideo.service.js';
+
+const emitVideoProgress = (video) => {
+  if (!video) return;
+  const videoId = String(video._id || video.id);
+  const payload = {
+    type: 'video:progress',
+    videoId,
+    status: video.status,
+    currentStage: video.currentStage,
+    progress: video.progress,
+    lastError: video.lastError,
+    dubbing: video.dubbing,
+    lessonGeneration: video.lessonGeneration,
+    dubs: video.dubs,
+    lessonVideos: video.lessonVideos,
+  };
+  publishProgress(`video:${videoId}`, payload);
+  if (video.user) publishProgress(`user:${video.user}`, payload);
+};
 
 const STAGE_LABELS = {
   queued: 'Queued for processing',
@@ -262,6 +282,7 @@ const runPipeline = async (videoId) => {
     video.processingStartedAt = video.processingStartedAt || new Date();
     video.lastError = null;
     await video.save();
+    emitVideoProgress(video);
 
     if (!video.publicUrl) {
       throw new Error('No uploaded video URL available for transcription');
@@ -309,12 +330,14 @@ const runPipeline = async (videoId) => {
     video.currentStage = 'transcribed';
     video.progress = 40;
     await video.save();
+    emitVideoProgress(video);
 
     // AI analysis (titles, summary, chapters, tags, key points, action items,
     // decisions, open questions) using the transcript.
     video.currentStage = 'analysis';
     video.progress = 65;
     await video.save();
+    emitVideoProgress(video);
 
     if (video.transcript.trim()) {
       const ai = await analyzeTranscript({
@@ -345,6 +368,7 @@ const runPipeline = async (videoId) => {
       video.currentStage = 'translation';
       video.progress = 85;
       await video.save();
+    emitVideoProgress(video);
 
       const translations = [];
       for (const language of video.targetLanguages) {
@@ -371,6 +395,7 @@ const runPipeline = async (videoId) => {
     video.progress = 100;
     video.processingCompletedAt = new Date();
     await video.save();
+    emitVideoProgress(video);
   } catch (error) {
     video.status = 'failed';
     video.currentStage = 'failed';
@@ -380,6 +405,7 @@ const runPipeline = async (videoId) => {
       occurredAt: new Date(),
     };
     await video.save();
+    emitVideoProgress(video);
   }
 };
 
@@ -410,8 +436,10 @@ export const processVideo = asyncHandler(async (req, res) => {
   video.progress = 5;
   video.lastError = null;
   await video.save();
+    emitVideoProgress(video);
+  emitVideoProgress(video);
 
-  // Fire and forget; client polls GET /api/videos/:id for status.
+  // Fire and forget; clients receive SSE progress updates.
   runPipeline(video._id).catch((err) => {
     console.error('[processVideo] pipeline error:', err);
   });
@@ -496,6 +524,7 @@ export const updateVideo = asyncHandler(async (req, res) => {
   }
 
   await video.save();
+    emitVideoProgress(video);
   const saved = await Video.findById(video._id).lean();
   res.status(200).json({ success: true, message: 'Video updated', data: { video: saved } });
 });
@@ -517,6 +546,7 @@ const runDubbing = async (videoId, language) => {
       completedAt: null,
     };
     await video.save();
+    emitVideoProgress(video);
 
     const dub = await generateDubbedVideo({ video, language });
 
@@ -532,6 +562,7 @@ const runDubbing = async (videoId, language) => {
     const existing = (video.dubs || []).filter((d) => d.language !== language);
     video.dubs = [...existing, dub];
     await video.save();
+    emitVideoProgress(video);
   } catch (error) {
     video.dubbing = {
       language,
@@ -542,6 +573,7 @@ const runDubbing = async (videoId, language) => {
       completedAt: new Date(),
     };
     await video.save();
+    emitVideoProgress(video);
   }
 };
 
@@ -582,6 +614,7 @@ export const dubVideo = asyncHandler(async (req, res) => {
     completedAt: null,
   };
   await video.save();
+    emitVideoProgress(video);
 
   runDubbing(video._id, language).catch((err) => {
     console.error('[dubVideo] pipeline error:', err);
@@ -608,6 +641,7 @@ const runLessonGeneration = async (videoId, language) => {
       completedAt: null,
     };
     await video.save();
+    emitVideoProgress(video);
 
     const updateProgress = async (progress) => {
       try {
@@ -641,6 +675,7 @@ const runLessonGeneration = async (videoId, language) => {
     const existing = (video.lessonVideos || []).filter((d) => d.language !== language);
     video.lessonVideos = [...existing, lesson];
     await video.save();
+    emitVideoProgress(video);
   } catch (error) {
     video.lessonGeneration = {
       language,
@@ -651,6 +686,7 @@ const runLessonGeneration = async (videoId, language) => {
       completedAt: new Date(),
     };
     await video.save();
+    emitVideoProgress(video);
   }
 };
 
@@ -688,6 +724,7 @@ export const generateLesson = asyncHandler(async (req, res) => {
     completedAt: null,
   };
   await video.save();
+    emitVideoProgress(video);
 
   runLessonGeneration(video._id, language).catch((err) => {
     console.error('[generateLesson] pipeline error:', err);
@@ -699,5 +736,75 @@ export const generateLesson = asyncHandler(async (req, res) => {
     data: { video: await Video.findById(video._id).lean() },
   });
 });
+
+export const streamVideoEvents = async (req, res) => {
+  const video = await Video.findById(req.params.id).lean();
+  if (!video) return res.status(404).end();
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    return res.status(403).end();
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const send = (payload) => {
+    if (!payload || payload.videoId !== req.params.id) return;
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  // Send initial snapshot.
+  res.write(
+    `data: ${JSON.stringify({
+      type: 'video:progress',
+      videoId: req.params.id,
+      status: video.status,
+      currentStage: video.currentStage,
+      progress: video.progress,
+      lastError: video.lastError,
+      dubbing: video.dubbing,
+      lessonGeneration: video.lessonGeneration,
+      dubs: video.dubs,
+      lessonVideos: video.lessonVideos,
+    })}\n\n`,
+  );
+
+  const unsubscribe = subscribeProgress(`video:${req.params.id}`, send);
+
+  const keepAlive = setInterval(() => {
+    res.write(': ping\n\n');
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+    res.end();
+  });
+};
+
+export const streamGlobalEvents = async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  res.write(`data: ${JSON.stringify({ type: 'connected', userId: req.user._id })}\n\n`);
+
+  const send = (payload) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+  const unsubscribe = subscribeProgress(`user:${req.user._id}`, send);
+
+  const keepAlive = setInterval(() => {
+    res.write(': ping\n\n');
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+    res.end();
+  });
+};
 
 export const getProcessingLabel = (stage) => STAGE_LABELS[stage] || stage || 'Processing';

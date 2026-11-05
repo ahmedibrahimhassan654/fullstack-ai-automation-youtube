@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useToast } from '@/components/toast-provider';
 import { AuthGuard } from '@/components/auth-guard';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api, API_BASE } from '@/lib/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -47,8 +47,6 @@ export default function DashboardPage() {
   const router = useRouter();
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const timer = useRef<NodeJS.Timeout | null>(null);
-
   const load = async () => {
     const r = await api.get<{ items: VideoRow[] }>('/api/videos');
     if (r.success) setVideos((r.data as { items: VideoRow[] }).items || []);
@@ -58,18 +56,33 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load();
-    // Poll while any video is processing, so the loading banner stays live.
-    timer.current = setInterval(() => {
-      setVideos((prev) => {
-        if (prev.some((v) => v.status === 'processing')) {
-          load();
-        }
-        return prev;
-      });
-    }, 3000);
-    return () => {
-      if (timer.current) clearInterval(timer.current);
+
+    const token = api.getToken();
+    if (!token) return;
+
+    const es = new EventSource(`${API_BASE}/api/events?token=${encodeURIComponent(token)}`);
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "connected") return;
+        setVideos((prev) =>
+          prev.map((video) =>
+            video._id === data.videoId
+              ? {
+                  ...video,
+                  status: data.status ?? video.status,
+                  currentStage: data.currentStage ?? video.currentStage,
+                  progress: data.progress ?? video.progress,
+                  lastError: data.lastError ?? video.lastError,
+                }
+              : video,
+          ),
+        );
+      } catch {
+        // ignore malformed events
+      }
     };
+    return () => es.close();
   }, []);
 
   const startProcessing = async (id: string) => {

@@ -46,6 +46,35 @@ export const adminOnly = (req, res, next) => {
   next();
 };
 
+export const protectSSE = asyncHandler(async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  let token = null;
+  if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.split(' ')[1];
+  else if (req.query?.token) token = req.query.token;
+  else if (req.cookies?.accessToken) token = req.cookies.accessToken;
+
+  if (!token) {
+    const err = new Error('Not authorized, no token provided');
+    err.statusCode = 401;
+    throw err;
+  }
+
+  const decoded = verifyAccessToken(token);
+  const user = await User.findById(decoded.id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.statusCode = 401;
+    throw err;
+  }
+  if (!user.isActive) {
+    const err = new Error('User account is deactivated');
+    err.statusCode = 403;
+    throw err;
+  }
+  req.user = user;
+  next();
+});
+
 export const optionalAuth = asyncHandler(async (req, res, next) => {
   let token = null;
   const authHeader = req.headers.authorization;

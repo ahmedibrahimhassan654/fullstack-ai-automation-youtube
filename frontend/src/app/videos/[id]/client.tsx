@@ -6,7 +6,7 @@ import { AuthGuard } from "@/components/auth-guard";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
 import { Loader2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, API_BASE } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import LessonVideoCard from "./lesson-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -164,43 +164,67 @@ export default function VideoDetailClient({ id }: { id: string }) {
     setDeleting(false);
   };
 
+  // Real-time updates via SSE instead of polling.
+  useEffect(() => {
+    const token = api.getToken();
+    if (!id || !token) return;
+
+    const es = new EventSource(`${API_BASE}/api/videos/${id}/events?token=${encodeURIComponent(token)}`);
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "connected") return;
+
+        if (data.dubbing?.status && data.dubbing.status !== "processing" && prevDubbingStatus.current === "processing") {
+          if (data.dubbing.status === "completed") {
+            toast.success(`Dubbed video ready in ${data.dubbing.language}.`);
+          } else if (data.dubbing.status === "failed") {
+            toast.error(data.dubbing.error || "Dubbing failed.");
+          }
+        }
+        if (data.lessonGeneration?.status && data.lessonGeneration.status !== "processing" && prevLessonStatus.current === "processing") {
+          if (data.lessonGeneration.status === "completed") {
+            toast.success(`Generated lesson video ready in ${data.lessonGeneration.language}.`);
+          } else if (data.lessonGeneration.status === "failed") {
+            toast.error(data.lessonGeneration.error || "Lesson generation failed.");
+          }
+        }
+
+        prevDubbingStatus.current = data.dubbing?.status ?? prevDubbingStatus.current;
+        prevLessonStatus.current = data.lessonGeneration?.status ?? prevLessonStatus.current;
+
+        setVideo((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: data.status ?? prev.status,
+            currentStage: data.currentStage ?? prev.currentStage,
+            progress: data.progress ?? prev.progress,
+            lastError: data.lastError ?? prev.lastError,
+            dubbing: data.dubbing ?? prev.dubbing,
+            lessonGeneration: data.lessonGeneration ?? prev.lessonGeneration,
+            dubs: data.dubs ?? prev.dubs,
+            lessonVideos: data.lessonVideos ?? prev.lessonVideos,
+          };
+        });
+      } catch {
+        // ignore malformed events
+      }
+    };
+    return () => es.close();
+  }, [id]);
+
   const meta = video?.aiMetadata;
 
-  useEffect(() => {
-    if (!video?.dubbing || video.dubbing.status !== "processing") return;
-    const timer = window.setInterval(async () => {
-      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
-      if (res.success && res.data?.video) {
-        setVideo(res.data.video);
-        if (res.data.video.dubbing?.status && res.data.video.dubbing.status !== "processing") {
-          if (res.data.video.dubbing.status === "completed") {
-            toast.success(`Dubbed video ready in ${res.data.video.dubbing.language}.`);
-          } else if (res.data.video.dubbing.status === "failed") {
-            toast.error(res.data.video.dubbing.error || "Dubbing failed.");
-          }
-        }
-      }
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [id, video?.dubbing?.status]);
+  const prevDubbingStatus = useRef<string | null>(null);
+  const prevLessonStatus = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!video?.lessonGeneration || video.lessonGeneration.status !== "processing") return;
-    const timer = window.setInterval(async () => {
-      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
-      if (res.success && res.data?.video) {
-        setVideo(res.data.video);
-        if (res.data.video.lessonGeneration?.status && res.data.video.lessonGeneration.status !== "processing") {
-          if (res.data.video.lessonGeneration.status === "completed") {
-            toast.success(`Generated lesson video ready in ${res.data.video.lessonGeneration.language}.`);
-          } else if (res.data.video.lessonGeneration.status === "failed") {
-            toast.error(res.data.video.lessonGeneration.error || "Lesson generation failed.");
-          }
-        }
-      }
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [id, video?.lessonGeneration?.status]);
+    if (video) {
+      prevDubbingStatus.current = video.dubbing?.status ?? null;
+      prevLessonStatus.current = video.lessonGeneration?.status ?? null;
+    }
+  }, [video?._id]);
 
   const availableLanguages = video
     ? (() => {

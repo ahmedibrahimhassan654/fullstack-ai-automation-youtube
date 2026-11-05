@@ -8,7 +8,7 @@ export const VOICES = {
   it: 'it-IT-ElsaNeural',
   pt: 'pt-BR-FranciscaNeural',
   ru: 'ru-RU-SvetlanaNeural',
-  ar: 'ar-SA-ZariyahNeural',
+  ar: 'ar-EG-SalmaNeural',
   hi: 'hi-IN-SwaraNeural',
   zh: 'zh-CN-XiaoxiaoNeural',
   ja: 'ja-JP-NanamiNeural',
@@ -67,29 +67,32 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
 
     const { audioStream, metadataStream } = tts.rawToStream(ssml);
 
+    const audioChunks = [];
+    const metadataItems = [];
+
     const audioPromise = new Promise((resolve, reject) => {
-      const audioChunks = [];
       audioStream.on('data', (c) => audioChunks.push(c));
-      audioStream.on('end', () => resolve(audioChunks));
+      audioStream.on('end', () => resolve());
       audioStream.on('error', reject);
     });
 
-    const metadataPromise = new Promise((resolve) => {
-      if (!metadataStream) return resolve([]);
-      const items = [];
+    if (metadataStream) {
       metadataStream.on('data', (chunk) => {
         try {
           const json = JSON.parse(chunk.toString());
-          items.push(...(json.Metadata || []));
+          metadataItems.push(...(json.Metadata || []));
         } catch {
           // ignore malformed chunks
         }
       });
-      metadataStream.on('end', () => resolve(items));
-      metadataStream.on('error', () => resolve(items));
-    });
+      metadataStream.on('error', () => {});
+    }
 
-    const [audioChunks, items] = await Promise.all([audioPromise, metadataPromise]);
+    await audioPromise;
+    // Give trailing metadata a short chance to arrive.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const items = metadataItems;
     buffers.push(Buffer.concat(audioChunks));
     rawBoundaries.push(...items);
     completedChunks += 1;
