@@ -265,7 +265,23 @@ const runPipeline = async (videoId) => {
       throw new Error('No uploaded video URL available for transcription');
     }
 
-    const response = await fetch(video.publicUrl);
+    // Prefer an optimized, low-bandwidth MP3 derived from the Cloudinary video. This
+    // keeps us below the Whisper API request-size limit for large source videos.
+    // eslint-disable-next-line no-unused-vars
+    const publicUrl = video.publicUrl;
+    let fetchUrl = publicUrl;
+    if (publicUrl.includes('/video/upload/')) {
+      fetchUrl = publicUrl
+        .replace('/video/upload/', '/video/upload/ac_mp3/')
+        .replace(/\\.[^/.]+$/, '.mp3');
+    }
+
+    let response = await fetch(fetchUrl);
+    if (!response.ok && fetchUrl !== publicUrl) {
+      // Fall back to the original file if derivation isn't available.
+      response = await fetch(publicUrl);
+      fetchUrl = publicUrl;
+    }
     if (!response.ok) {
       throw new Error(`Failed to download video for transcription (${response.status})`);
     }
@@ -274,8 +290,8 @@ const runPipeline = async (videoId) => {
 
     const result = await transcribeAudio({
       buffer,
-      filename: video.originalFilename || 'video.mp4',
-      mimeType: video.mimeType,
+      filename: fetchUrl.endsWith('.mp3') ? 'audio.mp3' : (video.originalFilename || 'video.mp4'),
+      mimeType: fetchUrl.endsWith('.mp3') ? 'audio/mpeg' : video.mimeType,
       language: video.originalLanguage || video.transcriptLanguage || 'en',
     });
 

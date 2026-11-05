@@ -1,5 +1,0 @@
-[db] MongoDB connected: 127.0.0.1
-[server] Running in development mode on port 5000
-[0mGET /api/health [32m200[0m 4.097 ms - 124[0m
-[0mGET /api/auth/me [32m200[0m 28.110 ms - 660[0m
-[0mGET /api/auth/me [36m304[0m 4.817 ms - -[0m

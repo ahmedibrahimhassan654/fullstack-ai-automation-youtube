@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GROQ_MODEL = 'openai/gpt-oss-20b';
 
 const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
 
