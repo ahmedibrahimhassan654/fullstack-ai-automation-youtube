@@ -5,6 +5,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useToast } from '@/components/toast-provider';
 import { AuthGuard } from '@/components/auth-guard';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,8 +42,9 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const toast = useToast();
+  const router = useRouter();
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const timer = useRef<NodeJS.Timeout | null>(null);
@@ -79,6 +81,16 @@ export default function DashboardPage() {
     await load();
   };
 
+  const handleLogout = async () => {
+    try {
+      await logout();
+      toast.success("Logged out successfully.");
+      router.push("/login");
+    } catch (err) {
+      toast.error("Logout failed. Please try again.");
+    }
+  };
+
   const processingVideos = videos.filter((v) => v.status === 'processing');
 
   return (
@@ -96,6 +108,9 @@ export default function DashboardPage() {
                   Admin
                 </Link>
               )}
+              <Button variant="outline" size="sm" onClick={handleLogout}>
+                Log out
+              </Button>
             </nav>
           </div>
         </header>

@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { AuthGuard } from '@/components/auth-guard';
 import { useAuth } from '@/lib/auth-context';
+import { useToast } from '@/components/toast-provider';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Link from 'next/link';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -18,7 +20,9 @@ type YtStatus = {
 };
 
 export default function SettingsPage() {
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, logout } = useAuth();
+  const toast = useToast();
+  const router = useRouter();
   const [status, setStatus] = useState<YtStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -64,6 +68,21 @@ export default function SettingsPage() {
             <Link href="/dashboard" className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
               Back
             </Link>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await logout();
+                  toast.success("Logged out successfully.");
+                  router.push("/login");
+                } catch {
+                  toast.error("Logout failed. Please try again.");
+                }
+              }}
+            >
+              Log out
+            </Button>
           </div>
         </header>
         <main className="mx-auto max-w-3xl p-4 space-y-6">
