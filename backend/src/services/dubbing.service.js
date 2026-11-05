@@ -63,7 +63,7 @@ export const generateDubbedVideo = async ({ video, language }) => {
   }
 
   const voice = VOICES[language] || VOICES.en;
-  const audioBuffer = await synthesizeSpeech(sourceText, voice);
+  const { buffer: audioBuffer } = await synthesizeSpeech(sourceText, voice);
   const audioFile = writeTemp(`dub-${video._id}-${language}-${Date.now()}.mp3`, audioBuffer);
 
   const outputFile = path.join(TEMP_DIR, `dubbed-${video._id}-${language}-${Date.now()}.mp4`);

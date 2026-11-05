@@ -53,7 +53,7 @@ export const generateLessonVideo = async ({ video, language }) => {
   if (!script.trim()) throw new Error('Could not generate lesson script');
 
   const voice = VOICES[language] || VOICES.en;
-  const audioBuffer = await synthesizeSpeech(script, voice);
+  const { buffer: audioBuffer, segments: lessonSegments } = await synthesizeSpeech(script, voice);
   const audioFile = path.join(TEMP_DIR, `lesson-${video._id}-${language}-${Date.now()}.mp3`);
   const outputFile = path.join(TEMP_DIR, `lesson-video-${video._id}-${language}-${Date.now()}.mp4`);
 
@@ -93,6 +93,7 @@ export const generateLessonVideo = async ({ video, language }) => {
       durationSeconds: Math.round(result.duration || video.durationSeconds || 0),
       voice,
       script,
+      segments: lessonSegments || [],
     };
   } finally {
     cleanupFiles([audioFile, outputFile]);

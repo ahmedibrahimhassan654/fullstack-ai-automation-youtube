@@ -70,6 +70,7 @@ const lessonVideoSchema = new mongoose.Schema(
     durationSeconds: { type: Number, default: 0 },
     voice: { type: String, default: null },
     script: { type: String, default: '' },
+    segments: { type: [transcriptSegmentSchema], default: [] },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

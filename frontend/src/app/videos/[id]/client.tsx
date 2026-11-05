@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
 import { api } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
+import LessonVideoCard from "./lesson-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -645,28 +646,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   {video.lessonVideos?.length ? (
                     <div className="space-y-4">
                       {video.lessonVideos.map((lesson, index) => (
-                        <div key={`${lesson.language}-${index}`} className="space-y-3 rounded-md border p-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <p className="text-sm font-medium">
-                                {LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language} ({lesson.language})
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {lesson.voice || "generated voice"}{lesson.durationSeconds ? ` • ${lesson.durationSeconds}s` : ""}
-                              </p>
-                            </div>
-                            <a href={lesson.url} target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
-                              Open generated file
-                            </a>
-                          </div>
-                          <video src={lesson.url} controls className="w-full rounded-md border" />
-                          {lesson.script && (
-                            <details className="text-xs">
-                              <summary className="cursor-pointer text-muted-foreground">Generated lesson transcript/script</summary>
-                              <p className="mt-2 whitespace-pre-wrap">{lesson.script}</p>
-                            </details>
-                          )}
-                        </div>
+                        <LessonVideoCard key={`${lesson.language}-${index}`} lesson={lesson} />
                       ))}
                     </div>
                   ) : null}

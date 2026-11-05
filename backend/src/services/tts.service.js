@@ -20,15 +20,15 @@ export const VOICES = {
 
 const stripMarkdown = (text) =>
   String(text || '')
-    .replace(/```[\\s\\S]*?```/g, '')
+    .replace(/```[\s\S]*?```/g, '')
     .replace(/`([^`]*)`/g, '$1')
-    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')
-    .replace(/\\*(.*?)\\*/g, '$1')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
     .replace(/__(.*?)__/g, '$1')
     .replace(/_(.*?)_/g, '$1')
-    .replace(/^#{1,6}\\s*/gm, '')
-    .replace(/^\\s*[-*+]\\s+/gm, '')
-    .replace(/[ \\t]{2,}/g, ' ')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 
 const escapeXml = (text) =>
@@ -39,15 +39,21 @@ const escapeXml = (text) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 
+const KHz100ns = 10000000;
+
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const tts = new MsEdgeTTS();
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
+    wordBoundaryEnabled: true,
+    sentenceBoundaryEnabled: true,
+  });
 
   const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
   const rate = options.rate || '-8%';
   const clean = stripMarkdown(text);
   const chunks = clean.match(/.{1,2500}/gs) || [clean];
   const buffers = [];
+  const rawBoundaries = [];
 
   for (const chunk of chunks) {
     const trimmed = chunk.trim();
@@ -57,16 +63,72 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
       `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
       `<voice name="${voice}"><prosody rate="${rate}" pitch="+0Hz">${escapeXml(trimmed)}</prosody></voice></speak>`;
 
-    const { audioStream } = tts.rawToStream(ssml);
-    const audioChunks = [];
-    await new Promise((resolve, reject) => {
+    const { audioStream, metadataStream } = tts.rawToStream(ssml);
+
+    const audioPromise = new Promise((resolve, reject) => {
+      const audioChunks = [];
       audioStream.on('data', (c) => audioChunks.push(c));
-      audioStream.on('end', () => resolve());
+      audioStream.on('end', () => resolve(audioChunks));
       audioStream.on('error', reject);
     });
+
+    const metadataPromise = new Promise((resolve) => {
+      if (!metadataStream) return resolve([]);
+      const items = [];
+      metadataStream.on('data', (chunk) => {
+        try {
+          const json = JSON.parse(chunk.toString());
+          items.push(...(json.Metadata || []));
+        } catch {
+          // ignore malformed chunks
+        }
+      });
+      metadataStream.on('end', () => resolve(items));
+      metadataStream.on('error', () => resolve(items));
+    });
+
+    const [audioChunks, items] = await Promise.all([audioPromise, metadataPromise]);
     buffers.push(Buffer.concat(audioChunks));
+    rawBoundaries.push(...items);
   }
 
   if (buffers.length === 0) throw new Error('No speech could be generated');
-  return Buffer.concat(buffers);
+
+  // Prefer sentence boundaries (cleaner chunks). Fall back to word boundaries grouped by
+  // punctuation, and finally to a single segment if no metadata was returned.
+  const sentenceBoundaries = rawBoundaries.filter((b) => b.Type === 'SentenceBoundary');
+  const wordBoundaries = rawBoundaries.filter((b) => b.Type === 'WordBoundary');
+
+  let segments = [];
+  if (sentenceBoundaries.length > 0) {
+    segments = sentenceBoundaries.map((b) => ({
+      start: Number((b.Data.Offset / KHz100ns).toFixed(3)),
+      end: Number(((b.Data.Offset + b.Data.Duration) / KHz100ns).toFixed(3)),
+      text: stripMarkdown(b.Data.text.Text),
+    }));
+  } else if (wordBoundaries.length > 0) {
+    // Group words into ~12-word phrases for readable highlighting.
+    const groups = [];
+    let current = [];
+    for (const wb of wordBoundaries) {
+      current.push(wb);
+      const word = wb.Data.text.Text;
+      if (current.length >= 12 || /[.!?،؟。]/.test(word)) {
+        groups.push(current);
+        current = [];
+      }
+    }
+    if (current.length > 0) groups.push(current);
+    segments = groups.map((group) => ({
+      start: Number((group[0].Data.Offset / KHz100ns).toFixed(3)),
+      end: Number(
+        ((group[group.length - 1].Data.Offset + group[group.length - 1].Data.Duration) / KHz100ns).toFixed(3),
+      ),
+      text: stripMarkdown(group.map((w) => w.Data.text.Text).join(' ')),
+    }));
+  } else {
+    segments = [{ start: 0, end: 0, text: clean }];
+  }
+
+  return { buffer: Buffer.concat(buffers), segments };
 };
