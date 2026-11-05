@@ -3,7 +3,7 @@ import Video from '../models/Video.js';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { transcribeAudio } from '../services/transcription.service.js';
-import { analyzeTranscript, answerQuestion } from '../services/aiMetadata.service.js';
+import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '../services/aiMetadata.service.js';
 
 const STAGE_LABELS = {
   queued: 'Queued for processing',
@@ -297,6 +297,13 @@ const runPipeline = async (videoId) => {
 
     video.transcript = result.text || '';
     video.transcriptLanguage = result.language || video.originalLanguage || 'en';
+    video.transcriptSegments = (result.segments || [])
+      .map((s) => ({
+        start: Number(s.start) || 0,
+        end: Number(s.end) || 0,
+        text: String(s.text || '').trim(),
+      }))
+      .filter((s) => s.text);
     video.currentStage = 'transcribed';
     video.progress = 40;
     await video.save();
@@ -331,8 +338,34 @@ const runPipeline = async (videoId) => {
       };
     }
 
+    // Translations (subtitle/transcript variants for requested target languages).
+    if (Array.isArray(video.targetLanguages) && video.targetLanguages.length > 0 && video.transcriptSegments.length > 0) {
+      video.currentStage = 'translation';
+      video.progress = 85;
+      await video.save();
+
+      const translations = [];
+      for (const language of video.targetLanguages) {
+        try {
+          const segments = await translateTranscriptSegments({
+            segments: video.transcriptSegments,
+            targetLanguage: language,
+          });
+          translations.push({
+            language,
+            transcript: segments.map((s) => s.text).join(' '),
+            segments,
+          });
+        } catch (error) {
+          // Keep processing successful even if one translation fails.
+          console.error(`[processVideo] translation failed for ${language}:`, error?.message);
+        }
+      }
+      video.translations = translations;
+    }
+
     video.status = 'completed';
-    video.currentStage = 'analyzed';
+    video.currentStage = 'translated';
     video.progress = 100;
     video.processingCompletedAt = new Date();
     await video.save();

@@ -2,6 +2,15 @@ import mongoose from 'mongoose';
 
 export const VIDEO_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 
+const transcriptSegmentSchema = new mongoose.Schema(
+  {
+    start: { type: Number, default: 0 },
+    end: { type: Number, default: 0 },
+    text: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 const chapterSchema = new mongoose.Schema(
   {
     time: { type: String, required: true }, // e.g. "00:00" or "00:42"
@@ -34,6 +43,7 @@ const translationSchema = new mongoose.Schema(
   {
     language: { type: String, required: true },
     transcript: { type: String, default: '' },
+    segments: { type: [transcriptSegmentSchema], default: [] },
     subtitlesUrl: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
   },
@@ -116,6 +126,7 @@ const videoSchema = new mongoose.Schema(
     progress: { type: Number, default: 0, min: 0, max: 100 },
     currentStage: { type: String, default: 'queued' },
     transcript: { type: String, default: '' },
+    transcriptSegments: { type: [transcriptSegmentSchema], default: [] },
     transcriptLanguage: { type: String, default: 'en' },
     originalLanguage: { type: String, default: 'en' },
     targetLanguages: { type: [String], default: [] },

@@ -150,6 +150,64 @@ If a field has no items, return an empty array. Do not include markdown outside 
   };
 };
 
+const chunkArray = (items, size) => {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+};
+
+export const translateTranscriptSegments = async ({ segments, targetLanguage }) => {
+  const input = (segments || [])
+    .map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: String(s.text || '').trim() }))
+    .filter((s) => s.text);
+
+  if (input.length === 0) return [];
+
+  const output = [];
+  const batches = chunkArray(input, 15);
+
+  for (const batch of batches) {
+    const safe = batch.map(({ start, end, text }) => ({ start, end, text }));
+    let parsed = null;
+    try {
+      const content = await callChatCompletion(
+        [
+          {
+            role: 'system',
+            content:
+              'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
+              'Return ONLY valid JSON: {"segments":[{"start":number,"end":number,"text":string}]}. ' +
+              'Keep start/end unchanged, keep the same number of segments, and translate naturally.',
+          },
+          {
+            role: 'user',
+            content: `Target language: ${targetLanguage}\n\nSegments:\n${JSON.stringify(safe)}`,
+          },
+        ],
+        { temperature: 0.1, maxTokens: 3000, responseFormat: { type: 'json_object' } },
+      );
+      parsed = parseJson(content);
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed && Array.isArray(parsed.segments) && parsed.segments.length === batch.length) {
+      output.push(
+        ...parsed.segments.map((seg, index) => ({
+          start: Number(seg?.start ?? batch[index].start),
+          end: Number(seg?.end ?? batch[index].end),
+          text: String(seg?.text ?? batch[index].text).trim(),
+        })),
+      );
+    } else {
+      // Fallback: keep original timing and leave text untouched if translation parsing failed.
+      output.push(...batch);
+    }
+  }
+
+  return output;
+};
+
 export const answerQuestion = async ({ transcript, question }) => {
   if (!transcript) {
     const err = new Error('No transcript available for this video');

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
 import { useAuth } from "@/lib/auth-context";
@@ -16,6 +16,8 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
 type Chapter = { time: string; title: string };
+type TranscriptSegment = { start: number; end: number; text: string };
+type Translation = { language: string; transcript?: string; segments?: TranscriptSegment[] };
 type AiMetadata = {
   titles?: string[];
   descriptions?: string[];
@@ -41,7 +43,9 @@ type VideoDetail = {
   mimeType?: string | null;
   durationSeconds?: number;
   transcript?: string;
+  transcriptSegments?: TranscriptSegment[];
   transcriptLanguage?: string;
+  translations?: Translation[];
   targetLanguages?: string[];
   originalLanguage?: string;
   youtubeVisibility?: string;
@@ -82,6 +86,9 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [editVisibility, setEditVisibility] = useState("public");
   const [editCategory, setEditCategory] = useState("27");
   const [editTags, setEditTags] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [selectedLanguage, setSelectedLanguage] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -94,6 +101,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditVisibility(v.youtubeVisibility || "public");
       setEditCategory(v.youtubeCategoryId || "27");
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
+      setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -142,6 +150,44 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
   const meta = video?.aiMetadata;
 
+  const availableLanguages = video
+    ? (() => {
+        const map = new Map<string, { code: string; label: string; segments: TranscriptSegment[]; text: string }>();
+        const primaryCode = video.transcriptLanguage || video.originalLanguage || "en";
+        map.set(primaryCode, {
+          code: primaryCode,
+          label: LANGUAGES.find((l) => l.code === primaryCode)?.label || primaryCode,
+          segments: video.transcriptSegments || [],
+          text: video.transcript || "",
+        });
+        for (const translation of video.translations || []) {
+          map.set(translation.language, {
+            code: translation.language,
+            label: LANGUAGES.find((l) => l.code === translation.language)?.label || translation.language,
+            segments: translation.segments || [],
+            text: translation.transcript || "",
+          });
+        }
+        return [...map.values()];
+      })()
+    : [];
+  const selectedLanguageData =
+    availableLanguages.find((l) => l.code === selectedLanguage) || availableLanguages[0];
+
+  useEffect(() => {
+    const element = videoRef.current;
+    if (!element) return;
+    const onTimeUpdate = () => setCurrentTime(element.currentTime);
+    element.addEventListener("timeupdate", onTimeUpdate);
+    return () => element.removeEventListener("timeupdate", onTimeUpdate);
+  }, [video]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
   return (
     <AuthGuard>
       <div className="min-h-screen bg-muted/30">
@@ -177,6 +223,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   {video.publicUrl && (
                     <div className="space-y-2">
                       <video
+                        ref={videoRef}
                         src={video.publicUrl}
                         controls
                         className="w-full rounded-md border"
@@ -348,11 +395,63 @@ export default function VideoDetailClient({ id }: { id: string }) {
               {video.transcript && (
                 <Card>
                   <CardHeader>
-                    <CardTitle>Transcript</CardTitle>
-                    <CardDescription>{video.transcriptLanguage || video.originalLanguage || "en"}</CardDescription>
+                    <CardTitle>Transcript and translations</CardTitle>
+                    <CardDescription>
+                      Switch language to view the translated subtitle track in sync with the video.
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    <p className="text-sm whitespace-pre-wrap">{video.transcript}</p>
+                  <CardContent className="space-y-4">
+                    {availableLanguages.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Label htmlFor="transcriptLanguage">Transcript language</Label>
+                        <select
+                          id="transcriptLanguage"
+                          value={selectedLanguage}
+                          onChange={(e) => setSelectedLanguage(e.target.value)}
+                          className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        >
+                          {availableLanguages.map((language) => (
+                            <option key={language.code} value={language.code}>
+                              {language.label} ({language.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {selectedLanguageData?.segments?.length ? (
+                      <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-2">
+                        {selectedLanguageData.segments.map((segment, index) => {
+                          const active =
+                            currentTime >= segment.start &&
+                            currentTime <= Math.max(segment.end, segment.start + 0.5);
+                          return (
+                            <button
+                              key={`${segment.start}-${index}`}
+                              type="button"
+                              onClick={() => {
+                                if (videoRef.current) {
+                                  videoRef.current.currentTime = segment.start;
+                                  void videoRef.current.play();
+                                }
+                              }}
+                              className={`block w-full rounded-md border px-2 py-1 text-left text-sm transition-colors ${
+                                active
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-transparent hover:bg-muted"
+                              }`}
+                            >
+                              <span className="mr-2 font-mono text-xs text-muted-foreground">
+                                {formatTime(segment.start)}
+                              </span>
+                              {segment.text}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedLanguageData?.text || video.transcript}</p>
+                    )}
                   </CardContent>
                 </Card>
               )}
