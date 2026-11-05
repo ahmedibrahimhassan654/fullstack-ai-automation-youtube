@@ -1,5 +1,19 @@
 import { env } from '../config/env.js';
 
+const stripMarkdown = (text) =>
+  String(text || '')
+    .replace(/```[\\s\\S]*?```/g, '')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')
+    .replace(/\\*(.*?)\\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/^#{1,6}\\s*/gm, '')
+    .replace(/^\\s*[-*+]\\s+/gm, '')
+    .replace(/\\n{3,}/g, '\\n\\n')
+    .replace(/[ \\t]{2,}/g, ' ')
+    .trim();
+
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'openai/gpt-oss-120b';
 
@@ -133,19 +147,19 @@ If a field has no items, return an empty array. Do not include markdown outside 
   }
 
   return {
-    summary: String(parsed.summary || '').trim(),
-    titles: Array.isArray(parsed.titles) ? parsed.titles.map(String) : [],
-    descriptions: Array.isArray(parsed.descriptions) ? parsed.descriptions.map(String) : [],
-    tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
+    summary: stripMarkdown(parsed.summary),
+    titles: Array.isArray(parsed.titles) ? parsed.titles.map((v) => stripMarkdown(v)) : [],
+    descriptions: Array.isArray(parsed.descriptions) ? parsed.descriptions.map((v) => stripMarkdown(v)) : [],
+    tags: Array.isArray(parsed.tags) ? parsed.tags.map((v) => stripMarkdown(v)) : [],
     chapters: Array.isArray(parsed.chapters)
       ? parsed.chapters
-          .map((c) => ({ time: String(c?.time || '00:00'), title: String(c?.title || '').trim() }))
+          .map((c) => ({ time: String(c?.time || '00:00'), title: stripMarkdown(c?.title) }))
           .filter((c) => c.title)
       : [],
-    keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.map(String) : [],
-    actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map(String) : [],
-    decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map(String) : [],
-    openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.map(String) : [],
+    keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.map((v) => stripMarkdown(v)) : [],
+    actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map((v) => stripMarkdown(v)) : [],
+    decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map((v) => stripMarkdown(v)) : [],
+    openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.map((v) => stripMarkdown(v)) : [],
     model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL,
   };
 };
@@ -197,12 +211,12 @@ export const translateTranscriptSegments = async ({ segments, targetLanguage }) 
         ...parsed.segments.map((seg, index) => ({
           start: Number(seg?.start ?? batch[index].start),
           end: Number(seg?.end ?? batch[index].end),
-          text: String(seg?.text ?? batch[index].text).trim(),
+          text: stripMarkdown(seg?.text ?? batch[index].text),
         })),
       );
     } else {
-      // Fallback: keep original timing and leave text untouched if translation parsing failed.
-      output.push(...batch);
+      // Fallback: keep original timing, but still remove markdown.
+      output.push(...batch.map((s) => ({ ...s, text: stripMarkdown(s.text) })));
     }
   }
 
@@ -240,7 +254,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
     { temperature: 0.4, maxTokens: 2200 },
   );
 
-  return String(content || '').trim();
+  return stripMarkdown(content);
 };
 
 export const answerQuestion = async ({ transcript, question }) => {

@@ -18,6 +18,19 @@ export const VOICES = {
   pl: 'pl-PL-ZofiaNeural',
 };
 
+const stripMarkdown = (text) =>
+  String(text || '')
+    .replace(/```[\\s\\S]*?```/g, '')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')
+    .replace(/\\*(.*?)\\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/^#{1,6}\\s*/gm, '')
+    .replace(/^\\s*[-*+]\\s+/gm, '')
+    .replace(/[ \\t]{2,}/g, ' ')
+    .trim();
+
 const escapeXml = (text) =>
   String(text || '')
     .replace(/&/g, '&amp;')
@@ -32,7 +45,8 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
 
   const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
   const rate = options.rate || '-8%';
-  const chunks = String(text || '').match(/.{1,2500}/gs) || [String(text || '')];
+  const clean = stripMarkdown(text);
+  const chunks = clean.match(/.{1,2500}/gs) || [clean];
   const buffers = [];
 
   for (const chunk of chunks) {
