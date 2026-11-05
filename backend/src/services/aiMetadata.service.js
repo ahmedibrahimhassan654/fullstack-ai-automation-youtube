@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'openai/gpt-oss-20b';
+const GROQ_MODEL = 'openai/gpt-oss-120b';
 
 const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
 
@@ -176,6 +176,7 @@ export const translateTranscriptSegments = async ({ segments, targetLanguage }) 
             role: 'system',
             content:
               'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
+              'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. ' +
               'Return ONLY valid JSON: {"segments":[{"start":number,"end":number,"text":string}]}. ' +
               'Keep start/end unchanged, keep the same number of segments, and translate naturally.',
           },
@@ -220,6 +221,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
         content:
           `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. ` +
           'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained. ' +
+          'If the target language is Arabic, write in Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. ' +
           'Include a short hook, learning objectives, lesson explanation, key takeaways, and a quick recap. ' +
           'Return plain narration text only (no markdown headings or stage directions).',
       },
