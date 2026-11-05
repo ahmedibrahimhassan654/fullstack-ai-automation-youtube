@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -244,79 +245,102 @@ export default function VideoDetailClient({ id }: { id: string }) {
                     <CardTitle>Generated AI metadata</CardTitle>
                     <CardDescription>{meta.model || "AI model"}</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    {meta.summary && (
-                      <div>
-                        <p className="font-medium text-sm">Summary</p>
-                        <p className="text-sm text-muted-foreground whitespace-pre-wrap">{meta.summary}</p>
-                      </div>
-                    )}
-                    {meta.titles?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Title ideas</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.titles.map((t, i) => (
-                            <li key={i}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {meta.descriptions?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Description options</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.descriptions.map((d, i) => (
-                            <li key={i}>{d}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {meta.tags?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Tags</p>
-                        <div className="flex flex-wrap gap-1">
-                          {meta.tags.map((t, i) => (
-                            <Badge key={i} variant="secondary">{t}</Badge>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {meta.chapters?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Chapters</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.chapters.map((c, i) => (
-                            <li key={i}>
-                              <span className="font-mono text-xs">{c.time}</span> — {c.title}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {meta.keyPoints?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Key points</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.keyPoints.map((p, i) => <li key={i}>{p}</li>)}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {meta.actionItems?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Action items</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.actionItems.map((a, i) => <li key={i}>{a}</li>)}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {meta.openQuestions?.length ? (
-                      <div>
-                        <p className="font-medium text-sm">Open questions</p>
-                        <ul className="text-sm list-disc pl-5">
-                          {meta.openQuestions.map((q, i) => <li key={i}>{q}</li>)}
-                        </ul>
-                      </div>
-                    ) : null}
+                  <CardContent>
+                    <Tabs defaultValue="summary" className="w-full">
+                      <TabsList className="flex h-auto w-full flex-wrap gap-1">
+                        <TabsTrigger value="summary">Summary</TabsTrigger>
+                        {meta.titles?.length ? <TabsTrigger value="titles">Titles</TabsTrigger> : null}
+                        {meta.descriptions?.length ? <TabsTrigger value="descriptions">Descriptions</TabsTrigger> : null}
+                        {meta.tags?.length ? <TabsTrigger value="tags">Tags</TabsTrigger> : null}
+                        {meta.chapters?.length ? <TabsTrigger value="chapters">Chapters</TabsTrigger> : null}
+                        {meta.keyPoints?.length ? <TabsTrigger value="keyPoints">Key points</TabsTrigger> : null}
+                        {meta.actionItems?.length ? <TabsTrigger value="actions">Actions</TabsTrigger> : null}
+                        {meta.decisions?.length ? <TabsTrigger value="decisions">Decisions</TabsTrigger> : null}
+                        {meta.openQuestions?.length ? <TabsTrigger value="questions">Questions</TabsTrigger> : null}
+                      </TabsList>
+
+                      <TabsContent value="summary" className="mt-4">
+                        {meta.summary ? (
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{meta.summary}</p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No summary.</p>
+                        )}
+                      </TabsContent>
+
+                      {meta.titles?.length ? (
+                        <TabsContent value="titles" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.titles.map((t, i) => (
+                              <li key={i}>{t}</li>
+                            ))}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.descriptions?.length ? (
+                        <TabsContent value="descriptions" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.descriptions.map((d, i) => (
+                              <li key={i}>{d}</li>
+                            ))}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.tags?.length ? (
+                        <TabsContent value="tags" className="mt-4">
+                          <div className="flex flex-wrap gap-1">
+                            {meta.tags.map((t, i) => (
+                              <Badge key={i} variant="secondary">{t}</Badge>
+                            ))}
+                          </div>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.chapters?.length ? (
+                        <TabsContent value="chapters" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.chapters.map((c, i) => (
+                              <li key={i}>
+                                <span className="font-mono text-xs">{c.time}</span> — {c.title}
+                              </li>
+                            ))}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.keyPoints?.length ? (
+                        <TabsContent value="keyPoints" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.keyPoints.map((p, i) => <li key={i}>{p}</li>)}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.actionItems?.length ? (
+                        <TabsContent value="actions" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.actionItems.map((a, i) => <li key={i}>{a}</li>)}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.decisions?.length ? (
+                        <TabsContent value="decisions" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.decisions.map((d, i) => <li key={i}>{d}</li>)}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+
+                      {meta.openQuestions?.length ? (
+                        <TabsContent value="questions" className="mt-4">
+                          <ul className="text-sm list-disc pl-5 space-y-1">
+                            {meta.openQuestions.map((q, i) => <li key={i}>{q}</li>)}
+                          </ul>
+                        </TabsContent>
+                      ) : null}
+                    </Tabs>
                   </CardContent>
                 </Card>
               )}
