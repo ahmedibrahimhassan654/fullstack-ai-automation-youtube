@@ -65,6 +65,7 @@ export default function NewVideoPage() {
     setError(null);
     setUploading(true);
     setProgress(0);
+    toast.info("Upload started…");
 
     const formData = new FormData();
     formData.append("video", file);
