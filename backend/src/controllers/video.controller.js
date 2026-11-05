@@ -415,4 +415,54 @@ export const answerVideoQuestion = asyncHandler(async (req, res) => {
   });
 });
 
+const UPDATE_FIELDS = [
+  'title',
+  'description',
+  'originalLanguage',
+  'targetLanguages',
+  'youtubeVisibility',
+  'youtubeCategoryId',
+  'scheduledPublishAt',
+  'publishedTitle',
+  'publishedDescription',
+  'publishedTags',
+  'transcript',
+];
+
+export const updateVideo = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error('Video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    const err = new Error('Not authorized to update this video');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const body = req.body || {};
+  for (const field of UPDATE_FIELDS) {
+    if (body[field] !== undefined) {
+      if (field === 'targetLanguages' || field === 'publishedTags') {
+        video[field] = normalizeLanguages(body[field]);
+      } else if (field === 'scheduledPublishAt') {
+        video[field] = body[field] ? new Date(body[field]) : null;
+      } else {
+        video[field] = body[field];
+      }
+    }
+  }
+
+  if (body.aiMetadata && typeof body.aiMetadata === 'object') {
+    const current = video.aiMetadata ? video.aiMetadata.toObject() : {};
+    video.aiMetadata = { ...current, ...body.aiMetadata };
+  }
+
+  await video.save();
+  const saved = await Video.findById(video._id).lean();
+  res.status(200).json({ success: true, message: 'Video updated', data: { video: saved } });
+});
+
 export const getProcessingLabel = (stage) => STAGE_LABELS[stage] || stage || 'Processing';

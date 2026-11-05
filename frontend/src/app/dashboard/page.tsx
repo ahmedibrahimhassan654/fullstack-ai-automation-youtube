@@ -209,6 +209,9 @@ export default function DashboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="space-x-2">
+                          <a href={`/videos/${v._id}`} className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
+                            Details
+                          </a>
                           {v.status === 'pending' && (
                             <Button size="sm" onClick={() => startProcessing(v._id)}>
                               Process
