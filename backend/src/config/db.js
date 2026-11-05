@@ -9,7 +9,8 @@ export const connectDB = async () => {
     console.log(`[db] MongoDB connected: ${mongoose.connection.host}`);
   } catch (error) {
     console.error('[db] MongoDB connection failed:', error.message);
-    process.exit(1);
+    // Do not kill the process in serverless environments – let the caller decide.
+    throw error;
   }
 };
 

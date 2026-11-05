@@ -5,5 +5,8 @@ uploads/
 logs/
 dist/
 .next/
+.mongo-data/
+*.log
+.vercel
 .DS_Store
 Thumbs.db

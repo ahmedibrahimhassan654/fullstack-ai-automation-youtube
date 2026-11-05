@@ -1,0 +1,10 @@
+node_modules
+.env
+.env.local
+uploads
+logs
+server.out.log
+server.err.log
+.mongo-data
+.DS_Store
+Thumbs.db
