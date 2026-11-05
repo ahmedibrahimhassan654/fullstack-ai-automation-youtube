@@ -686,7 +686,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   {video.lessonVideos?.length ? (
                     <div className="space-y-4">
                       {video.lessonVideos.map((lesson, index) => (
-                        <LessonVideoCard key={`${lesson.language}-${index}`} lesson={lesson} />
+                        <LessonVideoCard key={`${lesson.language}-${index}`} videoId={id} lesson={lesson} />
                       ))}
                     </div>
                   ) : null}

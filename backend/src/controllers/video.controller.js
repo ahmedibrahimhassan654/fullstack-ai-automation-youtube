@@ -832,4 +832,49 @@ export const streamGlobalEvents = async (req, res) => {
   });
 };
 
+export const streamLessonSubtitle = async (req, res) => {
+  const video = await Video.findById(req.params.id).lean();
+  if (!video) return res.status(404).end();
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    return res.status(403).end();
+  }
+
+  const lesson = (video.lessonVideos || []).find((item) => item.language === req.params.language);
+  if (!lesson) return res.status(404).end();
+
+  let vtt = '';
+  if (lesson.subtitlesUrl) {
+    try {
+      const upstream = await fetch(lesson.subtitlesUrl);
+      if (upstream.ok) vtt = await upstream.text();
+    } catch {
+      // fall through to local segment data
+    }
+  }
+
+  if (!vtt) {
+    const format = (value) => {
+      const total = Math.max(0, value || 0);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = Math.floor(total % 60);
+      const millis = Math.floor((total - Math.floor(total)) * 1000);
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+    };
+    const segments = lesson.segments || [];
+    vtt = 'WEBVTT\n\n';
+    segments.forEach((segment, index) => {
+      if (!segment?.text) return;
+      const start = format(segment.start);
+      const end = format(Math.max(segment.end, segment.start + 0.25));
+      vtt += `${index + 1}\n${start} --> ${end}\n${segment.text}\n\n`;
+    });
+  }
+
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.status(200).send(vtt);
+};
+
 export const getProcessingLabel = (stage) => STAGE_LABELS[stage] || stage || 'Processing';

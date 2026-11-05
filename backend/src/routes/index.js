@@ -15,6 +15,7 @@ router.use('/auth', authRoutes);
 // Real-time progress streams (SSE). Auth via Bearer header or ?token= query param.
 router.get('/events', protectSSE, video.streamGlobalEvents);
 router.get('/videos/:id/events', protectSSE, video.streamVideoEvents);
+router.get('/videos/:id/lessons/:language/subtitles.vtt', protectSSE, video.streamLessonSubtitle);
 
 router.use('/videos', videoRoutes);
 router.use('/admin', adminRoutes);

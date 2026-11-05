@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { api, API_BASE } from "@/lib/api";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -34,7 +35,7 @@ type LessonVideo = {
   subtitlesUrl?: string | null;
 };
 
-export default function LessonVideoCard({ lesson }: { lesson: LessonVideo }) {
+export default function LessonVideoCard({ videoId, lesson }: { videoId: string; lesson: LessonVideo }) {
   const [currentTime, setCurrentTime] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -76,15 +77,13 @@ export default function LessonVideoCard({ lesson }: { lesson: LessonVideo }) {
       </div>
 
       <video ref={videoRef} src={lesson.url} controls className="w-full rounded-md border" crossOrigin="anonymous">
-        {lesson.subtitlesUrl && (
-          <track
-            kind="subtitles"
-            src={lesson.subtitlesUrl}
-            srcLang={lesson.language}
-            label={LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language}
-            default
-          />
-        )}
+        <track
+          kind="subtitles"
+          src={`${API_BASE}/api/videos/${videoId}/lessons/${lesson.language}/subtitles.vtt?token=${encodeURIComponent(api.getToken() || "")}`}
+          srcLang={lesson.language}
+          label={LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language}
+          default
+        />
       </video>
 
       <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-2">
