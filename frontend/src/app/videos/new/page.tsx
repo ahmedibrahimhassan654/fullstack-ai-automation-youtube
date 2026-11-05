@@ -15,6 +15,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { useToast } from "@/components/toast-provider";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -36,6 +37,7 @@ const LANGUAGES = [
 
 export default function NewVideoPage() {
   const router = useRouter();
+  const toast = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [originalLanguage, setOriginalLanguage] = useState("en");
@@ -57,6 +59,7 @@ export default function NewVideoPage() {
     e.preventDefault();
     if (!file) {
       setError("Please select a video file.");
+      toast.error("Please select a video file.");
       return;
     }
     setError(null);
@@ -83,9 +86,12 @@ export default function NewVideoPage() {
       const id = (res.data as { video: { _id: string } }).video._id;
       // Kick off the async processing pipeline (transcription -> ...).
       await api.post(`/api/videos/${id}/process`);
+      toast.success(res.message || "Video uploaded successfully.");
       router.push("/dashboard");
     } else {
-      setError(res.message || "Upload failed");
+      const message = res.message || "Upload failed.";
+      setError(message);
+      toast.error(message);
     }
   };
 

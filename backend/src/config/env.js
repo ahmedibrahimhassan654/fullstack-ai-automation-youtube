@@ -24,6 +24,11 @@ export const env = {
   clientUrl: process.env.CLIENT_URL || 'http://localhost:3000',
   groqApiKey: process.env.GROQ_API_KEY || '',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
+  // AI provider selection: 'groq' (default) or 'ollama'
+  aiProvider: (process.env.AI_PROVIDER || 'groq').toLowerCase(),
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+  ollamaApiKey: process.env.OLLAMA_API_KEY || '',
+  ollamaModel: process.env.OLLAMA_MODEL || 'llama3.2',
   youtubeClientId: process.env.YOUTUBE_CLIENT_ID || '',
   youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET || '',
   youtubeRedirectUri:

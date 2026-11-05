@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { useToast } from '@/components/toast-provider';
 import { AuthGuard } from '@/components/auth-guard';
 import { api } from '@/lib/api';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -41,6 +42,7 @@ const STAGE_LABEL: Record<string, string> = {
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const timer = useRef<NodeJS.Timeout | null>(null);
@@ -68,7 +70,12 @@ export default function DashboardPage() {
   }, []);
 
   const startProcessing = async (id: string) => {
-    await api.post(`/api/videos/${id}/process`);
+    const response = await api.post(`/api/videos/${id}/process`);
+    if (response.success) {
+      toast.success(response.message || "Processing started.");
+    } else {
+      toast.error(response.message || "Failed to start processing.");
+    }
     await load();
   };
 

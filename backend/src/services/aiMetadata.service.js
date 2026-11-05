@@ -1,18 +1,45 @@
 import { env } from '../config/env.js';
 
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL = 'llama-3.3-70b-versatile';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
-const ensureGroq = () => {
+const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
+
+const callChatCompletion = async (messages, extra = {}) => {
+  const provider = resolveProvider();
+
+  if (provider === 'ollama') {
+    const baseUrl = env.ollamaBaseUrl.replace(/\\/$/, '');
+    const url = `${baseUrl}/v1/chat/completions`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (env.ollamaApiKey) headers.Authorization = `Bearer ${env.ollamaApiKey}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: env.ollamaModel,
+        messages,
+        temperature: extra.temperature ?? 0.2,
+        max_tokens: extra.maxTokens ?? 2048,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.error?.message || data?.message || `Ollama chat failed (${response.status})`;
+      const err = new Error(message);
+      err.statusCode = response.status;
+      throw err;
+    }
+    return data?.choices?.[0]?.message?.content || '';
+  }
+
   if (!env.groqApiKey) {
     const err = new Error('GROQ_API_KEY is not configured');
     err.statusCode = 500;
     throw err;
   }
-};
-
-const callGroq = async (messages, extra = {}) => {
-  ensureGroq();
 
   const response = await fetch(GROQ_CHAT_URL, {
     method: 'POST',
@@ -21,7 +48,7 @@ const callGroq = async (messages, extra = {}) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: GROQ_MODEL,
       messages,
       temperature: extra.temperature ?? 0.2,
       max_tokens: extra.maxTokens ?? 2048,
@@ -86,7 +113,7 @@ Return ONLY valid JSON with these fields:
 Chapters must use timestamps present in the transcript segments when possible; otherwise estimate them.
 If a field has no items, return an empty array. Do not include markdown outside JSON.`;
 
-  const content = await callGroq(
+  const content = await callChatCompletion(
     [
       { role: 'system', content: system },
       {
@@ -119,7 +146,7 @@ If a field has no items, return an empty array. Do not include markdown outside 
     actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map(String) : [],
     decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map(String) : [],
     openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.map(String) : [],
-    model: MODEL,
+    model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL,
   };
 };
 
@@ -132,7 +159,7 @@ export const answerQuestion = async ({ transcript, question }) => {
 
   const context = trim(transcript, 24000);
 
-  const content = await callGroq(
+  const content = await callChatCompletion(
     [
       {
         role: 'system',
