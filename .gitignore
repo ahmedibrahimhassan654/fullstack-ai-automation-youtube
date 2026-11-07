@@ -10,5 +10,5 @@ dist/
 .vercel
 .DS_Store
 Thumbs.db
-.history
+.history/
 .mongo-data/
