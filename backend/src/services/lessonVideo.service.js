@@ -163,13 +163,11 @@ export const generateLessonVideo = async ({
     lessonSegments && lessonSegments.length
       ? lessonSegments
       : [{ start: 0, end: 0, text: script }];
-  if (backgroundOnly) {
-    srtFile = path.join(
-      TEMP_DIR,
-      `lesson-${video._id}-${language}-${Date.now()}.srt`,
-    );
-    fs.writeFileSync(srtFile, toSrt(burnSegments));
-  }
+  srtFile = path.join(
+    TEMP_DIR,
+    `lesson-${video._id}-${language}-${Date.now()}.srt`,
+  );
+  fs.writeFileSync(srtFile, toSrt(burnSegments));
 
   const duration = Number(video.durationSeconds) || 0;
   let ffmpegArgs;
@@ -238,8 +236,16 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
+            "-vf",
+            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-t",
@@ -262,8 +268,16 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
+            "-vf",
+            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-shortest",
@@ -284,8 +298,16 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
+            "-vf",
+            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-t",
@@ -302,8 +324,16 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "1:a:0",
+            "-vf",
+            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-shortest",
@@ -313,7 +343,7 @@ export const generateLessonVideo = async ({
 
   try {
     await report(65);
-    await runFfmpeg(ffmpegArgs, backgroundOnly ? TEMP_DIR : undefined);
+    await runFfmpeg(ffmpegArgs, TEMP_DIR);
     await report(82);
 
     const result = await uploadFile(outputFile, {

@@ -46,7 +46,7 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
     element.addEventListener("timeupdate", onTimeUpdate);
     const onLoaded = () => {
       const track = element.textTracks?.[0];
-      if (track) track.mode = "showing";
+      if (track) track.mode = "hidden";
     };
     element.addEventListener("loadedmetadata", onLoaded);
     return () => {

@@ -526,13 +526,13 @@ export default function VideoDetailClient({ id }: { id: string }) {
                       />
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Generates a voiceover video with burned-in subtitles (full
-                      narration length).
+                      Generates a lesson video on the original footage with a
+                      single burned-in subtitle track and voiceover.
                     </p>
                     <Button
                       onClick={async () => {
                         setGeneratingLesson(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: true });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: false });
                         if (res.success) {
                           toast.success(res.message || "Lesson generation started.");
                           if (res.data?.video) setVideo(res.data.video);
