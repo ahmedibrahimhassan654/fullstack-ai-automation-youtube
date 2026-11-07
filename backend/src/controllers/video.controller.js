@@ -322,6 +322,19 @@ export const deleteVideo = asyncHandler(async (req, res) => {
         await cloudinary.uploader.destroy(sub.path, { resource_type: 'raw' });
       }
     }
+    for (const dub of video.dubs || []) {
+      if (dub.storagePath) {
+        await cloudinary.uploader.destroy(dub.storagePath, { resource_type: 'video' });
+      }
+    }
+    for (const lesson of video.lessonVideos || []) {
+      if (lesson.storagePath) {
+        await cloudinary.uploader.destroy(lesson.storagePath, { resource_type: 'video' });
+      }
+      if (lesson.subtitlesUrl) {
+        // Best effort: lesson VTT is raw, but public ID isn't stored; ignore.
+      }
+    }
   } catch {
     // ignore
   }

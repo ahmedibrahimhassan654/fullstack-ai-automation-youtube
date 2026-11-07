@@ -10,6 +10,7 @@ import { api, API_BASE } from '@/lib/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Trash2 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
@@ -93,6 +94,17 @@ export default function DashboardPage() {
       toast.error(response.message || "Failed to start processing.");
     }
     await load();
+  };
+
+  const deleteVideo = async (id: string) => {
+    if (!window.confirm("Delete this video and all generated files?")) return;
+    const res = await api.delete(`/api/videos/${id}`);
+    if (res.success) {
+      toast.success(res.message || "Video deleted.");
+      await load();
+    } else {
+      toast.error(res.message || "Failed to delete video.");
+    }
   };
 
   const handleLogout = async () => {
@@ -225,6 +237,15 @@ export default function DashboardPage() {
                           <a href={`/videos/${v._id}`} className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
                             Details
                           </a>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => deleteVideo(v._id)}
+                            className="text-destructive hover:text-destructive"
+                            title="Delete video"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                           {v.status === 'pending' && (
                             <Button size="sm" onClick={() => startProcessing(v._id)}>
                               Process

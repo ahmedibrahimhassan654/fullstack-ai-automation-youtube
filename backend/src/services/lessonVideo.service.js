@@ -181,12 +181,14 @@ export const generateLessonVideo = async ({
       : ["-i", audioFile];
     const mixArgs = musicFile
       ? [
+          "-map",
+          "0:v:0",
           "-filter_complex",
           "[1:a]volume=1.0[narr];[2:a]volume=0.12[music];[narr][music]amix=inputs=2:duration=shortest:dropout_transition=2[a]",
           "-map",
           "[a]",
         ]
-      : ["-map", "1:a:0"];
+      : ["-map", "0:v:0", "-map", "1:a:0"];
     const subtitleArgs = subtitleFileName
       ? [
           "-vf",
