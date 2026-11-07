@@ -8,6 +8,7 @@ import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '
 import { generateDubbedVideo } from '../services/dubbing.service.js';
 import { parseSubtitle } from '../services/subtitle.service.js';
 import { generateLessonVideo } from '../services/lessonVideo.service.js';
+import { ElevenLabsClient } from 'elevenlabs';
 
 const emitVideoProgress = (video) => {
   if (!video) return;
@@ -149,8 +150,16 @@ export const uploadVideo = asyncHandler(async (req, res) => {
       overwrite: false,
     });
   } catch (error) {
-    const err = new Error(error?.message || 'Cloudinary video upload failed');
-    err.statusCode = 502;
+    const isTooLarge =
+      error?.http_code === 413 ||
+      /413/.test(String(error?.message || '')) ||
+      /too large/i.test(String(error?.message || ''));
+    const err = new Error(
+      isTooLarge
+        ? 'Video is too large for Cloudinary (account upload limit exceeded). Please compress or trim the video (for example under ~100MB) and try again.'
+        : (error?.message || 'Cloudinary video upload failed'),
+    );
+    err.statusCode = isTooLarge ? 413 : 502;
     throw err;
   }
 
@@ -720,7 +729,12 @@ export const dubVideo = asyncHandler(async (req, res) => {
   });
 });
 
-const runLessonGeneration = async (videoId, language) => {
+const runLessonGeneration = async (
+  videoId,
+  language,
+  voiceId = null,
+  backgroundOnly = false,
+) => {
   const video = await Video.findById(videoId);
   if (!video) return;
 
@@ -754,6 +768,8 @@ const runLessonGeneration = async (videoId, language) => {
     const lesson = await generateLessonVideo({
       video,
       language,
+      voiceId,
+      backgroundOnly,
       onProgress: updateProgress,
     });
 
@@ -797,6 +813,12 @@ export const generateLesson = asyncHandler(async (req, res) => {
   }
 
   const language = String(req.body?.language || video.targetLanguages?.[0] || video.transcriptLanguage || 'en').trim();
+  const voiceId = String(req.body?.voiceId || req.body?.voice_id || '').trim() || null;
+  const backgroundOnly = Boolean(
+    req.body?.backgroundOnly ||
+      req.body?.background ||
+      req.body?.voiceoverOnly,
+  );
   if (!language) {
     const err = new Error('Target language is required');
     err.statusCode = 400;
@@ -819,7 +841,7 @@ export const generateLesson = asyncHandler(async (req, res) => {
   await video.save();
     emitVideoProgress(video);
 
-  runLessonGeneration(video._id, language).catch((err) => {
+  runLessonGeneration(video._id, language, voiceId, backgroundOnly).catch((err) => {
     console.error('[generateLesson] pipeline error:', err);
   });
 
@@ -944,5 +966,42 @@ export const streamLessonSubtitle = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.status(200).send(vtt);
 };
+
+export const listElevenLabsVoices = asyncHandler(async (req, res) => {
+  if (!env.elevenLabsApiKey) {
+    return res.status(200).json({ success: true, data: { voices: [] } });
+  }
+  try {
+    const client = new ElevenLabsClient({ apiKey: env.elevenLabsApiKey });
+
+    // Determine the account tier so we only suggest voices the current user
+    // is actually allowed to use (e.g. exclude creator-tier voices for free).
+    let tier = null;
+    try {
+      const user = await client.user.get();
+      tier = user?.subscription?.tier || null;
+    } catch {
+      tier = null;
+    }
+
+    const result = await client.voices.getAll();
+    const voices = (result.voices || [])
+      .filter((v) => {
+        const allowed = v.available_for_tiers || [];
+        if (!allowed.length) return true; // available for all tiers
+        if (tier && allowed.includes(tier)) return true;
+        return false;
+      })
+      .map((v) => ({
+        voice_id: v.voice_id,
+        name: v.name,
+        category: v.category,
+        available_for_tiers: v.available_for_tiers || [],
+      }));
+    return res.status(200).json({ success: true, data: { voices } });
+  } catch (error) {
+    return res.status(200).json({ success: true, data: { voices: [], error: error?.message } });
+  }
+});
 
 export const getProcessingLabel = (stage) => STAGE_LABELS[stage] || stage || 'Processing';

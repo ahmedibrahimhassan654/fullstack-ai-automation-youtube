@@ -44,6 +44,8 @@ export const env = {
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'ai-youtube-automation',
   backgroundMusicUrl: process.env.BACKGROUND_MUSIC_URL || '',
+  elevenLabsApiKey: String(process.env.ELEVENLABS_API_KEY || '').trim().split(/\s+/)[0],
+  elevenLabsDefaultVoiceId: String(process.env.ELEVENLABS_VOICE_ID || '').trim().split(/\s+/)[0],
 };
 
 export const validateEnv = () => {

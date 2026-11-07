@@ -266,7 +266,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
     ],
     {
       temperature: 0.4,
-      maxTokens: 4000,
+      maxTokens: 1000,
       model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL_FAST,
     },
   );

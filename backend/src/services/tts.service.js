@@ -1,4 +1,5 @@
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import { env } from '../config/env.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -146,7 +147,182 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
   return { buffer: Buffer.concat(audioChunks), segments, wordSegments, chunkEnd };
 };
 
+const chunkElevenLabsText = (text) =>
+  (String(text || '').match(/.{1,3500}/gs) || [String(text || '')]).map((c) => c.trim()).filter(Boolean);
+
+const alignmentToWordSegments = (alignment) => {
+  const chars = alignment?.characters || [];
+  const starts = alignment?.character_start_times_seconds || [];
+  const ends = alignment?.character_end_times_seconds || [];
+  const words = [];
+  let current = null;
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i];
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = null;
+      }
+    } else if (current) {
+      current.text += ch;
+      current.end = Number(ends[i] ?? current.end);
+    } else {
+      current = { text: ch, start: Number(starts[i] ?? 0), end: Number(ends[i] ?? 0) };
+    }
+  }
+  if (current) words.push(current);
+  return words
+    .map((w) => ({
+      start: Number(Math.max(0, w.start).toFixed(3)),
+      end: Number(Math.max(w.start + 0.05, w.end).toFixed(3)),
+      text: stripMarkdown(w.text),
+    }))
+    .filter((w) => w.text);
+};
+
+const alignmentToSentenceSegments = (wordSegments) => {
+  const sentences = [];
+  let current = [];
+  for (const word of wordSegments) {
+    current.push(word);
+    if (/[.!?]$/.test(word.text)) {
+      const start = current[0].start;
+      const end = current[current.length - 1].end;
+      const text = current.map((w) => w.text).join(' ').trim();
+      if (text) sentences.push({ start, end, text });
+      current = [];
+    }
+  }
+  if (current.length) {
+    const start = current[0].start;
+    const end = current[current.length - 1].end;
+    const text = current.map((w) => w.text).join(' ').trim();
+    if (text) sentences.push({ start, end, text });
+  }
+  return sentences;
+};
+
+const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
+  if (!env.elevenLabsApiKey) {
+    const err = new Error('ELEVENLABS_API_KEY is not configured');
+    err.statusCode = 500;
+    throw err;
+  }
+
+  const client = new (await import('elevenlabs')).ElevenLabsClient({
+    apiKey: env.elevenLabsApiKey,
+  });
+
+  const modelId = options.modelId || 'eleven_multilingual_v2';
+  const report = options.onProgress;
+  const clean = stripMarkdown(text);
+  if (!clean.trim()) throw new Error('No speech could be generated');
+
+  const chunks = chunkElevenLabsText(clean);
+  const results = [];
+  const allSegments = [];
+  const allWordSegments = [];
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    let response;
+    try {
+      response = await client.textToSpeech.convertWithTimestamps(voiceId, {
+      text: chunk,
+      model_id: modelId,
+      voice_settings: {
+        stability: 0.45,
+        similarity_boost: 0.8,
+        style: 0.35,
+        use_speaker_boost: true,
+      },
+    });
+
+    } catch (error) {
+      const detail = error?.body?.detail;
+      const message = detail?.message || error?.message || 'ElevenLabs request failed';
+      const err = new Error(message);
+      err.statusCode = error?.statusCode || 400;
+      throw err;
+    }
+
+    if (!response) throw new Error('ElevenLabs returned no response');
+    const buffer = Buffer.from(response.audio_base64 || '', 'base64');
+    if (!buffer.length) throw new Error('ElevenLabs returned empty audio');
+
+    const alignment = response.normalized_alignment || response.alignment;
+    const wordSegments = alignmentToWordSegments(alignment);
+    const segments = alignmentToSentenceSegments(wordSegments);
+    const chunkEnd =
+      wordSegments.length > 0
+        ? wordSegments[wordSegments.length - 1].end
+        : (segments.length > 0 ? segments[segments.length - 1].end : Math.max(1, chunk.split(/\s+/).length / 2.5));
+
+    results.push({ buffer });
+    for (const seg of segments.length ? segments : wordSegments) {
+      allSegments.push({
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+        text: seg.text,
+      });
+    }
+    for (const seg of wordSegments) {
+      allWordSegments.push({
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+        text: seg.text,
+      });
+    }
+
+    offset += chunkEnd || 0;
+    if (report) {
+      try {
+        await report(Math.round((results.length / chunks.length) * 100));
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const buffers = results.map((r) => r.buffer);
+  let finalBuffer;
+  if (buffers.length === 1) {
+    finalBuffer = buffers[0];
+  } else {
+    const files = buffers.map((b, i) => path.join(os.tmpdir(), `eleven-chunk-${Date.now()}-${i}.mp3`));
+    files.forEach((f, i) => fs.writeFileSync(f, buffers[i]));
+    const out = path.join(os.tmpdir(), `eleven-merged-${Date.now()}.mp3`);
+    try {
+      await runFfmpegConcat(files, out);
+      finalBuffer = fs.readFileSync(out);
+    } finally {
+      for (const f of [...files, out]) {
+        try {
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  const finalSegments = allSegments.filter((s) => s.text);
+  const finalWordSegments = allWordSegments.filter((s) => s.text);
+  return {
+    buffer: finalBuffer,
+    segments: finalSegments.length ? finalSegments : [{ start: 0, end: 0, text: clean }],
+    // Keep word-level timings too; downstream can use them as subtitles.
+    wordSegments: finalWordSegments,
+  };
+};
+
 export const synthesizeSpeech = async (text, voice, options = {}) => {
+  const elevenLabsVoiceId =
+    options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
+  if (elevenLabsVoiceId && env.elevenLabsApiKey) {
+    return synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
+  }
+
   const rate = options.rate || '-3%';
   const report = options.onProgress;
   const clean = stripMarkdown(text);

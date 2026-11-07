@@ -9,6 +9,7 @@ const router = Router();
 router.use(protect);
 
 router.get('/', video.listMyVideos);
+router.get('/voices', video.listElevenLabsVoices);
 router.post('/upload', (req, res, next) => {
   uploadVideoWithAttachments(req, res, (err) => {
     if (err) return next(err);
