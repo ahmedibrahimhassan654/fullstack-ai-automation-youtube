@@ -22,7 +22,7 @@ const GROQ_MODEL_FAST = env.aiModelFast || 'openai/gpt-oss-20b';
 
 const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
 
-const callChatCompletion = async (messages, extra = {}) => {
+const callChatCompletionOnce = async (messages, extra = {}) => {
   const provider = resolveProvider();
 
   if (provider === 'ollama') {
@@ -84,6 +84,26 @@ const callChatCompletion = async (messages, extra = {}) => {
   }
 
   return data?.choices?.[0]?.message?.content || '';
+};
+
+const callChatCompletion = async (messages, extra = {}) => {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await callChatCompletionOnce(messages, extra);
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || '');
+      const status = Number(error?.statusCode || 0);
+      const retryable =
+        status === 429 ||
+        status >= 500 ||
+        /over capacity|rate limit|timeout|temporarily unavailable/i.test(message);
+      if (!retryable || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 };
 
 const trim = (text, limit = 12000) => {

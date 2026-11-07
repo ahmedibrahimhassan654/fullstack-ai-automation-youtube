@@ -102,7 +102,6 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [lessonLanguage, setLessonLanguage] = useState("");
   const [generatingLesson, setGeneratingLesson] = useState(false);
   const [lessonVoiceId, setLessonVoiceId] = useState("");
-  const [lessonBackgroundOnly, setLessonBackgroundOnly] = useState(true);
   const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
 
   const load = async () => {
@@ -526,18 +525,14 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         className="h-9 w-64"
                       />
                     </div>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={lessonBackgroundOnly}
-                        onChange={(e) => setLessonBackgroundOnly(e.target.checked)}
-                      />
-                      Generate voiceover-only video (no original footage; full narration)
-                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Generates a voiceover video with burned-in subtitles (full
+                      narration length).
+                    </p>
                     <Button
                       onClick={async () => {
                         setGeneratingLesson(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: lessonBackgroundOnly });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: true });
                         if (res.success) {
                           toast.success(res.message || "Lesson generation started.");
                           if (res.data?.video) setVideo(res.data.video);
@@ -589,7 +584,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                               size="sm"
                               onClick={async () => {
                                 const toastInstance = toast;
-                                const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lesson.language, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: lessonBackgroundOnly });
+                                const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lesson.language, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: true });
                                 if (res.success) {
                                   toastInstance.success(res.message || `Regenerating lesson for ${lesson.language}.`);
                                   if (res.data?.video) setVideo(res.data.video);
