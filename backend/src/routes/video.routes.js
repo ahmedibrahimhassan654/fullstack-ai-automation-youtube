@@ -10,6 +10,9 @@ router.use(protect);
 
 router.get('/', video.listMyVideos);
 router.get('/voices', video.listElevenLabsVoices);
+router.get('/youtube/playlists', video.listYouTubePlaylists);
+router.get('/youtube/videos/:youtubeVideoId/comments', video.listYouTubeComments);
+router.post('/youtube/comments/:commentId/reply', video.replyYouTubeComment);
 router.post('/upload', (req, res, next) => {
   uploadVideoWithAttachments(req, res, (err) => {
     if (err) return next(err);
@@ -20,6 +23,7 @@ router.patch('/:id', video.updateVideo);
 router.post('/:id/process', video.processVideo);
 router.post('/:id/ask', video.answerVideoQuestion);
 router.post('/:id/lesson', video.generateLesson);
+router.post('/:id/lessons/:language/publish', video.publishLessonVideo);
 router.get('/:id', video.getVideo);
 router.delete('/:id', video.deleteVideo);
 

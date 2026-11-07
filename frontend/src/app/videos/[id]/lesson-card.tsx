@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { api, API_BASE } from "@/lib/api";
+import { useToast } from "@/components/toast-provider";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -33,11 +35,22 @@ type LessonVideo = {
   script?: string;
   segments?: LessonSegment[];
   subtitlesUrl?: string | null;
+  youtubeVideoId?: string | null;
+  youtubeUrl?: string | null;
 };
 
 export default function LessonVideoCard({ videoId, lesson }: { videoId: string; lesson: LessonVideo }) {
+  const toast = useToast();
   const [currentTime, setCurrentTime] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
+  const [selectedPlaylist, setSelectedPlaylist] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [comments, setComments] = useState<any[]>([]);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [replyingId, setReplyingId] = useState<string | null>(null);
+  const [ytConnected, setYtConnected] = useState(false);
 
   useEffect(() => {
     const element = videoRef.current;
@@ -59,6 +72,52 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  useEffect(() => {
+    api.get<{ playlists: { id: string; title: string }[] }>("/api/videos/youtube/playlists").then((r) => {
+      if (r.success && r.data?.playlists) setPlaylists(r.data.playlists);
+    });
+    api.get<{ connected?: boolean }>("/api/auth/youtube/status").then((r) => {
+      if (r.success) setYtConnected(Boolean(r.data?.connected));
+    });
+  }, []);
+
+  const publishToYouTube = async () => {
+    setPublishing(true);
+    const res = await api.post<{ youtubeUrl: string; youtubeVideoId: string }>(
+      `/api/videos/${videoId}/lessons/${lesson.language}/publish`,
+      {
+        playlistId: selectedPlaylist || undefined,
+        title: `${lesson.language.toUpperCase()} lesson: ${lesson.script?.slice(0, 60) || ""}`.trim(),
+      },
+    );
+    if (res.success) {
+      toast?.success?.(res.message || "Published to YouTube");
+      (lesson as any).youtubeUrl = res.data?.youtubeUrl;
+      (lesson as any).youtubeVideoId = res.data?.youtubeVideoId;
+    } else {
+      toast?.error?.(res.message || "Publishing failed.");
+    }
+    setPublishing(false);
+  };
+
+  const loadComments = async () => {
+    if (!lesson.youtubeVideoId) return;
+    setLoadingComments(true);
+    const res = await api.get<{ comments: any[] }>(`/api/videos/youtube/videos/${lesson.youtubeVideoId}/comments`);
+    if (res.success) setComments(res.data?.comments || []);
+    setLoadingComments(false);
+  };
+
+  const sendReply = async (commentId: string) => {
+    setReplyingId(commentId);
+    const res = await api.post(`/api/videos/youtube/comments/${commentId}/reply`, { text: replyText });
+    if (res.success) {
+      setReplyText("");
+      await loadComments();
+    }
+    setReplyingId(null);
   };
 
   const segments = lesson.segments || [];
@@ -93,6 +152,59 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
           default
         />
       </video>
+
+      <div className="space-y-2 rounded-md border p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {ytConnected ? (
+            <>
+              <select
+                value={selectedPlaylist}
+                onChange={(e) => setSelectedPlaylist(e.target.value)}
+                className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              >
+                <option value="">No playlist</option>
+                {playlists.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title}
+                  </option>
+                ))}
+              </select>
+              <Button size="sm" onClick={publishToYouTube} disabled={publishing || !!lesson.youtubeVideoId}>
+                {publishing ? "Publishing…" : (lesson as any).youtubeVideoId ? "Published" : "Publish to YouTube"}
+              </Button>
+            </>
+          ) : (
+            <a href="/settings" className="text-sm underline">
+              Connect YouTube in Settings to publish.
+            </a>
+          )}
+        </div>
+        {(lesson as any).youtubeUrl && (
+          <a href={(lesson as any).youtubeUrl} target="_blank" rel="noreferrer" className="text-sm underline">
+            Open on YouTube
+          </a>
+        )}
+      </div>
+
+      <div className="space-y-2 rounded-md border p-3">
+        <Button size="sm" variant="outline" onClick={loadComments} disabled={!(lesson as any).youtubeVideoId || loadingComments}>
+          {loadingComments ? "Loading…" : "Load comments"}
+        </Button>
+        <div className="space-y-2">
+          {comments.map((c) => (
+            <div key={c.id} className="rounded border p-2 text-sm">
+              <p className="font-medium">{c.snippet?.topLevelComment?.snippet?.authorDisplayName}</p>
+              <p>{c.snippet?.topLevelComment?.snippet?.textDisplay}</p>
+              <div className="mt-1 flex gap-2">
+                <Input value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="Reply…" className="h-8" />
+                <Button size="sm" onClick={() => sendReply(c.snippet?.topLevelComment?.id)} disabled={replyingId === c.snippet?.topLevelComment?.id}>
+                  Reply
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       <div className="max-h-96 space-y-2 overflow-y-auto rounded-md border p-2">
         {segments.length ? (

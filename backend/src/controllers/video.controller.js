@@ -13,6 +13,15 @@ import { generateDubbedVideo } from "../services/dubbing.service.js";
 import { parseSubtitle } from "../services/subtitle.service.js";
 import { generateLessonVideo } from "../services/lessonVideo.service.js";
 import { ElevenLabsClient } from "elevenlabs";
+import {
+  addVideoToPlaylist,
+  getValidYouTubeAccessToken,
+  listYouTubeComments as fetchYouTubeComments,
+  listYouTubePlaylists as fetchYouTubePlaylists,
+  publishYouTubeVideo,
+  replyYouTubeComment as replyToYouTubeComment,
+} from "../services/youtubePublish.service.js";
+import User from "../models/User.js";
 
 const emitVideoProgress = (video) => {
   if (!video) return;
@@ -1128,6 +1137,110 @@ export const listElevenLabsVoices = asyncHandler(async (req, res) => {
       .status(200)
       .json({ success: true, data: { voices: [], error: error?.message } });
   }
+});
+
+export const listYouTubePlaylists = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
+  const accessToken = await getValidYouTubeAccessToken(user);
+  const playlists = await fetchYouTubePlaylists(accessToken);
+  res.status(200).json({ success: true, data: { playlists } });
+});
+
+export const publishLessonVideo = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const err = new Error("Not authorized to publish this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.params.language || "").trim();
+  const lesson = (video.lessonVideos || []).find((item) => item.language === language);
+  if (!lesson?.url) {
+    const err = new Error("Generated lesson video not found for this language");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
+  const accessToken = await getValidYouTubeAccessToken(user);
+
+  const mediaRes = await fetch(lesson.url);
+  if (!mediaRes.ok) {
+    const err = new Error("Failed to download generated lesson video for upload");
+    err.statusCode = 502;
+    throw err;
+  }
+  const mediaBuffer = Buffer.from(await mediaRes.arrayBuffer());
+
+  const title = String(req.body?.title || `${video.title} (${language})`).trim();
+  const description = String(req.body?.description || video.aiMetadata?.summary || video.description || "").trim();
+  const tags = Array.isArray(req.body?.tags) ? req.body.tags : (video.aiMetadata?.tags || []);
+  const categoryId = String(req.body?.categoryId || video.youtubeCategoryId || "27");
+  const visibility = String(req.body?.visibility || video.youtubeVisibility || "private");
+  const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : null;
+
+  const uploaded = await publishYouTubeVideo(
+    accessToken,
+    {
+      title,
+      description,
+      tags,
+      categoryId,
+      visibility,
+      mimeType: "video/mp4",
+    },
+    mediaBuffer,
+  );
+
+  if (playlistId) {
+    try {
+      await addVideoToPlaylist(accessToken, playlistId, uploaded.id);
+    } catch (error) {
+      console.warn("[publishLessonVideo] playlist add failed:", error?.message);
+    }
+  }
+
+  lesson.youtubeVideoId = uploaded.id;
+  lesson.youtubeUrl = `https://www.youtube.com/watch?v=${uploaded.id}`;
+  lesson.youtubePublishedAt = new Date();
+  lesson.youtubeVisibility = visibility;
+  await video.save();
+
+  res.status(200).json({
+    success: true,
+    message: `Published lesson (${language}) to YouTube`,
+    data: {
+      youtubeVideoId: uploaded.id,
+      youtubeUrl: lesson.youtubeUrl,
+      lesson,
+    },
+  });
+});
+
+export const listYouTubeComments = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
+  const accessToken = await getValidYouTubeAccessToken(user);
+  const comments = await fetchYouTubeComments(accessToken, req.params.youtubeVideoId);
+  res.status(200).json({ success: true, data: { comments } });
+});
+
+export const replyYouTubeComment = asyncHandler(async (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) {
+    const err = new Error("Reply text is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
+  const accessToken = await getValidYouTubeAccessToken(user);
+  const result = await replyToYouTubeComment(accessToken, req.params.commentId, text);
+  res.status(200).json({ success: true, data: { comment: result } });
 });
 
 export const getProcessingLabel = (stage) =>

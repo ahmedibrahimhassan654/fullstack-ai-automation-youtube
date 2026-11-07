@@ -72,6 +72,9 @@ const lessonVideoSchema = new mongoose.Schema(
     script: { type: String, default: '' },
     segments: { type: [transcriptSegmentSchema], default: [] },
     subtitlesUrl: { type: String, default: null },
+    youtubeVideoId: { type: String, default: null },
+    youtubeUrl: { type: String, default: null },
+    youtubePublishedAt: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
