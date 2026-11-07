@@ -15,6 +15,7 @@ router.get('/me', protect, authController.me);
 router.get('/youtube/connect', protect, authController.prepareYouTubeConnect, authController.youtubeConnect);
 router.get('/youtube/callback', authController.youtubeCallback);
 router.get('/youtube/status', protect, authController.youtubeStatus);
+router.post('/youtube/channel', protect, authController.youtubeSelectChannel);
 router.post('/youtube/disconnect', protect, authController.youtubeDisconnect);
 
 export default router;

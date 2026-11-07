@@ -10,12 +10,15 @@ import Link from 'next/link';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
 type YtStatus = {
   connected: boolean;
   channelId?: string | null;
   channelTitle?: string | null;
+  channels?: { channelId: string; channelTitle?: string | null }[];
+  accounts?: { channelId: string; channelTitle?: string | null }[];
   connectedAt?: string | null;
 };
 
@@ -25,6 +28,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const [status, setStatus] = useState<YtStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectingChannel, setSelectingChannel] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -53,6 +57,20 @@ export default function SettingsPage() {
     const statusRes = await api.get<YtStatus>('/api/auth/youtube/status');
     if (statusRes.success && statusRes.data) setStatus(statusRes.data as YtStatus);
     await refreshUser();
+  };
+
+  const selectChannel = async (channelId: string) => {
+    setSelectingChannel(true);
+    const res = await api.post<YtStatus>('/api/auth/youtube/channel', { channelId });
+    if (res.success) {
+      toast.success("Default channel updated.");
+      const statusRes = await api.get<YtStatus>('/api/auth/youtube/status');
+      if (statusRes.success && statusRes.data) setStatus(statusRes.data as YtStatus);
+      await refreshUser();
+    } else {
+      toast.error(res.message || "Failed to update channel.");
+    }
+    setSelectingChannel(false);
   };
 
   // Read callback result from query string
@@ -109,6 +127,40 @@ export default function SettingsPage() {
                       <span className="font-medium">{status.channelTitle}</span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">{status.channelId}</p>
+                    {(status.accounts?.length || 0) > 1 && (
+                      <div className="mt-3 space-y-1">
+                        <Label>Connected channel (Google account)</Label>
+                        <select
+                          value={status.channelId || ""}
+                          onChange={(e) => selectChannel(e.target.value)}
+                          disabled={selectingChannel}
+                          className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        >
+                          {(status.accounts || []).map((channel) => (
+                            <option key={channel.channelId} value={channel.channelId}>
+                              {channel.channelTitle || channel.channelId}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {(status.accounts?.length || 0) <= 1 && (status.channels?.length || 0) > 1 && (
+                      <div className="mt-3 space-y-1">
+                        <Label>Default channel</Label>
+                        <select
+                          value={status.channelId || ""}
+                          onChange={(e) => selectChannel(e.target.value)}
+                          disabled={selectingChannel}
+                          className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        >
+                          {(status.channels || []).map((channel) => (
+                            <option key={channel.channelId} value={channel.channelId}>
+                              {channel.channelTitle || channel.channelId}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                   <Button variant="destructive" size="sm" onClick={disconnect}>
                     Disconnect

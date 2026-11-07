@@ -6,7 +6,7 @@ import {
   buildYouTubeAuthUrl,
   generateState,
   exchangeCodeForTokens,
-  fetchYouTubeChannel,
+  fetchYouTubeChannels,
   refreshYouTubeAccessToken,
 } from '../services/youtubeOauth.service.js';
 import { env } from '../config/env.js';
@@ -188,19 +188,32 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
 
   try {
     const tokens = await exchangeCodeForTokens(code);
-    const channel = await fetchYouTubeChannel(tokens.access_token);
+    const channels = await fetchYouTubeChannels(tokens.access_token);
 
     const user = await User.findById(userId);
     if (!user) throw new Error('User not found');
 
-    user.youtube = {
-      channelId: channel.channelId,
-      channelTitle: channel.channelTitle,
+    const selected = channels[0];
+    const connection = {
+      channelId: selected.channelId,
+      channelTitle: selected.channelTitle,
+      channels,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token || user.youtube?.refreshToken || null,
       tokenExpiresAt: new Date(Date.now() + (tokens.expires_in || 3600) * 1000),
       connectedAt: new Date(),
     };
+
+    user.youtubeAccounts = user.youtubeAccounts || [];
+    const existingIndex = user.youtubeAccounts.findIndex(
+      (account) => account.channelId === connection.channelId,
+    );
+    if (existingIndex >= 0) {
+      user.youtubeAccounts[existingIndex] = connection;
+    } else {
+      user.youtubeAccounts.push(connection);
+    }
+    user.youtube = connection;
     await user.save();
 
     res.clearCookie(YOUTUBE_STATE_COOKIE, { path: '/' });
@@ -214,17 +227,111 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
 
 // ---------- YouTube OAuth: status ----------
 export const youtubeStatus = asyncHandler(async (req, res) => {
-  const yt = req.user.youtube || {};
+  const user = await User.findById(req.user._id).select('+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken');
+  const yt = user.youtube || {};
+
+  user.youtubeAccounts = user.youtubeAccounts || [];
+  // Backfill for older connections without accounts array.
+  if (user.youtubeAccounts.length === 0 && yt.channelId) {
+    user.youtubeAccounts = [
+      {
+        channelId: yt.channelId,
+        channelTitle: yt.channelTitle,
+        channels: yt.channels || [{ channelId: yt.channelId, channelTitle: yt.channelTitle }],
+        accessToken: yt.accessToken,
+        refreshToken: yt.refreshToken,
+        tokenExpiresAt: yt.tokenExpiresAt,
+        connectedAt: yt.connectedAt,
+      },
+    ];
+    await user.save();
+  }
+
+  // Backfill channel list for the active connection if needed.
+  if (yt.accessToken && !(yt.channels && yt.channels.length) && user.youtubeAccounts.length === 0) {
+    try {
+      const { fetchYouTubeChannels } = await import('../services/youtubeOauth.service.js');
+      const channels = await fetchYouTubeChannels(yt.accessToken);
+      yt.channels = channels;
+      if (!yt.channelId && channels.length) {
+        yt.channelId = channels[0].channelId;
+        yt.channelTitle = channels[0].channelTitle;
+      }
+      user.youtube = yt;
+      await user.save();
+    } catch {
+      // ignore live fetch failures
+    }
+  }
+
+  const accounts = (user.youtubeAccounts || []).map((account) => ({
+    channelId: account.channelId,
+    channelTitle: account.channelTitle,
+    connectedAt: account.connectedAt,
+  }));
+
   res.status(200).json({
     success: true,
     data: {
       connected: Boolean(yt.channelId),
       channelId: yt.channelId || null,
       channelTitle: yt.channelTitle || null,
+      channels: yt.channels || [],
+      accounts,
       connectedAt: yt.connectedAt || null,
       tokenExpiresAt: yt.tokenExpiresAt || null,
     },
   });
+});
+
+export const youtubeSelectChannel = asyncHandler(async (req, res) => {
+  const channelId = String(req.body?.channelId || '').trim();
+  if (!channelId) {
+    const err = new Error('channelId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const user = await User.findById(req.user._id).select('+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken');
+  const yt = user.youtube || {};
+
+  // If selecting among channels of the active account:
+  const channels = yt.channels || [];
+  const channel = channels.find((item) => item.channelId === channelId);
+  if (channel) {
+    yt.channelId = channel.channelId;
+    yt.channelTitle = channel.channelTitle;
+    user.youtube = yt;
+    await user.save();
+    return res.status(200).json({
+      success: true,
+      data: {
+        connected: true,
+        channelId: yt.channelId,
+        channelTitle: yt.channelTitle,
+        channels: yt.channels,
+      },
+    });
+  }
+
+  // Otherwise try selecting a different connected account.
+  const account = (user.youtubeAccounts || []).find((item) => item.channelId === channelId);
+  if (account) {
+    user.youtube = account;
+    await user.save();
+    return res.status(200).json({
+      success: true,
+      data: {
+        connected: true,
+        channelId: account.channelId,
+        channelTitle: account.channelTitle,
+        channels: account.channels || [],
+      },
+    });
+  }
+
+  const err = new Error('Selected channel is not available');
+  err.statusCode = 400;
+  throw err;
 });
 
 // ---------- YouTube OAuth: disconnect ----------

@@ -8,6 +8,15 @@ const youtubeSchema = new mongoose.Schema(
     refreshToken: { type: String, default: null, select: false },
     tokenExpiresAt: { type: Date, default: null },
     connectedAt: { type: Date, default: null },
+    channels: {
+      type: [
+        {
+          channelId: { type: String, required: true },
+          channelTitle: { type: String, default: null },
+        },
+      ],
+      default: [],
+    },
   },
   { _id: false }
 );
@@ -63,6 +72,10 @@ const userSchema = new mongoose.Schema(
       default: 'user',
     },
     youtube: { type: youtubeSchema, default: () => ({}) },
+    youtubeAccounts: {
+      type: [youtubeSchema],
+      default: [],
+    },
     // App-level session refresh token (separate from YouTube OAuth).
     sessionRefreshToken: { type: String, default: null, select: false },
     isActive: { type: Boolean, default: true },

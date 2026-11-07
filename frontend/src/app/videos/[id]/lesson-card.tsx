@@ -169,9 +169,9 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
                   </option>
                 ))}
               </select>
-              <Button size="sm" onClick={publishToYouTube} disabled={publishing || !!lesson.youtubeVideoId}>
-                {publishing ? "Publishing…" : (lesson as any).youtubeVideoId ? "Published" : "Publish to YouTube"}
-              </Button>
+              <a href={`/videos/${videoId}/publish?language=${lesson.language}`} className={cn(buttonVariants({ size: "sm" }))}>
+                Prepare to publish on YouTube
+              </a>
             </>
           ) : (
             <a href="/settings" className="text-sm underline">

@@ -21,7 +21,7 @@ export const buildYouTubeAuthUrl = (state) => {
     response_type: 'code',
     scope: SCOPES,
     access_type: 'offline',
-    prompt: 'consent',
+    prompt: 'consent select_account',
     include_granted_scopes: 'true',
     state,
   });
@@ -52,23 +52,28 @@ export const exchangeCodeForTokens = async (code) => {
   return data; // { access_token, refresh_token, expires_in, scope, token_type }
 };
 
-export const fetchYouTubeChannel = async (accessToken) => {
-  const url = `${CHANNELS_URL}?part=snippet&mine=true`;
+export const fetchYouTubeChannels = async (accessToken) => {
+  const url = `${CHANNELS_URL}?part=snippet&mine=true&maxResults=50`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data?.error?.message || 'Failed to fetch YouTube channel');
+    throw new Error(data?.error?.message || 'Failed to fetch YouTube channels');
   }
-  const channel = data?.items?.[0];
-  if (!channel) {
+  const items = data?.items || [];
+  if (!items.length) {
     throw new Error('No YouTube channel found for this Google account');
   }
-  return {
+  return items.map((channel) => ({
     channelId: channel.id,
-    channelTitle: channel.snippet?.title || null,
-  };
+    channelTitle: channel.snippet?.title || 'Untitled channel',
+  }));
+};
+
+export const fetchYouTubeChannel = async (accessToken) => {
+  const channels = await fetchYouTubeChannels(accessToken);
+  return channels[0];
 };
 
 export const refreshYouTubeAccessToken = async (refreshToken) => {
