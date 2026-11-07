@@ -101,6 +101,9 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [selectedLanguage, setSelectedLanguage] = useState("");
   const [lessonLanguage, setLessonLanguage] = useState("");
   const [generatingLesson, setGeneratingLesson] = useState(false);
+  const [lessonVoiceId, setLessonVoiceId] = useState("");
+  const [lessonBackgroundOnly, setLessonBackgroundOnly] = useState(true);
+  const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -125,6 +128,12 @@ export default function VideoDetailClient({ id }: { id: string }) {
     if (id) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    api.get<{ voices: { voice_id: string; name: string }[] }>("/api/videos/voices").then((res) => {
+      if (res.success && res.data?.voices) setElevenVoices(res.data.voices);
+    });
+  }, []);
 
   const saveChanges = async () => {
     if (!video) return;
@@ -494,10 +503,41 @@ export default function VideoDetailClient({ id }: { id: string }) {
                           </option>
                         ))}
                     </select>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label htmlFor="lessonVoiceId">Voice ID (optional)</Label>
+                      <select
+                        id="lessonVoiceId"
+                        value={lessonVoiceId}
+                        onChange={(e) => setLessonVoiceId(e.target.value)}
+                        className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                      >
+                        <option value="">Default voice (Edge TTS)</option>
+                        {elevenVoices.map((voice) => (
+                          <option key={voice.voice_id} value={voice.voice_id}>
+                            {voice.name} ({voice.voice_id})
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        id="lessonVoiceIdCustom"
+                        value={lessonVoiceId}
+                        onChange={(e) => setLessonVoiceId(e.target.value)}
+                        placeholder="Or paste any ElevenLabs voice ID"
+                        className="h-9 w-64"
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={lessonBackgroundOnly}
+                        onChange={(e) => setLessonBackgroundOnly(e.target.checked)}
+                      />
+                      Generate voiceover-only video (no original footage; full narration)
+                    </label>
                     <Button
                       onClick={async () => {
                         setGeneratingLesson(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: lessonBackgroundOnly });
                         if (res.success) {
                           toast.success(res.message || "Lesson generation started.");
                           if (res.data?.video) setVideo(res.data.video);
@@ -549,7 +589,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                               size="sm"
                               onClick={async () => {
                                 const toastInstance = toast;
-                                const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lesson.language });
+                                const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lesson.language, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: lessonBackgroundOnly });
                                 if (res.success) {
                                   toastInstance.success(res.message || `Regenerating lesson for ${lesson.language}.`);
                                   if (res.data?.video) setVideo(res.data.video);
