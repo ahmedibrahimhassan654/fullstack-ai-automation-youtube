@@ -45,6 +45,7 @@ export default function NewVideoPage() {
   const [links, setLinks] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [subtitle, setSubtitle] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +78,7 @@ export default function NewVideoPage() {
     formData.append("links", links);
 
     attachments.forEach((f) => formData.append("attachments", f));
+    if (subtitle) formData.append("subtitle", subtitle);
 
     const handleProgress = (pct: number) => {
       setProgress(pct);
@@ -211,6 +213,24 @@ export default function NewVideoPage() {
                   {attachments.length > 0 && (
                     <p className="text-xs text-muted-foreground">
                       {attachments.length} file(s) selected
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="subtitle">
+                    Original subtitle file (.srt or .vtt, optional)
+                  </Label>
+                  <Input
+                    id="subtitle"
+                    type="file"
+                    accept=".srt,.vtt,text/plain,application/x-subrip"
+                    onChange={(e) => setSubtitle(e.target.files?.[0] || null)}
+                  />
+                  {subtitle && (
+                    <p className="text-xs text-muted-foreground">
+                      {subtitle.name} selected — will be used as the source
+                      transcript for translation and dubbing.
                     </p>
                   )}
                 </div>

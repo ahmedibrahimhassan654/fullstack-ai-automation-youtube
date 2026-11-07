@@ -243,6 +243,8 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
             ? `${EGYPTIAN_ARABIC_RULES}\\n\\nYou are an excellent educational narrator. Write a complete spoken lesson script in Egyptian Arabic. `
             : `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. `) +
           'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained, and cover the entire lesson rather than only the opening. ' +
+          'Sound like a warm, human mentor: open with a hook, tell a short learning journey, use conversational phrasing, reflective questions, and gentle encouragement, and vary sentence rhythm. ' +
+          'Avoid sounding like a textbook: use "we", short paragraphs, and pauses implied by punctuation. ' +
           (targetLanguage.startsWith('ar')
             ? 'Write Arabic with complete tashkeel/diacritics for pronunciation. Keep important technical English terms in English when they have no natural Arabic equivalent. '
             : '') +

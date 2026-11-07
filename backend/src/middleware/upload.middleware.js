@@ -36,6 +36,18 @@ const attachmentFilter = (req, file, cb) => {
   cb(new Error('Unsupported attachment file type.'));
 };
 
+const subtitleFilter = (req, file, cb) => {
+  const allowed = [
+    'text/plain',
+    'text/vtt',
+    'application/x-subrip',
+    'application/octet-stream',
+  ];
+  if (allowed.includes(file.mimetype)) return cb(null, true);
+  if (/\.(srt|vtt)$/i.test(file.originalname || '')) return cb(null, true);
+  cb(new Error('Unsupported subtitle file type (expected .srt or .vtt).'));
+};
+
 export const uploadVideo = multer({
   storage,
   limits: { fileSize: MAX_SIZE_MB * 1024 * 1024 },
@@ -48,9 +60,16 @@ export const uploadVideoWithAttachments = multer({
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'video') return videoFilter(req, file, cb);
     if (file.fieldname === 'attachments') return attachmentFilter(req, file, cb);
+    if (['subtitle', 'subtitles', 'srt', 'srtFile', 'caption', 'captions'].includes(file.fieldname)) return subtitleFilter(req, file, cb);
     cb(new Error('Unexpected file field.'));
   },
 }).fields([
   { name: 'video', maxCount: 1 },
   { name: 'attachments', maxCount: 10 },
+  { name: 'subtitle', maxCount: 1 },
+  { name: 'subtitles', maxCount: 5 },
+  { name: 'srt', maxCount: 1 },
+  { name: 'srtFile', maxCount: 1 },
+  { name: 'caption', maxCount: 1 },
+  { name: 'captions', maxCount: 5 },
 ]);

@@ -95,46 +95,110 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
   fs.writeFileSync(audioFile, audioBuffer);
   await report(58);
 
+  // Optional background music bed (set BACKGROUND_MUSIC_URL in .env). Mixed
+  // quietly under the narration to make the lesson video feel more cinematic.
+  let musicFile = null;
+  if (env.backgroundMusicUrl) {
+    try {
+      const musicRes = await fetch(env.backgroundMusicUrl);
+      if (musicRes.ok) {
+        musicFile = path.join(TEMP_DIR, `music-${video._id}-${Date.now()}.mp3`);
+        fs.writeFileSync(musicFile, Buffer.from(await musicRes.arrayBuffer()));
+      }
+    } catch (musicError) {
+      console.warn('[lessonVideo] background music fetch failed:', musicError?.message);
+      musicFile = null;
+    }
+  }
+
   const duration = Number(video.durationSeconds) || 0;
-  const ffmpegArgs =
-    duration > 0
-      ? [
-          '-y',
-          '-i',
-          video.publicUrl,
-          '-i',
-          audioFile,
-          '-filter_complex',
-          `[1:a]apad=whole_dur=${duration}[a]`,
-          '-map',
-          '0:v:0',
-          '-map',
-          '[a]',
-          '-c:v',
-          'copy',
-          '-c:a',
-          'aac',
-          '-t',
-          String(duration),
-          outputFile,
-        ]
-      : [
-          '-y',
-          '-i',
-          video.publicUrl,
-          '-i',
-          audioFile,
-          '-map',
-          '0:v:0',
-          '-map',
-          '1:a:0',
-          '-c:v',
-          'copy',
-          '-c:a',
-          'aac',
-          '-shortest',
-          outputFile,
-        ];
+  const ffmpegArgs = musicFile
+    ? (duration > 0
+        ? [
+            '-y',
+            '-i',
+            video.publicUrl,
+            '-i',
+            audioFile,
+            '-stream_loop',
+            '-1',
+            '-i',
+            musicFile,
+            '-filter_complex',
+            `[1:a]apad=whole_dur=${duration},volume=1.0[narr];[2:a]volume=0.12[music];[narr][music]amix=inputs=2:duration=first:dropout_transition=2[a]`,
+            '-map',
+            '0:v:0',
+            '-map',
+            '[a]',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-t',
+            String(duration),
+            outputFile,
+          ]
+        : [
+            '-y',
+            '-i',
+            video.publicUrl,
+            '-i',
+            audioFile,
+            '-stream_loop',
+            '-1',
+            '-i',
+            musicFile,
+            '-filter_complex',
+            `[1:a]volume=1.0[narr];[2:a]volume=0.12[music];[narr][music]amix=inputs=2:duration=shortest:dropout_transition=2[a]`,
+            '-map',
+            '0:v:0',
+            '-map',
+            '[a]',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-shortest',
+            outputFile,
+          ])
+    : (duration > 0
+        ? [
+            '-y',
+            '-i',
+            video.publicUrl,
+            '-i',
+            audioFile,
+            '-filter_complex',
+            `[1:a]apad=whole_dur=${duration}[a]`,
+            '-map',
+            '0:v:0',
+            '-map',
+            '[a]',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-t',
+            String(duration),
+            outputFile,
+          ]
+        : [
+            '-y',
+            '-i',
+            video.publicUrl,
+            '-i',
+            audioFile,
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a:0',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-shortest',
+            outputFile,
+          ]);
 
   try {
     await report(65);
@@ -181,6 +245,6 @@ export const generateLessonVideo = async ({ video, language, onProgress }) => {
       subtitlesUrl,
     };
   } finally {
-    cleanupFiles([audioFile, outputFile, subtitleFile]);
+    cleanupFiles([audioFile, outputFile, subtitleFile, musicFile]);
   }
 };

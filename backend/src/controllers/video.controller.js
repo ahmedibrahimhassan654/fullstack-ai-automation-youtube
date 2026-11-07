@@ -6,6 +6,7 @@ import { transcribeAudio } from '../services/transcription.service.js';
 import { publishProgress, subscribeProgress } from '../lib/progressBus.js';
 import { analyzeTranscript, answerQuestion, translateTranscriptSegments } from '../services/aiMetadata.service.js';
 import { generateDubbedVideo } from '../services/dubbing.service.js';
+import { parseSubtitle } from '../services/subtitle.service.js';
 import { generateLessonVideo } from '../services/lessonVideo.service.js';
 
 const emitVideoProgress = (video) => {
@@ -119,6 +120,24 @@ export const uploadVideo = asyncHandler(async (req, res) => {
   const targetLanguages = normalizeLanguages(req.body?.targetLanguages);
   const links = normalizeLinks(req.body?.links);
 
+  const subtitleFile =
+    req.files?.subtitle?.[0] ||
+    req.files?.subtitles?.[0] ||
+    req.files?.srt?.[0] ||
+    req.files?.srtFile?.[0] ||
+    req.files?.caption?.[0] ||
+    req.files?.captions?.[0] ||
+    null;
+  let parsedSubtitle = null;
+  if (subtitleFile) {
+    try {
+      parsedSubtitle = parseSubtitle(subtitleFile.buffer.toString('utf8'), subtitleFile.originalname);
+    } catch (error) {
+      console.error('[uploadVideo] subtitle parse failed:', error?.message);
+      parsedSubtitle = null;
+    }
+  }
+
   // Upload main video.
   let videoResult;
   try {
@@ -186,6 +205,27 @@ export const uploadVideo = asyncHandler(async (req, res) => {
   // Filter out attachments that failed to upload (url null).
   const cleanAttachments = attachments.filter((a) => a.url);
 
+  // Upload original subtitle (SRT/VTT) if provided.
+  const subtitleEntries = [];
+  if (subtitleFile) {
+    try {
+      const result = await uploadBuffer(subtitleFile.buffer, {
+        resource_type: 'raw',
+        folder: `${env.cloudinaryFolder}/subtitles`,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      });
+      subtitleEntries.push({
+        language: originalLanguage,
+        url: result.secure_url,
+        path: result.public_id,
+      });
+    } catch (error) {
+      console.error('[uploadVideo] subtitle upload failed:', error?.message);
+    }
+  }
+
   const video = await Video.create({
     user: req.user._id,
     title,
@@ -200,6 +240,10 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     originalLanguage,
     targetLanguages,
     attachments: cleanAttachments,
+    subtitles: subtitleEntries,
+    transcript: parsedSubtitle?.text || '',
+    transcriptSegments: parsedSubtitle?.segments || [],
+    transcriptLanguage: parsedSubtitle ? originalLanguage : 'en',
     status: 'pending',
     currentStage: 'uploaded',
     progress: 0,
@@ -264,6 +308,11 @@ export const deleteVideo = asyncHandler(async (req, res) => {
         await cloudinary.uploader.destroy(att.publicId, { resource_type: rt });
       }
     }
+    for (const sub of video.subtitles || []) {
+      if (sub.path) {
+        await cloudinary.uploader.destroy(sub.path, { resource_type: 'raw' });
+      }
+    }
   } catch {
     // ignore
   }
@@ -288,53 +337,72 @@ const runPipeline = async (videoId) => {
     await video.save();
     emitVideoProgress(video);
 
-    if (!video.publicUrl) {
-      throw new Error('No uploaded video URL available for transcription');
-    }
+    const hasSubtitleTranscript =
+      Array.isArray(video.transcriptSegments) && video.transcriptSegments.length > 0;
 
-    // Prefer an optimized, low-bandwidth MP3 derived from the Cloudinary video. This
-    // keeps us below the Whisper API request-size limit for large source videos.
-    // eslint-disable-next-line no-unused-vars
-    const publicUrl = video.publicUrl;
-    let fetchUrl = publicUrl;
-    if (publicUrl.includes('/video/upload/')) {
-      fetchUrl = publicUrl
-        .replace('/video/upload/', '/video/upload/ac_mp3/')
-        .replace(/\\.[^/.]+$/, '.mp3');
-    }
+    if (hasSubtitleTranscript) {
+      // Use the user-provided SRT/VTT subtitle as the authoritative transcript
+      // (timing + text), skipping Whisper transcription. This keeps dubbing and
+      // translations aligned with the original spoken language subtitle.
+      if (!video.transcript) {
+        video.transcript = video.transcriptSegments.map((s) => s.text).join(' ').trim();
+      }
+      if (!video.transcriptLanguage) {
+        video.transcriptLanguage = video.originalLanguage || 'en';
+      }
+      video.currentStage = 'transcribed';
+      video.progress = 40;
+      await video.save();
+      emitVideoProgress(video);
+    } else {
+      if (!video.publicUrl) {
+        throw new Error('No uploaded video URL available for transcription');
+      }
 
-    let response = await fetch(fetchUrl);
-    if (!response.ok && fetchUrl !== publicUrl) {
-      // Fall back to the original file if derivation isn't available.
-      response = await fetch(publicUrl);
-      fetchUrl = publicUrl;
-    }
-    if (!response.ok) {
-      throw new Error(`Failed to download video for transcription (${response.status})`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+      // Prefer an optimized, low-bandwidth MP3 derived from the Cloudinary video. This
+      // keeps us below the Whisper API request-size limit for large source videos.
+      // eslint-disable-next-line no-unused-vars
+      const publicUrl = video.publicUrl;
+      let fetchUrl = publicUrl;
+      if (publicUrl.includes('/video/upload/')) {
+        fetchUrl = publicUrl
+          .replace('/video/upload/', '/video/upload/ac_mp3/')
+          .replace(/\\.[^/.]+$/, '.mp3');
+      }
 
-    const result = await transcribeAudio({
-      buffer,
-      filename: fetchUrl.endsWith('.mp3') ? 'audio.mp3' : (video.originalFilename || 'video.mp4'),
-      mimeType: fetchUrl.endsWith('.mp3') ? 'audio/mpeg' : video.mimeType,
-      language: video.originalLanguage || video.transcriptLanguage || 'en',
-    });
+      let response = await fetch(fetchUrl);
+      if (!response.ok && fetchUrl !== publicUrl) {
+        // Fall back to the original file if derivation isn't available.
+        response = await fetch(publicUrl);
+        fetchUrl = publicUrl;
+      }
+      if (!response.ok) {
+        throw new Error(`Failed to download video for transcription (${response.status})`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
 
-    video.transcript = result.text || '';
-    video.transcriptLanguage = result.language || video.originalLanguage || 'en';
-    video.transcriptSegments = (result.segments || [])
-      .map((s) => ({
-        start: Number(s.start) || 0,
-        end: Number(s.end) || 0,
-        text: String(s.text || '').trim(),
-      }))
-      .filter((s) => s.text);
-    video.currentStage = 'transcribed';
-    video.progress = 40;
-    await video.save();
-    emitVideoProgress(video);
+      const result = await transcribeAudio({
+        buffer,
+        filename: fetchUrl.endsWith('.mp3') ? 'audio.mp3' : (video.originalFilename || 'video.mp4'),
+        mimeType: fetchUrl.endsWith('.mp3') ? 'audio/mpeg' : video.mimeType,
+        language: video.originalLanguage || video.transcriptLanguage || 'en',
+      });
+
+      video.transcript = result.text || '';
+      video.transcriptLanguage = result.language || video.originalLanguage || 'en';
+      video.transcriptSegments = (result.segments || [])
+        .map((s) => ({
+          start: Number(s.start) || 0,
+          end: Number(s.end) || 0,
+          text: String(s.text || '').trim(),
+        }))
+        .filter((s) => s.text);
+      video.currentStage = 'transcribed';
+      video.progress = 40;
+      await video.save();
+      emitVideoProgress(video);
+    }
 
     // AI analysis (titles, summary, chapters, tags, key points, action items,
     // decisions, open questions) using the transcript.

@@ -472,7 +472,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Generated educational lesson video</CardTitle>
+                  <CardTitle>Generated study-journey (montage) video</CardTitle>
                   <CardDescription>
                     Build a new lesson video from the AI metadata and translated transcript.
                   </CardDescription>
