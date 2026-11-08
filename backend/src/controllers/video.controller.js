@@ -19,6 +19,7 @@ import {
   listYouTubeComments as fetchYouTubeComments,
   listYouTubePlaylists as fetchYouTubePlaylists,
   publishYouTubeVideo,
+  setYouTubeThumbnail,
   replyYouTubeComment as replyToYouTubeComment,
 } from "../services/youtubePublish.service.js";
 import User from "../models/User.js";
@@ -531,11 +532,35 @@ const runPipeline = async (videoId) => {
           const segments = await translateTranscriptSegments({
             segments: video.transcriptSegments,
             targetLanguage: language,
+            originalLanguage: video.transcriptLanguage || video.originalLanguage || "en",
           });
+          if (video.durationSeconds > 0 && segments.length > 0) {
+            const last = segments[segments.length - 1];
+            last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
+          }
+          const qualityScores = segments
+            .map((s) => s.qualityScore)
+            .filter((n) => typeof n === "number");
+          const avgQuality =
+            qualityScores.length > 0
+              ? qualityScores.reduce((sum, n) => sum + n, 0) /
+                qualityScores.length
+              : null;
           translations.push({
             language,
             transcript: segments.map((s) => s.text).join(" "),
             segments,
+            qualityScore: avgQuality,
+            qualityStatus:
+              qualityScores.length === 0
+                ? "unknown"
+                : segments.every((s) => s.qualityStatus !== "failed")
+                ? "passed"
+                : "failed",
+            translationAttempts: Math.max(
+              1,
+              ...segments.map((s) => s.translationAttempts || 1),
+            ),
           });
         } catch (error) {
           // Keep processing successful even if one translation fails.
@@ -719,13 +744,36 @@ const runDubbing = async (videoId, language) => {
       const segments = await translateTranscriptSegments({
         segments: video.transcriptSegments,
         targetLanguage: language,
+        originalLanguage: video.transcriptLanguage || video.originalLanguage || "en",
       });
+      if (video.durationSeconds > 0 && segments.length > 0) {
+        const last = segments[segments.length - 1];
+        last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
+      }
+      const qualityScores = segments
+        .map((s) => s.qualityScore)
+        .filter((n) => typeof n === "number");
+      const avgQuality =
+        qualityScores.length > 0
+          ? qualityScores.reduce((sum, n) => sum + n, 0) / qualityScores.length
+          : null;
       video.translations = [
         ...(video.translations || []),
         {
           language,
           transcript: segments.map((s) => s.text).join(" "),
           segments,
+          qualityScore: avgQuality,
+          qualityStatus:
+            qualityScores.length === 0
+              ? "unknown"
+              : segments.every((s) => s.qualityStatus !== "failed")
+              ? "passed"
+              : "failed",
+          translationAttempts: Math.max(
+            1,
+            ...segments.map((s) => s.translationAttempts || 1),
+          ),
         },
       ];
       await video.save();
@@ -1203,6 +1251,24 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       await addVideoToPlaylist(accessToken, playlistId, uploaded.id);
     } catch (error) {
       console.warn("[publishLessonVideo] playlist add failed:", error?.message);
+    }
+  }
+
+  const thumbnailUrl = req.body?.thumbnailUrl
+    ? String(req.body.thumbnailUrl).trim()
+    : "";
+  if (thumbnailUrl) {
+    try {
+      const imageRes = await fetch(thumbnailUrl);
+      if (!imageRes.ok) {
+        throw new Error(`Thumbnail download failed (${imageRes.status})`);
+      }
+      const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
+      const mimeType = imageRes.headers.get("content-type") || "image/jpeg";
+      await setYouTubeThumbnail(accessToken, uploaded.id, imageBuffer, mimeType);
+      lesson.thumbnailUrl = thumbnailUrl;
+    } catch (error) {
+      console.warn("[publishLessonVideo] thumbnail upload failed:", error?.message);
     }
   }
 

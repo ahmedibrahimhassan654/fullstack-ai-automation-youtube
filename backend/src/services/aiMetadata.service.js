@@ -195,36 +195,81 @@ const chunkArray = (items, size) => {
   return chunks;
 };
 
-export const translateTranscriptSegments = async ({ segments, targetLanguage }) => {
-  const input = (segments || [])
-    .map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: String(s.text || '').trim() }))
-    .filter((s) => s.text);
+const QUALITY_THRESHOLD = 8;
+const MAX_TRANSLATION_ATTEMPTS = 3;
 
+const toPair = (segment) => ({
+  start: Number(segment?.start) || 0,
+  end: Number(segment?.end) || 0,
+  text: String(segment?.text || '').trim(),
+});
+
+const callQualityChat = async (messages, extra = {}) =>
+  callChatCompletion(messages, {
+    ...extra,
+    model:
+      resolveProvider() === 'ollama'
+        ? env.ollamaModel
+        : env.aiModelQuality || GROQ_MODEL_QUALITY,
+  });
+
+const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = false, context = [] }) => {
+  const input = (segments || []).map(toPair).filter((s) => s.text);
   if (input.length === 0) return [];
 
   const output = [];
-  const batches = chunkArray(input, 15);
+  const batches = chunkArray(input, 12);
 
+  let cursor = 0;
   for (const batch of batches) {
+    const batchContext = context.slice(cursor, cursor + batch.length);
+    cursor += batch.length;
+
     const safe = batch.map(({ start, end, text }) => ({ start, end, text }));
     let parsed = null;
+
+    const system =
+      'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
+      (String(targetLanguage).toLowerCase().startsWith('ar')
+        ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
+        : '') +
+      (highQuality
+        ? 'Produce a HIGH-QUALITY translation: accurate meaning, natural phrasing, correct grammar, consistent terminology, and faithful tone. Avoid literal word-by-word translation; adapt idioms naturally. '
+        : '') +
+      'Return ONLY valid JSON: {"segments":[{"start":number,"end":number,"text":string}]}. ' +
+      'Keep start/end unchanged, keep the same number of segments, and translate naturally.';
+
+    const userLines = [`Target language: ${targetLanguage}`, '', 'Segments (original English):', JSON.stringify(safe)];
+
+    if (batchContext.length && batchContext.some((c) => c)) {
+      userLines.push('', 'Previous low-scoring attempts to improve upon:');
+      userLines.push(
+        JSON.stringify(
+          batch.map((s, index) => ({
+            original: s.text,
+            previous: batchContext[index]?.previous || '',
+            previousScore: batchContext[index]?.score ?? null,
+            issues: batchContext[index]?.reason || '',
+            suggestions: batchContext[index]?.suggestions || [],
+          })),
+        ),
+      );
+      userLines.push(
+        'Use the feedback/issues above to fix mistakes. Keep any genuinely good phrases, but improve accuracy and naturalness until the translation would score at least 8/10.',
+      );
+    }
+
     try {
-      const content = await callChatCompletion(
+      const content = await callQualityChat(
         [
-          {
-            role: 'system',
-            content:
-              'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
-              'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. ' +
-              'Return ONLY valid JSON: {"segments":[{"start":number,"end":number,"text":string}]}. ' +
-              'Keep start/end unchanged, keep the same number of segments, and translate naturally.',
-          },
-          {
-            role: 'user',
-            content: `Target language: ${targetLanguage}\n\nSegments:\n${JSON.stringify(safe)}`,
-          },
+          { role: 'system', content: system },
+          { role: 'user', content: userLines.join('\n') },
         ],
-        { temperature: 0.1, maxTokens: 3000, responseFormat: { type: 'json_object' } },
+        {
+          temperature: highQuality ? 0.15 : 0.1,
+          maxTokens: 3500,
+          responseFormat: { type: 'json_object' },
+        },
       );
       parsed = parseJson(content);
     } catch {
@@ -240,7 +285,6 @@ export const translateTranscriptSegments = async ({ segments, targetLanguage }) 
         })),
       );
     } else {
-      // Fallback: keep original timing, but still remove markdown.
       output.push(...batch.map((s) => ({ ...s, text: stripMarkdown(s.text) })));
     }
   }
@@ -248,6 +292,244 @@ export const translateTranscriptSegments = async ({ segments, targetLanguage }) 
   return output;
 };
 
+export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => {
+  const input = (pairs || [])
+    .map((p, index) => ({
+      index,
+      original: String(p?.original || '').trim(),
+      translated: String(p?.translated || '').trim(),
+    }))
+    .filter((p) => p.original);
+
+  if (input.length === 0) return [];
+
+  const results = new Array(input.length).fill(null).map((_, i) => ({
+    index: i,
+    score: null,
+    reason: '',
+    suggestions: [],
+  }));
+
+  const batches = chunkArray(input, 8);
+  for (const batch of batches) {
+    let parsed = null;
+    try {
+      const content = await callQualityChat(
+        [
+          {
+            role: 'system',
+            content:
+              'You are a strict bilingual translation quality evaluator and editor. ' +
+              'Compare each ORIGINAL (English) sentence with its TRANSLATED sentence. ' +
+              'Score from 0 to 10 (decimals allowed) for: meaning accuracy, completeness, grammar, naturalness, and preservation of intent. ' +
+              'A score of 8 or higher means the translation is acceptable. ' +
+              'If you notice English words that were left untranslated or are understandable to a non-expert, ' +
+              'suggest an equivalent word/phrase in the TARGET LANGUAGE based on the whole sentence context (not word-by-word). ' +
+              'Return ONLY valid JSON: {"results":[{"index":number,"score":number,"reason":string,"suggestions":[{"english":string,"equivalent":string}]}]}. ' +
+              'One result per input item, same order as given.',
+          },
+          {
+            role: 'user',
+            content:
+              `Target language: ${targetLanguage}\n\nPairs:\n` +
+              JSON.stringify(batch.map(({ original, translated }, i) => ({ n: i, original, translated }))),
+          },
+        ],
+        {
+          temperature: 0.0,
+          maxTokens: 4000,
+          responseFormat: { type: 'json_object' },
+        },
+      );
+      parsed = parseJson(content);
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed && Array.isArray(parsed.results) && parsed.results.length === batch.length) {
+      for (let i = 0; i < batch.length; i += 1) {
+        const r = parsed.results[i] || {};
+        const scoreRaw = Number(r.score);
+        const score = Number.isFinite(scoreRaw) ? Math.max(0, Math.min(10, scoreRaw)) : null;
+        const suggestions = Array.isArray(r.suggestions)
+          ? r.suggestions
+              .map((s) => ({
+                english: String(s?.english || '').trim(),
+                equivalent: String(s?.equivalent || '').trim(),
+              }))
+              .filter((s) => s.english && s.equivalent)
+          : [];
+        results[batch[i].index] = {
+          index: batch[i].index,
+          score,
+          reason: stripMarkdown(String(r.reason || '')),
+          suggestions,
+        };
+      }
+    }
+  }
+
+  return results;
+};
+
+export const translateTranscriptSegments = async ({
+  segments,
+  targetLanguage,
+  originalLanguage = 'en',
+}) => {
+  const source = (segments || []).map(toPair).filter((s) => s.text);
+
+  if (source.length === 0) return [];
+
+  // 1. Initial translation.
+  const initial = await translateSegmentsOnce({
+    segments: source,
+    targetLanguage,
+    highQuality: false,
+  });
+
+  const currentSegments = source.map((s, index) => {
+    const t = initial[index];
+    if (t && typeof t.text === 'string' && t.text.trim()) {
+      return { start: s.start, end: s.end, text: t.text.trim() };
+    }
+    return { start: s.start, end: s.end, text: s.text };
+  });
+
+  // 2. Evaluate against original English.
+  const pairs = source.map((s, index) => ({
+    original: s.text,
+    translated: currentSegments[index].text,
+  }));
+  let evaluations = await evaluateTranslationSegments({ pairs, targetLanguage });
+
+  const attempts = source.map(() => 1);
+  const bestScores = evaluations.map((e) =>
+    e && typeof e.score === 'number' ? e.score : null,
+  );
+
+  // 3. Retry low-scoring segments with a high-quality pass.
+  for (let attempt = 2; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt += 1) {
+    const lowIndices = source
+      .map((_, index) => index)
+      .filter((index) => {
+        const score = bestScores[index];
+        return score !== null && score < QUALITY_THRESHOLD;
+      });
+
+    if (lowIndices.length === 0) break;
+
+    const lowSegments = lowIndices.map((index) => source[index]);
+    const lowContext = lowIndices.map((index) => ({
+      previous: currentSegments[index].text,
+      score: bestScores[index],
+      reason: evaluations[index]?.reason || '',
+      suggestions: evaluations[index]?.suggestions || [],
+    }));
+
+    const retried = await translateSegmentsOnce({
+      segments: lowSegments,
+      targetLanguage,
+      highQuality: true,
+      context: lowContext,
+    });
+
+    const retriedEvalInput = lowIndices.map((index, localIndex) => ({
+      original: source[index].text,
+      translated:
+        retried[localIndex] && retried[localIndex].text
+          ? retried[localIndex].text
+          : currentSegments[index].text,
+    }));
+    const retriedEval = await evaluateTranslationSegments({
+      pairs: retriedEvalInput,
+      targetLanguage,
+    });
+
+    lowIndices.forEach((index, localIndex) => {
+      const candSegment = retried[localIndex];
+      const candEval = retriedEval[localIndex];
+      const candScore =
+        candEval && typeof candEval.score === 'number' ? candEval.score : null;
+      const prevScore = bestScores[index];
+
+      const shouldReplace =
+        candSegment &&
+        candSegment.text &&
+        (prevScore === null ||
+          candSegment.text !== currentSegments[index].text ||
+          (candScore !== null &&
+            (prevScore === null || candScore > prevScore)));
+
+      if (shouldReplace) {
+        currentSegments[index] = {
+          start: source[index].start,
+          end: source[index].end,
+          text: String(candSegment.text).trim(),
+        };
+        evaluations[index] = {
+          index,
+          score: candScore,
+          reason: candEval?.reason || evaluations[index]?.reason || '',
+          suggestions:
+            candEval?.suggestions?.length
+              ? candEval.suggestions
+              : evaluations[index]?.suggestions || [],
+        };
+        bestScores[index] = candScore !== null ? candScore : bestScores[index];
+        attempts[index] = attempt;
+      } else if (bestScores[index] !== null && bestScores[index] < QUALITY_THRESHOLD) {
+        attempts[index] = attempt;
+      }
+    });
+  }
+
+  // 4. Final evaluation for missing scores.
+  const needsFinalEval = source
+    .map((_, index) => index)
+    .filter((index) => evaluations[index] == null || evaluations[index].score == null);
+
+  if (needsFinalEval.length) {
+    const finalEvalInput = needsFinalEval.map((index) => ({
+      original: source[index].text,
+      translated: currentSegments[index].text,
+    }));
+    const finalEval = await evaluateTranslationSegments({
+      pairs: finalEvalInput,
+      targetLanguage,
+    });
+    needsFinalEval.forEach((index, localIndex) => {
+      evaluations[index] = {
+        index,
+        score: finalEval[localIndex]?.score ?? null,
+        reason: finalEval[localIndex]?.reason || '',
+        suggestions: finalEval[localIndex]?.suggestions || [],
+      };
+      const sc = finalEval[localIndex]?.score;
+      if (typeof sc === 'number') bestScores[index] = sc;
+    });
+  }
+
+  // 5. Assemble output.
+  return source.map((s, index) => {
+    const ev = evaluations[index] || {};
+    const score = typeof ev.score === 'number' ? ev.score : null;
+    return {
+      start: s.start,
+      end: s.end,
+      text: currentSegments[index].text,
+      sourceText: s.text,
+      originalLanguage: originalLanguage || 'en',
+      targetLanguage,
+      qualityScore: score,
+      qualityStatus:
+        score === null ? 'unknown' : score >= QUALITY_THRESHOLD ? 'passed' : 'failed',
+      qualityReason: ev.reason || '',
+      translationAttempts: attempts[index] || 1,
+      wordSuggestions: Array.isArray(ev.suggestions) ? ev.suggestions : [],
+    };
+  });
+};
 export const generateEducationalScript = async ({ video, targetLanguage }) => {
   const translation = (video.translations || []).find((t) => t.language === targetLanguage);
   const transcript = translation?.transcript || video.transcript || '';
@@ -320,4 +602,37 @@ export const answerQuestion = async ({ transcript, question }) => {
   );
 
   return String(content || '').trim();
+};
+
+
+export const condenseTranslationForDuration = async ({ text, targetLanguage, maxChars }) => {
+  const clean = stripMarkdown(text);
+  if (!clean) return '';
+  const limit = Math.max(20, Number(maxChars) || clean.length);
+  if (clean.length <= limit) return clean;
+
+  try {
+    const content = await callChatCompletion(
+      [
+        {
+          role: 'system',
+          content:
+            `You are an expert subtitle editor. Condense the translated subtitle text into at most ${limit} characters ` +
+            `for the target language ${targetLanguage}, while preserving the core meaning and any critical action keywords. ` +
+            'Return the condensed text only.',
+        },
+        { role: 'user', content: clean },
+      ],
+      { temperature: 0.1, maxTokens: 512 },
+    );
+    const condensed = stripMarkdown(content);
+    if (condensed && condensed.length <= limit * 1.2) return condensed;
+  } catch {
+    // fall through to trimmed original
+  }
+
+  // Hard fallback: truncate without breaking the last whole word.
+  const sliced = clean.slice(0, limit);
+  const lastSpace = sliced.lastIndexOf(' ');
+  return (lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced).trim();
 };

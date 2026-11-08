@@ -159,17 +159,24 @@ export const generateLessonVideo = async ({
   }
 
   // Prepare subtitles for burned-in rendering (voiceover mode).
+  const duration = Number(video.durationSeconds) || 0;
   const burnSegments =
     lessonSegments && lessonSegments.length
-      ? lessonSegments
-      : [{ start: 0, end: 0, text: script }];
+      ? lessonSegments.map((segment, index, list) => {
+          const start = Math.max(0, Number(segment?.start) || 0);
+          let end = Math.max(Number(segment?.end) || 0, start + 0.2);
+          if (duration > 0 && index === list.length - 1) {
+            end = Math.max(end, duration);
+          }
+          return { ...segment, start, end };
+        })
+      : [{ start: 0, end: duration > 0 ? duration : Math.max(1, script.split(/\\s+/).length / 2.5), text: script }];
   srtFile = path.join(
     TEMP_DIR,
     `lesson-${video._id}-${language}-${Date.now()}.srt`,
   );
   fs.writeFileSync(srtFile, toSrt(burnSegments));
 
-  const duration = Number(video.durationSeconds) || 0;
   let ffmpegArgs;
 
   if (backgroundOnly) {
@@ -355,10 +362,19 @@ export const generateLessonVideo = async ({
     });
     await report(92);
 
-    const subtitleSegments =
+    const rawSubtitleSegments =
       (lessonWordSegments && lessonWordSegments.length
         ? lessonWordSegments
         : lessonSegments) || [];
+    const subtitleSegments =
+      duration > 0 && rawSubtitleSegments.length
+        ? rawSubtitleSegments.map((segment, index, list) => {
+            const start = Math.max(0, Number(segment?.start) || 0);
+            let end = Math.max(Number(segment?.end) || 0, start + 0.2);
+            if (index === list.length - 1) end = Math.max(end, duration);
+            return { ...segment, start, end };
+          })
+        : rawSubtitleSegments;
     const subtitleContent = toVtt(subtitleSegments);
     subtitleFile = path.join(
       TEMP_DIR,

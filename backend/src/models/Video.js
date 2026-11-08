@@ -2,11 +2,30 @@ import mongoose from 'mongoose';
 
 export const VIDEO_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 
+const wordSuggestionSchema = new mongoose.Schema(
+  {
+    english: { type: String, default: '' },
+    equivalent: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 const transcriptSegmentSchema = new mongoose.Schema(
   {
     start: { type: Number, default: 0 },
     end: { type: Number, default: 0 },
     text: { type: String, default: '' },
+    sourceText: { type: String, default: '' },
+    originalLanguage: { type: String, default: 'en' },
+    qualityScore: { type: Number, default: null },
+    qualityStatus: {
+      type: String,
+      enum: ['passed', 'failed', 'unknown'],
+      default: 'unknown',
+    },
+    qualityReason: { type: String, default: '' },
+    translationAttempts: { type: Number, default: 1 },
+    wordSuggestions: { type: [wordSuggestionSchema], default: [] },
   },
   { _id: false }
 );
@@ -45,6 +64,13 @@ const translationSchema = new mongoose.Schema(
     transcript: { type: String, default: '' },
     segments: { type: [transcriptSegmentSchema], default: [] },
     subtitlesUrl: { type: String, default: null },
+    qualityScore: { type: Number, default: null },
+    qualityStatus: {
+      type: String,
+      enum: ['passed', 'failed', 'unknown'],
+      default: 'unknown',
+    },
+    translationAttempts: { type: Number, default: 1 },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -72,6 +98,7 @@ const lessonVideoSchema = new mongoose.Schema(
     script: { type: String, default: '' },
     segments: { type: [transcriptSegmentSchema], default: [] },
     subtitlesUrl: { type: String, default: null },
+    thumbnailUrl: { type: String, default: null },
     youtubeVideoId: { type: String, default: null },
     youtubeUrl: { type: String, default: null },
     youtubePublishedAt: { type: Date, default: null },

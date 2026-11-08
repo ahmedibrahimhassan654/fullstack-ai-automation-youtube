@@ -20,6 +20,7 @@ type VideoDetail = {
   };
   youtubeVisibility?: string;
   youtubeCategoryId?: string;
+  thumbnailUrl?: string | null;
 };
 
 function PublishForm({ id, language }: { id: string; language: string }) {
@@ -29,6 +30,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
+  const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [visibility, setVisibility] = useState("private");
   const [categoryId, setCategoryId] = useState("27");
   const [playlistId, setPlaylistId] = useState("");
@@ -44,9 +46,21 @@ function PublishForm({ id, language }: { id: string; language: string }) {
       if (res.success && res.data?.video) {
         const v = res.data.video;
         setVideo(v);
-        setTitle(v.aiMetadata?.titles?.[0] || `${v.title || "Lesson"} (${language})`);
-        setDescription(v.aiMetadata?.descriptions?.[0] || v.aiMetadata?.summary || "");
-        setTags((v.aiMetadata?.tags || []).join(", "));
+        const isArabic = language.toLowerCase().startsWith("ar");
+        if (isArabic) {
+          setTitle("مقدمة الاختراق الأخلاقي وأمن الشبكات | دورة Cyber Security بالعربية");
+          setDescription(
+            "في هذا الفيديو (57 ثانية) أرحب بك في دورة الاختراق الأخلاقي وأمن الشبكات، وأشرح أنك ستتعلم أساسيات الاختراق الأخلاقي، تحديد واستغلال الثغرات بمسؤولية، أمن تطبيقات الويب والشبكات اللاسلكية، وكيفية حماية الأنظمة.\\n\\nالفواصل:\\n00:00 مقدمة وترحيب\\n00:04 أهداف التعلم\\n00:10 خبرة عملية\\n00:16 المواضيع\\n00:20 حماية الشبكات\\n00:31 الاستخدام الأخلاقي\\n00:42 نتائج التعلم\\n00:51 خاتمة\\n\\n#الاختراق_الأخلاقي #أمن_الشبكات #الأمن_السيبراني #cybersecurity #infosec"
+          );
+          setTags(
+            "الاختراق الأخلاقي, أمن الشبكات, الأمن السيبراني, اختبار الاختراق, تقييم الثغرات, أمن تطبيقات الويب, أمن شبكات لاسلكية, network security, ethical hacking, cybersecurity, penetration testing, vulnerability assessment, infosec, cyber attacks, IT security, security posture, defensive security, responsible hacking, web security"
+          );
+        } else {
+          setTitle(v.aiMetadata?.titles?.[0] || `${v.title || "Lesson"} (${language})`);
+          setDescription(v.aiMetadata?.descriptions?.[0] || v.aiMetadata?.summary || "");
+          setTags((v.aiMetadata?.tags || []).join(", "));
+        }
+        setThumbnailUrl(v.thumbnailUrl || "");
         setVisibility(v.youtubeVisibility || "private");
         setCategoryId(v.youtubeCategoryId || "27");
       } else {
@@ -76,6 +90,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
         visibility,
         categoryId,
         playlistId: playlistId || undefined,
+        thumbnailUrl: thumbnailUrl.trim() || undefined,
       },
     );
     setPublishing(false);
@@ -127,6 +142,10 @@ function PublishForm({ id, language }: { id: string; language: string }) {
               <div className="space-y-2">
                 <Label>Tags (comma separated)</Label>
                 <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Thumbnail URL</Label>
+                <Input value={thumbnailUrl} onChange={(e) => setThumbnailUrl(e.target.value)} />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">

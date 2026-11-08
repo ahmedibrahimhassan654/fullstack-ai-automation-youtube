@@ -18,8 +18,25 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
 type Chapter = { time: string; title: string };
-type TranscriptSegment = { start: number; end: number; text: string };
-type Translation = { language: string; transcript?: string; segments?: TranscriptSegment[] };
+type TranscriptSegment = {
+  start: number;
+  end: number;
+  text: string;
+  sourceText?: string;
+  qualityScore?: number | null;
+  qualityStatus?: "passed" | "failed" | "unknown";
+  qualityReason?: string;
+  translationAttempts?: number;
+  wordSuggestions?: { english: string; equivalent: string }[];
+};
+type Translation = {
+  language: string;
+  transcript?: string;
+  segments?: TranscriptSegment[];
+  qualityScore?: number | null;
+  qualityStatus?: "passed" | "failed" | "unknown";
+  translationAttempts?: number;
+};
 type Dub = { language: string; url: string; voice?: string; durationSeconds?: number; createdAt?: string };
 type DubbingState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
 type LessonVideo = { language: string; url: string; voice?: string; durationSeconds?: number; script?: string; createdAt?: string };
@@ -101,6 +118,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [selectedLanguage, setSelectedLanguage] = useState("");
   const [lessonLanguage, setLessonLanguage] = useState("");
   const [generatingLesson, setGeneratingLesson] = useState(false);
+  const [generatingDub, setGeneratingDub] = useState(false);
   const [lessonVoiceId, setLessonVoiceId] = useState("");
   const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
 
@@ -477,6 +495,86 @@ export default function VideoDetailClient({ id }: { id: string }) {
                 </Card>
               )}
 
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Dubbed original video</CardTitle>
+                  <CardDescription>
+                    Replace the original video's audio with a synchronized dubbed track while keeping the original footage and timing.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label htmlFor="dubLanguage">Dub language</Label>
+                    <select
+                      id="dubLanguage"
+                      value={lessonLanguage}
+                      onChange={(e) => setLessonLanguage(e.target.value)}
+                      className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
+                        .filter((value, index, array) => value && array.indexOf(value) === index)
+                        .map((code) => (
+                          <option key={code} value={code}>
+                            {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
+                          </option>
+                        ))}
+                    </select>
+                    <Button
+                      onClick={async () => {
+                        setGeneratingDub(true);
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: lessonLanguage });
+                        if (res.success) {
+                          toast.success(res.message || "Dubbing started.");
+                          if (res.data?.video) setVideo(res.data.video);
+                        } else {
+                          toast.error(res.message || "Failed to start dubbing.");
+                        }
+                        setGeneratingDub(false);
+                      }}
+                      disabled={generatingDub || video.dubbing?.status === "processing"}
+                    >
+                      {video.dubbing?.status === "processing" ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          {`Dubbing… ${video.dubbing.progress ?? 0}%`}
+                        </>
+                      ) : generatingDub ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Starting…
+                        </>
+                      ) : (
+                        "Dub original video"
+                      )}
+                    </Button>
+                  </div>
+                  {video.dubbing?.status === "processing" && (
+                    <Progress value={video.dubbing.progress || 0} className="h-2" />
+                  )}
+                  {video.dubbing?.status === "failed" && video.dubbing.error && (
+                    <p className="text-sm text-destructive">Last dubbing error: {video.dubbing.error}</p>
+                  )}
+                  {video.dubs?.length ? (
+                    <div className="space-y-3">
+                      {video.dubs.map((dub, index) => (
+                        <div key={`${dub.language}-${index}`} className="rounded-md border p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-medium">
+                              {LANGUAGES.find((l) => l.code === dub.language)?.label || dub.language} ({dub.language})
+                              {dub.durationSeconds ? ` • ${dub.durationSeconds}s` : ""}
+                            </p>
+                            <a href={dub.url} target="_blank" rel="noreferrer" className="text-sm underline">
+                              Open dubbed file
+                            </a>
+                          </div>
+                          <video src={dub.url} controls className="w-full rounded-md border" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
 
               <Card>
                 <CardHeader>

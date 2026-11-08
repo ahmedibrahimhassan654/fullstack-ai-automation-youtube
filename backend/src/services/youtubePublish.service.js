@@ -171,3 +171,25 @@ export const replyYouTubeComment = async (accessToken, parentId, text) => {
     }),
   });
 };
+
+export const setYouTubeThumbnail = async (accessToken, videoId, imageBuffer, mimeType) => {
+  const res = await fetch(
+    `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': mimeType || 'image/jpeg',
+      },
+      body: imageBuffer,
+    },
+  );
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data?.error?.message || `YouTube thumbnail upload failed (${res.status})`);
+    err.statusCode = res.status;
+    throw err;
+  }
+  return data;
+};
