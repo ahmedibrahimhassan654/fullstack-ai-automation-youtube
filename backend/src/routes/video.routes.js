@@ -25,6 +25,7 @@ router.post('/:id/ask', video.answerVideoQuestion);
 router.post('/:id/lesson', video.generateLesson);
 router.post('/:id/lessons/:language/publish', video.publishLessonVideo);
 router.post('/:id/dub', video.dubVideo);
+router.post('/:id/translate', video.translateVideo);
 router.get('/:id', video.getVideo);
 router.delete('/:id', video.deleteVideo);
 

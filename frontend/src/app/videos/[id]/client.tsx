@@ -655,6 +655,21 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         "Generate new lesson video"
                       )}
                     </Button>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/translate`, { language: lessonLanguage });
+                        if (res.success) {
+                          toast.success(res.message || "Translated transcript updated.");
+                          if (res.data?.video) setVideo(res.data.video);
+                        } else {
+                          toast.error(res.message || "Failed to update translated transcript.");
+                        }
+                      }}
+                      disabled={!video || video.lessonGeneration?.status === "processing"}
+                    >
+                      Update translated transcript ({lessonLanguage})
+                    </Button>
                   </div>
 
                   {video.lessonGeneration?.status === "processing" && (

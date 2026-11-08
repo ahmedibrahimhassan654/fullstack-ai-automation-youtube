@@ -1311,3 +1311,105 @@ export const replyYouTubeComment = asyncHandler(async (req, res) => {
 
 export const getProcessingLabel = (stage) =>
   STAGE_LABELS[stage] || stage || "Processing";
+
+export const translateVideo = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error("Not authorized to translate this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(
+    req.body?.language ||
+      video.targetLanguages?.[0] ||
+      video.transcriptLanguage ||
+      "en",
+  ).trim();
+  if (!language) {
+    const err = new Error("Target language is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (
+    !Array.isArray(video.transcriptSegments) ||
+    video.transcriptSegments.length === 0
+  ) {
+    const err = new Error("Process the video first to generate a transcript");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  video.lessonGeneration = video.lessonGeneration || {};
+  // Reuse dubbing state to report translation progress.
+  video.dubbing = video.dubbing || {
+    language,
+    status: "processing",
+    progress: 5,
+    error: null,
+    startedAt: new Date(),
+    completedAt: null,
+  };
+
+  const segments = await translateTranscriptSegments({
+    segments: video.transcriptSegments,
+    targetLanguage: language,
+    originalLanguage:
+      video.transcriptLanguage || video.originalLanguage || "en",
+  });
+
+  if (video.durationSeconds > 0 && segments.length > 0) {
+    const last = segments[segments.length - 1];
+    last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
+  }
+
+  const qualityScores = segments
+    .map((s) => s.qualityScore)
+    .filter((n) => typeof n === "number");
+  const avgQuality =
+    qualityScores.length > 0
+      ? qualityScores.reduce((sum, n) => sum + n, 0) / qualityScores.length
+      : null;
+
+  const translation = {
+    language,
+    transcript: segments.map((s) => s.text).join(" "),
+    segments,
+    qualityScore: avgQuality,
+    qualityStatus:
+      qualityScores.length === 0
+        ? "unknown"
+        : segments.every((s) => s.qualityStatus !== "failed")
+        ? "passed"
+        : "failed",
+    translationAttempts: Math.max(
+      1,
+      ...segments.map((s) => s.translationAttempts || 1),
+    ),
+  };
+
+  const existing = (video.translations || []).filter(
+    (t) => t.language !== language,
+  );
+  video.translations = [...existing, translation];
+
+  if (!video.targetLanguages) video.targetLanguages = [];
+  if (!video.targetLanguages.includes(language)) {
+    video.targetLanguages.push(language);
+  }
+
+  await video.save();
+  emitVideoProgress(video);
+
+  res.status(200).json({
+    success: true,
+    message: `Transcript translated to ${language}`,
+    data: { video: await Video.findById(video._id).lean() },
+  });
+});

@@ -165,12 +165,22 @@ export const generateLessonVideo = async ({
       ? lessonSegments.map((segment, index, list) => {
           const start = Math.max(0, Number(segment?.start) || 0);
           let end = Math.max(Number(segment?.end) || 0, start + 0.2);
-          if (duration > 0 && index === list.length - 1) {
-            end = Math.max(end, duration);
+          if (duration > 0) {
+            end = Math.min(end, duration);
+            if (end <= start) end = Math.min(duration, start + 0.2);
           }
           return { ...segment, start, end };
         })
-      : [{ start: 0, end: duration > 0 ? duration : Math.max(1, script.split(/\\s+/).length / 2.5), text: script }];
+      : [
+          {
+            start: 0,
+            end:
+              duration > 0
+                ? duration
+                : Math.max(1, script.split(/\\s+/).length / 2.5),
+            text: script,
+          },
+        ];
   srtFile = path.join(
     TEMP_DIR,
     `lesson-${video._id}-${language}-${Date.now()}.srt`,
@@ -194,12 +204,7 @@ export const generateLessonVideo = async ({
           "[a]",
         ]
       : ["-map", "0:v:0", "-map", "1:a:0"];
-    const subtitleArgs = subtitleFileName
-      ? [
-          "-vf",
-          `subtitles=${subtitleFileName}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
-        ]
-      : [];
+    const subtitleArgs = [];
     ffmpegArgs = [
       "-y",
       "-f",
@@ -243,8 +248,6 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-vf",
-            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
             "libx264",
             "-preset",
@@ -275,8 +278,6 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-vf",
-            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
             "libx264",
             "-preset",
@@ -305,8 +306,6 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-vf",
-            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
             "libx264",
             "-preset",
@@ -331,8 +330,6 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "1:a:0",
-            "-vf",
-            `subtitles=${path.basename(srtFile)}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=40'`,
             "-c:v",
             "libx264",
             "-preset",
@@ -371,7 +368,10 @@ export const generateLessonVideo = async ({
         ? rawSubtitleSegments.map((segment, index, list) => {
             const start = Math.max(0, Number(segment?.start) || 0);
             let end = Math.max(Number(segment?.end) || 0, start + 0.2);
-            if (index === list.length - 1) end = Math.max(end, duration);
+            if (duration > 0) {
+              end = Math.min(end, duration);
+              if (end <= start) end = Math.min(duration, start + 0.2);
+            }
             return { ...segment, start, end };
           })
         : rawSubtitleSegments;
