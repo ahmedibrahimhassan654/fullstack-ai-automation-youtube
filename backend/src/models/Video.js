@@ -54,6 +54,7 @@ const aiMetadataSchema = new mongoose.Schema(
     language: { type: String, default: 'en' },
     model: { type: String, default: '' },
     generatedAt: { type: Date, default: null },
+    localized: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { _id: false }
 );
@@ -102,6 +103,15 @@ const lessonVideoSchema = new mongoose.Schema(
     youtubeVideoId: { type: String, default: null },
     youtubeUrl: { type: String, default: null },
     youtubePublishedAt: { type: Date, default: null },
+    youtubeChannelId: { type: String, default: null },
+    youtubeChannelTitle: { type: String, default: null },
+    youtubePlaylistId: { type: String, default: null },
+    youtubePlaylistItemId: { type: String, default: null },
+    youtubeVisibility: { type: String, default: null },
+    youtubeCategoryId: { type: String, default: null },
+    youtubeTitle: { type: String, default: null },
+    youtubeDescription: { type: String, default: null },
+    youtubeTags: { type: [String], default: [] },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -121,7 +131,7 @@ const errorSchema = new mongoose.Schema(
     message: { type: String, default: '' },
     stage: {
       type: String,
-      enum: ['upload', 'transcription', 'analysis', 'translation', 'publish', 'unknown'],
+      enum: ['upload', 'transcription', 'analysis', 'translation', 'publish', 'failed', 'unknown'],
       default: 'unknown',
     },
     stack: { type: String, default: null, select: false },

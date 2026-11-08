@@ -31,7 +31,12 @@ type VideoRow = {
   targetLanguages?: string[];
   translations?: { language: string }[];
   dubs?: { language: string }[];
-  lessonVideos?: { language: string }[];
+  lessonVideos?: {
+    language: string;
+    youtubeUrl?: string | null;
+    youtubeVideoId?: string | null;
+    youtubeChannelTitle?: string | null;
+  }[];
 };
 
 const STAGE_LABEL: Record<string, string> = {
@@ -210,6 +215,7 @@ export default function DashboardPage() {
                       <TableHead>Stage</TableHead>
                       <TableHead>Progress</TableHead>
                       <TableHead>Languages</TableHead>
+                        <TableHead>YouTube (lesson links)</TableHead>
                       <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -260,6 +266,23 @@ export default function DashboardPage() {
                           {v.dubs?.length ? (
                             <div>Dubs: {v.dubs.map((d) => d.language).join(', ')}</div>
                           ) : null}
+                        </TableCell>
+                        <TableCell className="text-xs space-y-1">
+                          {(v.lessonVideos || [])
+                            .filter((l) => l.youtubeUrl || l.youtubeVideoId)
+                            .map((l, i) => (
+                              <div key={i}>
+                                {l.youtubeUrl ? (
+                                  <a href={l.youtubeUrl} target="_blank" rel="noreferrer" className="underline">
+                                    {l.language} → YouTube
+                                  </a>
+                                ) : (
+                                  `${l.language} (published)`
+                                )}
+                                {l.youtubeChannelTitle ? ` • ${l.youtubeChannelTitle}` : ""}
+                              </div>
+                            ))}
+                          {!(v.lessonVideos || []).some((l) => l.youtubeUrl || l.youtubeVideoId) && "—"}
                         </TableCell>
                         <TableCell className="space-x-2">
                           <a href={`/videos/${v._id}`} className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>

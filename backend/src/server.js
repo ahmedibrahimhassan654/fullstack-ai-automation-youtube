@@ -2,6 +2,7 @@ import { connectDB } from "./config/db.js";
 import { validateEnv } from "./config/env.js";
 import app from "./app.js";
 import { env } from "./config/env.js";
+import { resumeStuckVideoPipelines } from "./controllers/video.controller.js";
 
 validateEnv();
 
@@ -10,6 +11,10 @@ const start = async () => {
 
   const server = app.listen(env.port, () => {
     console.log(`[server] Running in ${env.nodeEnv} mode on port ${env.port}`);
+    // Resume any videos left processing by a previous instance.
+    resumeStuckVideoPipelines().catch((err) =>
+      console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
+    );
   });
 
   // Graceful shutdown

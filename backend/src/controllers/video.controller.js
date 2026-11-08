@@ -1,4 +1,5 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
+const YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3";
 import Video from "../models/Video.js";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
@@ -8,6 +9,7 @@ import {
   analyzeTranscript,
   answerQuestion,
   translateTranscriptSegments,
+  translatePublishMetadata,
 } from "../services/aiMetadata.service.js";
 import { generateDubbedVideo } from "../services/dubbing.service.js";
 import { parseSubtitle } from "../services/subtitle.service.js";
@@ -19,6 +21,9 @@ import {
   listYouTubeComments as fetchYouTubeComments,
   listYouTubePlaylists as fetchYouTubePlaylists,
   publishYouTubeVideo,
+  updateYouTubeVideo,
+  deletePlaylistItem,
+  youtubeFetch,
   setYouTubeThumbnail,
   replyYouTubeComment as replyToYouTubeComment,
 } from "../services/youtubePublish.service.js";
@@ -394,9 +399,12 @@ export const deleteVideo = asyncHandler(async (req, res) => {
 const isOwnerOrAdmin = (video, user) =>
   video.user.toString() === user._id.toString() || user.role === "admin";
 
-const runPipeline = async (videoId) => {
+export const runPipeline = async (videoId) => {
   const video = await Video.findById(videoId);
-  if (!video) return;
+  if (!video) {
+    console.log('[runPipeline] video not found', videoId);
+    return;
+  }
 
   try {
     video.status = "processing";
@@ -444,10 +452,14 @@ const runPipeline = async (videoId) => {
           .replace(/\\.[^/.]+$/, ".mp3");
       }
 
-      let response = await fetch(fetchUrl);
+      let response = await fetch(fetchUrl, {
+        signal: AbortSignal.timeout(300000),
+      });
       if (!response.ok && fetchUrl !== publicUrl) {
         // Fall back to the original file if derivation isn't available.
-        response = await fetch(publicUrl);
+        response = await fetch(publicUrl, {
+          signal: AbortSignal.timeout(300000),
+        });
         fetchUrl = publicUrl;
       }
       if (!response.ok) {
@@ -583,8 +595,8 @@ const runPipeline = async (videoId) => {
     video.status = "failed";
     video.currentStage = "failed";
     video.lastError = {
-      message: error?.message || "Transcription failed",
-      stage: "transcription",
+      message: error?.message || "Processing failed",
+      stage: video.currentStage || "processing",
       occurredAt: new Date(),
     };
     await video.save();
@@ -1218,45 +1230,81 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
   const accessToken = await getValidYouTubeAccessToken(user);
 
-  const mediaRes = await fetch(lesson.url);
-  if (!mediaRes.ok) {
-    const err = new Error("Failed to download generated lesson video for upload");
-    err.statusCode = 502;
-    throw err;
-  }
-  const mediaBuffer = Buffer.from(await mediaRes.arrayBuffer());
+  const title = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
+  const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
+  const tags = Array.isArray(req.body?.tags)
+    ? req.body.tags
+    : (lesson.youtubeTags?.length ? lesson.youtubeTags : (video.aiMetadata?.tags || []));
+  const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
+  const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
+  const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || null);
 
-  const title = String(req.body?.title || `${video.title} (${language})`).trim();
-  const description = String(req.body?.description || video.aiMetadata?.summary || video.description || "").trim();
-  const tags = Array.isArray(req.body?.tags) ? req.body.tags : (video.aiMetadata?.tags || []);
-  const categoryId = String(req.body?.categoryId || video.youtubeCategoryId || "27");
-  const visibility = String(req.body?.visibility || video.youtubeVisibility || "private");
-  const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : null;
+  const channelRes = await youtubeFetch(accessToken, `${YOUTUBE_API_URL}/channels?part=snippet&mine=true`);
+  const channel = (channelRes.items || [])[0] || null;
 
-  const uploaded = await publishYouTubeVideo(
-    accessToken,
-    {
+  const thumbnailUrl = req.body?.thumbnailUrl
+    ? String(req.body.thumbnailUrl).trim()
+    : (lesson.thumbnailUrl || "");
+
+  const isUpdate = Boolean(lesson.youtubeVideoId);
+  let youtubeVideoId = lesson.youtubeVideoId;
+
+  if (!isUpdate) {
+    const mediaRes = await fetch(lesson.url);
+    if (!mediaRes.ok) {
+      const err = new Error("Failed to download generated lesson video for upload");
+      err.statusCode = 502;
+      throw err;
+    }
+    const mediaBuffer = Buffer.from(await mediaRes.arrayBuffer());
+    const uploaded = await publishYouTubeVideo(
+      accessToken,
+      {
+        title,
+        description,
+        tags,
+        categoryId,
+        visibility,
+        mimeType: "video/mp4",
+      },
+      mediaBuffer,
+    );
+    youtubeVideoId = uploaded.id;
+  } else {
+    await updateYouTubeVideo(accessToken, youtubeVideoId, {
       title,
       description,
       tags,
       categoryId,
       visibility,
-      mimeType: "video/mp4",
-    },
-    mediaBuffer,
-  );
+    });
+  }
 
-  if (playlistId) {
+  if (playlistId && playlistId !== (lesson.youtubePlaylistId || null)) {
+    if (lesson.youtubePlaylistItemId) {
+      try { await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId); } catch (e) {
+        console.warn("[publishLessonVideo] playlist item removal failed:", e?.message);
+      }
+    }
     try {
-      await addVideoToPlaylist(accessToken, playlistId, uploaded.id);
+      const added = await addVideoToPlaylist(accessToken, playlistId, youtubeVideoId);
+      lesson.youtubePlaylistId = playlistId;
+      lesson.youtubePlaylistItemId = added?.id || null;
     } catch (error) {
       console.warn("[publishLessonVideo] playlist add failed:", error?.message);
     }
+  } else if (!playlistId && lesson.youtubePlaylistId) {
+    if (lesson.youtubePlaylistItemId) {
+      try { await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId); } catch (e) {
+        console.warn("[publishLessonVideo] playlist item removal failed:", e?.message);
+      }
+    }
+    lesson.youtubePlaylistId = null;
+    lesson.youtubePlaylistItemId = null;
+  } else {
+    lesson.youtubePlaylistId = playlistId || lesson.youtubePlaylistId || null;
   }
 
-  const thumbnailUrl = req.body?.thumbnailUrl
-    ? String(req.body.thumbnailUrl).trim()
-    : "";
   if (thumbnailUrl) {
     try {
       const imageRes = await fetch(thumbnailUrl);
@@ -1265,26 +1313,36 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       }
       const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
       const mimeType = imageRes.headers.get("content-type") || "image/jpeg";
-      await setYouTubeThumbnail(accessToken, uploaded.id, imageBuffer, mimeType);
+      await setYouTubeThumbnail(accessToken, youtubeVideoId, imageBuffer, mimeType);
       lesson.thumbnailUrl = thumbnailUrl;
     } catch (error) {
       console.warn("[publishLessonVideo] thumbnail upload failed:", error?.message);
     }
   }
 
-  lesson.youtubeVideoId = uploaded.id;
-  lesson.youtubeUrl = `https://www.youtube.com/watch?v=${uploaded.id}`;
-  lesson.youtubePublishedAt = new Date();
+  lesson.youtubeVideoId = youtubeVideoId;
+  lesson.youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
+  lesson.youtubePublishedAt = lesson.youtubePublishedAt || new Date();
   lesson.youtubeVisibility = visibility;
+  lesson.youtubeCategoryId = categoryId;
+  lesson.youtubeTitle = title;
+  lesson.youtubeDescription = description;
+  lesson.youtubeTags = tags;
+  lesson.youtubeChannelId = channel?.id || lesson.youtubeChannelId;
+  lesson.youtubeChannelTitle = channel?.snippet?.title || lesson.youtubeChannelTitle;
   await video.save();
 
   res.status(200).json({
     success: true,
-    message: `Published lesson (${language}) to YouTube`,
+    message: isUpdate
+      ? `Updated lesson (${language}) on YouTube`
+      : `Published lesson (${language}) to YouTube`,
     data: {
-      youtubeVideoId: uploaded.id,
+      mode: isUpdate ? "updated" : "published",
+      youtubeVideoId,
       youtubeUrl: lesson.youtubeUrl,
-      lesson,
+      channelTitle: lesson.youtubeChannelTitle,
+      playlistId: lesson.youtubePlaylistId,
     },
   });
 });
@@ -1307,6 +1365,121 @@ export const replyYouTubeComment = asyncHandler(async (req, res) => {
   const accessToken = await getValidYouTubeAccessToken(user);
   const result = await replyToYouTubeComment(accessToken, req.params.commentId, text);
   res.status(200).json({ success: true, data: { comment: result } });
+});
+
+export const resumeStuckVideoPipelines = async () => {
+  try {
+    // Re-queue videos left in "processing" by a previous server instance/crash.
+    // runPipeline is idempotent enough for this: it restarts from transcription.
+    const stuck = await Video.find({ status: "processing" }).select("_id").lean();
+    if (stuck.length === 0) return;
+    (async () => {
+      for (const item of stuck) {
+        console.log(`[startup] resuming processing for video ${item._id}`);
+        try {
+          await runPipeline(String(item._id));
+        } catch (err) {
+          console.error("[startup] resume pipeline error:", err?.message || err);
+        }
+      }
+    })();
+  } catch (error) {
+    console.error("[startup] failed to resume stuck videos:", error?.message || error);
+  }
+};
+
+export const uploadCanvasThumbnail = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdmin(video, req.user)) {
+    const err = new Error("Not authorized to update this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const dataUrl = String(req.body?.thumbnailDataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) {
+    const err = new Error("A valid image data URL is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await cloudinary.uploader.upload(dataUrl, {
+    folder: `${env.cloudinaryFolder}/thumbnails`,
+    resource_type: "image",
+  });
+
+  video.thumbnailUrl = result.secure_url;
+  await video.save();
+  emitVideoProgress(video);
+
+  res.status(200).json({
+    success: true,
+    message: "Thumbnail uploaded",
+    data: { thumbnailUrl: result.secure_url },
+  });
+});
+
+export const getPublishPrefill = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdmin(video, req.user)) {
+    const err = new Error("Not authorized to view this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.query.language || "en").trim() || "en";
+  const originalLanguage =
+    video.transcriptLanguage || video.originalLanguage || "en";
+  const isOriginal = language.toLowerCase().startsWith(originalLanguage.toLowerCase());
+
+  let metadata = video.aiMetadata ? video.aiMetadata.toObject() : {};
+  const localized = video.aiMetadata?.localized || {};
+  const cacheKey = language.toLowerCase();
+
+  if (isOriginal) {
+    // no translation needed
+  } else if (localized[cacheKey]) {
+    metadata = { ...metadata, ...localized[cacheKey] };
+  } else {
+    metadata = await translatePublishMetadata({
+      metadata,
+      targetLanguage: language,
+      originalLanguage,
+    });
+    if (!video.aiMetadata) video.aiMetadata = {};
+    if (!video.aiMetadata.localized) video.aiMetadata.localized = {};
+    video.aiMetadata.localized[cacheKey] = {
+      titles: metadata.titles,
+      descriptions: metadata.descriptions,
+      summary: metadata.summary,
+      chapters: metadata.chapters,
+      keyPoints: metadata.keyPoints,
+      openQuestions: metadata.openQuestions,
+      tags: metadata.tags,
+    };
+    video.markModified("aiMetadata");
+    await video.save();
+  }
+
+  const v = await Video.findById(video._id).lean();
+  res.status(200).json({
+    success: true,
+    data: {
+      video: v,
+      metadata,
+      language,
+    },
+  });
 });
 
 export const getProcessingLabel = (stage) =>

@@ -20,31 +20,80 @@ const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL_QUALITY = env.aiModelQuality || 'openai/gpt-oss-120b';
 const GROQ_MODEL_FAST = env.aiModelFast || 'openai/gpt-oss-20b';
 
-const resolveProvider = () => (env.aiProvider === 'ollama' ? 'ollama' : 'groq');
+const resolveProvider = () => {
+  const p = String(env.aiProvider || 'groq').toLowerCase();
+  if (p === 'ollama' || p === 'gemini') return p;
+  return 'groq';
+};
+
+const callOllamaCompletionOnce = async (messages, extra = {}) => {
+  const baseUrl = env.ollamaBaseUrl.replace(/\/$/, '');
+  const url = `${baseUrl}/v1/chat/completions`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (env.ollamaApiKey) headers.Authorization = `Bearer ${env.ollamaApiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: extra.model || env.ollamaModel,
+      messages,
+      temperature: extra.temperature ?? 0.2,
+      max_tokens: extra.maxTokens ?? 2048,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.error?.message || data?.message || `Ollama chat failed (${response.status})`;
+    const err = new Error(message);
+    err.statusCode = response.status;
+    throw err;
+  }
+  return data?.choices?.[0]?.message?.content || '';
+};
 
 const callChatCompletionOnce = async (messages, extra = {}) => {
   const provider = resolveProvider();
 
   if (provider === 'ollama') {
-    const baseUrl = env.ollamaBaseUrl.replace(/\/$/, '');
-    const url = `${baseUrl}/v1/chat/completions`;
-    const headers = { 'Content-Type': 'application/json' };
-    if (env.ollamaApiKey) headers.Authorization = `Bearer ${env.ollamaApiKey}`;
+    return callOllamaCompletionOnce(messages, extra);
+  }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: extra.model || env.ollamaModel,
-        messages,
-        temperature: extra.temperature ?? 0.2,
-        max_tokens: extra.maxTokens ?? 2048,
-      }),
-    });
-
+  if (provider === 'gemini') {
+    if (!env.geminiApiKey) {
+      const err = new Error('GEMINI_API_KEY is not configured');
+      err.statusCode = 500;
+      throw err;
+    }
+    const defaultGeminiModel =
+      String(env.aiModelQuality || '').toLowerCase().includes('gemini')
+        ? env.aiModelQuality
+        : 'gemini-3.5-flash-lite';
+    const model = extra.model || defaultGeminiModel;
+    const response = await fetch(
+      `${env.geminiBaseUrl.replace(/\/$/, '')}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.geminiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: extra.temperature ?? 0.2,
+          max_tokens: extra.maxTokens ?? 2048,
+          response_format: extra.responseFormat,
+        }),
+        signal: AbortSignal.timeout(120000),
+      },
+    );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = data?.error?.message || data?.message || `Ollama chat failed (${response.status})`;
+      const message =
+        data?.error?.message || data?.message || `Gemini chat failed (${response.status})`;
       const err = new Error(message);
       err.statusCode = response.status;
       throw err;
@@ -73,6 +122,7 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
       max_tokens: extra.maxTokens ?? 2048,
       response_format: extra.responseFormat,
     }),
+    signal: AbortSignal.timeout(120000),
   });
 
   const data = await response.json().catch(() => ({}));
@@ -86,9 +136,23 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
   return data?.choices?.[0]?.message?.content || '';
 };
 
+const retryDelayMs = (error, attempt) => {
+  const message = String(error?.message || '');
+  const match = message.match(/try again in ([0-9.]+)\s*s/i);
+  if (match) {
+    const seconds = Number(match[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds * 1000) + 1000;
+    }
+  }
+  // Exponential backoff that is generous enough for provider TPM resets.
+  return Math.min(60000, 5000 * (attempt + 1));
+};
+
 const callChatCompletion = async (messages, extra = {}) => {
   let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       return await callChatCompletionOnce(messages, extra);
     } catch (error) {
@@ -99,10 +163,25 @@ const callChatCompletion = async (messages, extra = {}) => {
         status === 429 ||
         status >= 500 ||
         /over capacity|rate limit|timeout|temporarily unavailable/i.test(message);
-      if (!retryable || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      if (!retryable || attempt === maxAttempts - 1) break;
+      await new Promise((resolve) =>
+        setTimeout(resolve, retryDelayMs(error, attempt)),
+      );
     }
   }
+
+  // If the configured provider is unavailable/rate-limited, fall back to local/Ollama.
+  if (lastError && String(lastError?.message || '').match(/429|rate limit|quota/i) && resolveProvider() !== 'ollama') {
+    try {
+      return await callOllamaCompletionOnce(messages, {
+        ...extra,
+        model: env.ollamaModel,
+      });
+    } catch (fallbackError) {
+      console.warn('[aiMetadata] Ollama fallback failed:', fallbackError?.message || fallbackError);
+    }
+  }
+
   throw lastError;
 };
 
@@ -204,14 +283,18 @@ const toPair = (segment) => ({
   text: String(segment?.text || '').trim(),
 });
 
-const callQualityChat = async (messages, extra = {}) =>
-  callChatCompletion(messages, {
-    ...extra,
-    model:
-      resolveProvider() === 'ollama'
-        ? env.ollamaModel
-        : env.aiModelQuality || GROQ_MODEL_QUALITY,
-  });
+const callQualityChat = async (messages, extra = {}) => {
+  const provider = resolveProvider();
+  const model =
+    provider === 'ollama'
+      ? env.ollamaModel
+      : provider === 'gemini'
+        ? String(env.aiModelQuality || '').toLowerCase().includes('gemini')
+          ? env.aiModelQuality
+          : 'gemini-3.5-flash-lite'
+        : env.aiModelQuality || GROQ_MODEL_QUALITY;
+  return callChatCompletion(messages, { ...extra, model });
+};
 
 const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = false, context = [] }) => {
   const input = (segments || []).map(toPair).filter((s) => s.text);
@@ -272,7 +355,8 @@ const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = f
         },
       );
       parsed = parseJson(content);
-    } catch {
+    } catch (e) {
+      console.error('[translateSegmentsOnce] chat error:', e?.message);
       parsed = null;
     }
 
@@ -569,7 +653,14 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
     {
       temperature: 0.4,
       maxTokens: 1000,
-      model: resolveProvider() === 'ollama' ? env.ollamaModel : GROQ_MODEL_FAST,
+      model:
+        resolveProvider() === 'ollama'
+          ? env.ollamaModel
+          : resolveProvider() === 'gemini'
+            ? String(env.aiModelFast || '').toLowerCase().includes('gemini')
+              ? env.aiModelFast
+              : 'gemini-3.5-flash-lite'
+            : GROQ_MODEL_FAST,
     },
   );
 
@@ -604,6 +695,76 @@ export const answerQuestion = async ({ transcript, question }) => {
   return String(content || '').trim();
 };
 
+
+export const translatePublishMetadata = async ({ metadata, targetLanguage, originalLanguage = 'en' }) => {
+  const meta = metadata && typeof metadata === 'object' ? metadata : {};
+  if (!targetLanguage || String(targetLanguage).toLowerCase().startsWith(String(originalLanguage || 'en').toLowerCase())) {
+    return meta;
+  }
+
+  const source = {
+    title: String(meta?.titles?.[0] || meta?.title || '').trim(),
+    description: String(meta?.descriptions?.[0] || meta?.description || '').trim(),
+    summary: String(meta?.summary || '').trim(),
+    chapters: Array.isArray(meta?.chapters) ? meta.chapters.map((c) => String(c?.title || '').trim()) : [],
+    keyPoints: Array.isArray(meta?.keyPoints) ? meta.keyPoints.map((v) => String(v || '').trim()) : [],
+    openQuestions: Array.isArray(meta?.openQuestions) ? meta.openQuestions.map((v) => String(v || '').trim()) : [],
+    tags: Array.isArray(meta?.tags) ? meta.tags.map((v) => String(v || '').trim()) : [],
+  };
+
+  try {
+    const content = await callChatCompletion(
+      [
+        {
+          role: 'system',
+          content:
+            `You are a professional translator and copywriter. Translate every value of the provided JSON into ${targetLanguage}. ` +
+            'Keep the exact same JSON structure and array lengths. ' +
+            'Make the title and description natural, fluent, and easy to read. ' +
+            'Use polite, engaging language and preserve technical terms appropriately. ' +
+            'Return ONLY valid JSON with keys: title, description, summary, chapters, keyPoints, openQuestions, tags.',
+        },
+        {
+          role: 'user',
+          content: `Source JSON:\\n${JSON.stringify(source)}`,
+        },
+      ],
+      {
+        temperature: 0.2,
+        maxTokens: 4000,
+        responseFormat: { type: 'json_object' },
+      },
+    );
+
+    const parsed = parseJson(content);
+    if (parsed && typeof parsed === 'object') {
+      const chapters = Array.isArray(parsed.chapters)
+        ? (meta.chapters || []).map((chapter, index) => ({
+            ...chapter,
+            title: String(parsed.chapters[index] || chapter?.title || '').trim() || chapter?.title,
+          }))
+        : meta.chapters || [];
+      const tags = Array.isArray(parsed.tags) && parsed.tags.length ? parsed.tags.map(String) : meta.tags || [];
+      return {
+        ...meta,
+        titles: parsed.title ? [String(parsed.title).trim()] : meta.titles || [],
+        descriptions: parsed.description ? [String(parsed.description).trim()] : meta.descriptions || [],
+        summary: parsed.summary ? String(parsed.summary).trim() : meta.summary || '',
+        chapters,
+        keyPoints: Array.isArray(parsed.keyPoints) && parsed.keyPoints.length ? parsed.keyPoints.map(String) : meta.keyPoints || [],
+        openQuestions: Array.isArray(parsed.openQuestions) && parsed.openQuestions.length
+          ? parsed.openQuestions.map(String)
+          : meta.openQuestions || [],
+        tags,
+      };
+    }
+  } catch (error) {
+    console.error("[translatePublishMetadata] error:", error?.message || error);
+    // Fall back to original metadata.
+  }
+
+  return meta;
+};
 
 export const condenseTranslationForDuration = async ({ text, targetLanguage, maxChars }) => {
   const clean = stripMarkdown(text);

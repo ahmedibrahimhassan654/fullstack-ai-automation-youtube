@@ -71,6 +71,7 @@ type VideoDetail = {
   translations?: Translation[];
   targetLanguages?: string[];
   originalLanguage?: string;
+  attachments?: { name?: string; type?: string; url?: string | null }[];
   youtubeVisibility?: string;
   youtubeCategoryId?: string;
   youtubeVideoId?: string | null;
@@ -388,6 +389,30 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   )}
                 </CardContent>
               </Card>
+
+              {video.attachments?.length ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Attachments & links</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="space-y-2 text-sm">
+                      {video.attachments.map((a, i) => (
+                        <li key={i} className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">{a.type || "file"}</Badge>
+                          {a.url ? (
+                            <a href={a.url} target="_blank" rel="noreferrer" className="underline">
+                              {a.name || a.url}
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground">{a.name || "Unavailable"}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              ) : null}
 
               {meta && (
                 <Card>

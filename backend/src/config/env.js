@@ -24,6 +24,9 @@ export const env = {
   clientUrl: process.env.CLIENT_URL || 'http://localhost:3000',
   groqApiKey: process.env.GROQ_API_KEY || '',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
+  geminiBaseUrl:
+    process.env.GEMINI_BASE_URL ||
+    'https://generativelanguage.googleapis.com/v1beta/openai',
   // AI provider selection: 'groq' (default) or 'ollama'
   aiProvider: (process.env.AI_PROVIDER || 'groq').toLowerCase(),
   aiModelFast: process.env.AI_MODEL_FAST || 'qwen/qwen3.8-27b',

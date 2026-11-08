@@ -49,7 +49,7 @@ export const getValidYouTubeAccessToken = async (user) => {
   return data.access_token;
 };
 
-const youtubeFetch = async (accessToken, url, options = {}) => {
+export const youtubeFetch = async (accessToken, url, options = {}) => {
   const res = await fetch(url, {
     ...options,
     headers: {
@@ -170,6 +170,45 @@ export const replyYouTubeComment = async (accessToken, parentId, text) => {
       },
     }),
   });
+};
+
+export const deletePlaylistItem = async (accessToken, playlistItemId) => {
+  const res = await fetch(
+    `${API_URL}/playlistItems?id=${encodeURIComponent(playlistItemId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Failed to remove playlist item (${res.status})`);
+  }
+  return true;
+};
+
+export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) => {
+  const body = {
+    id: youtubeVideoId,
+    snippet: {
+      title: metadata.title,
+      description: metadata.description,
+      tags: metadata.tags || [],
+      categoryId: metadata.categoryId || '27',
+    },
+    status: {
+      privacyStatus: metadata.visibility || 'private',
+    },
+  };
+  return youtubeFetch(
+    accessToken,
+    `${API_URL}/videos?part=snippet,status`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
 };
 
 export const setYouTubeThumbnail = async (accessToken, videoId, imageBuffer, mimeType) => {

@@ -5,17 +5,31 @@ const stripTags = (text) =>
     .trim();
 
 const parseTimestamp = (value) => {
-  // Supports SRT (00:00:01,234) and VTT (00:00:01.234).
-  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$/);
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  const seconds = Number(match[3]);
-  let millis = match[4];
-  if (millis.length === 1) millis += '00';
-  else if (millis.length === 2) millis += '0';
-  const ms = Number(millis.padEnd(3, '0').slice(0, 3));
-  return hours * 3600 + minutes * 60 + seconds + ms / 1000;
+  // Supports SRT (00:00:01,234), VTT long (00:00:01.234)
+  // and VTT short (00:01.234 or 00:01.23).
+  const raw = String(value || '').trim();
+  let match = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+  if (match) {
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    const seconds = Number(match[3]);
+    let millis = match[4];
+    if (millis.length === 1) millis += '00';
+    else if (millis.length === 2) millis += '0';
+    const ms = Number(millis.padEnd(3, '0').slice(0, 3));
+    return hours * 3600 + minutes * 60 + seconds + ms / 1000;
+  }
+  match = raw.match(/^(\d{1,2}):(\d{2})[,.](\d{1,3})$/);
+  if (match) {
+    const minutes = Number(match[1]);
+    const seconds = Number(match[2]);
+    let millis = match[3];
+    if (millis.length === 1) millis += '00';
+    else if (millis.length === 2) millis += '0';
+    const ms = Number(millis.padEnd(3, '0').slice(0, 3));
+    return minutes * 60 + seconds + ms / 1000;
+  }
+  return null;
 };
 
 export const parseSrt = (text) => {
@@ -33,7 +47,13 @@ export const parseSrt = (text) => {
     if (/^\d+$/.test(lines[i].trim())) i += 1;
 
     const timingLine = lines[i]?.trim() || '';
-    const timingMatch = timingLine.match(/(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})/);
+    let timingMatch = timingLine.match(
+      /(\d{1,2}:\d{2}(?::\d{2})?[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}(?::\d{2})?[,.]\d{1,3})/
+    );
+    if (!timingMatch && timingLine.includes('-->')) {
+      const parts = timingLine.split('-->');
+      timingMatch = [timingLine, parts[0].trim(), parts[1].trim().split(/\s/)[0]];
+    }
     if (!timingMatch) {
       // Not a cue header; advance to avoid infinite loops.
       i += 1;
