@@ -11,10 +11,16 @@ const start = async () => {
 
   const server = app.listen(env.port, () => {
     console.log(`[server] Running in ${env.nodeEnv} mode on port ${env.port}`);
-    // Resume any videos left processing by a previous instance.
-    resumeStuckVideoPipelines().catch((err) =>
-      console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
-    );
+
+    process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
+    process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
+
+    // Resume in background without blocking the server.
+    setImmediate(() => {
+      resumeStuckVideoPipelines().catch((err) =>
+        console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
+      );
+    });
   });
 
   // Graceful shutdown

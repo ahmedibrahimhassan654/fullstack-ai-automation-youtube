@@ -80,7 +80,7 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
   const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
   const ssml =
     `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
-    `<voice name="${voice}"><prosody rate="${rate}" pitch="+1.5Hz">${escapeXml(chunkText)}</prosody></voice></speak>`;
+    `<voice name="${voice}"><prosody rate="${rate}" pitch="+0.8Hz">${escapeXml(chunkText)}</prosody></voice></speak>`;
 
   const { audioStream, metadataStream } = tts.rawToStream(ssml);
   const audioChunks = [];
@@ -320,13 +320,19 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
     options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
   if (elevenLabsVoiceId && env.elevenLabsApiKey) {
-    return synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
+    try {
+      return await synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
+    } catch (error) {
+      const message = String(error?.message || '');
+      // Do not stop the whole lesson if an optional paid voice is out of credits.
+      console.warn('[tts] ElevenLabs failed; falling back to free Edge TTS:', message);
+    }
   }
 
   const rate = options.rate || '-3%';
   const report = options.onProgress;
   const clean = stripMarkdown(text);
-  const chunks = (clean.match(/.{1,4000}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
+  const chunks = (clean.match(/.{1,1200}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
 
   if (chunks.length === 0) throw new Error('No speech could be generated');
 

@@ -191,21 +191,28 @@ const retryDelayMs = (error, attempt) => {
   return Math.min(60000, 5000 * (attempt + 1));
 };
 
+const disabledProviders = new Set();
+
 const availableProviders = () => {
   const list = [];
-  if (env.groqApiKey) list.push('groq');
-  if (env.geminiApiKey && String(env.aiProvider || '').toLowerCase() === 'gemini') list.push('gemini');
-  if (env.deepseekApiKey) list.push('deepseek');
-  list.push('ollama');
+  if (env.groqApiKey && !disabledProviders.has('groq')) list.push('groq');
+  if (env.geminiApiKey && !disabledProviders.has('gemini') && String(env.aiProvider || '').toLowerCase() === 'gemini') list.push('gemini');
+  if (env.deepseekApiKey && !disabledProviders.has('deepseek')) list.push('deepseek');
+  if (!disabledProviders.has('ollama')) list.push('ollama');
   return list;
 };
 
 const callChatCompletion = async (messages, extra = {}) => {
   const preferred = extra?.provider || resolveProvider();
-  const candidates = [preferred, ...availableProviders().filter((p) => p !== preferred)];
+  const all = availableProviders();
+  const candidates = [
+    ...(disabledProviders.has(preferred) ? [] : [preferred]),
+    ...all.filter((p) => p !== preferred),
+  ];
   let lastError = null;
 
   for (const provider of candidates) {
+    if (disabledProviders.has(provider)) continue;
     let attempts = provider === preferred ? 2 : 1;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
@@ -218,6 +225,10 @@ const callChatCompletion = async (messages, extra = {}) => {
         lastError = error;
         const message = String(error?.message || '');
         const status = Number(error?.statusCode || 0);
+        if (status === 402 || /insufficient balance|credits remaining/i.test(message)) {
+          disabledProviders.add(provider);
+          console.warn('[ai] provider disabled for this run:', provider);
+        }
         const retryable =
           status === 429 ||
           status >= 500 ||
@@ -229,9 +240,9 @@ const callChatCompletion = async (messages, extra = {}) => {
       }
     }
   }
-
   throw lastError;
 };
+
 
 const trim = (text, limit = 12000) => {
   if (!text) return '';
@@ -703,7 +714,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       },
     ],
     {
-      provider: 'deepseek',
+      provider: 'groq',
       fast: true,
       temperature: 0.4,
       maxTokens: 700,

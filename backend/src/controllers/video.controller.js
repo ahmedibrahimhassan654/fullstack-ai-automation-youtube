@@ -899,7 +899,7 @@ export const dubVideo = asyncHandler(async (req, res) => {
   });
 });
 
-const runLessonGeneration = async (
+export const runLessonGeneration = async (
   videoId,
   language,
   voiceId = null,
