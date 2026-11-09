@@ -118,6 +118,17 @@ export default function DashboardPage() {
     }
   };
 
+  const cancelProcessing = async (id: string) => {
+    if (!window.confirm("Cancel processing for this video?")) return;
+    const res = await api.post(`/api/videos/${id}/cancel`);
+    if (res.success) {
+      toast.success(res.message || "Processing cancelled.");
+      await load();
+    } else {
+      toast.error(res.message || "Failed to cancel processing.");
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await logout();
@@ -178,10 +189,13 @@ export default function DashboardPage() {
                     <div className="flex items-center justify-between">
                       <p className="font-medium">{v.title}</p>
                       <p className="text-xs text-muted-foreground">
-                        {STAGE_LABEL[v.currentStage || 'queued'] || v.currentStage}
+                        {STAGE_LABEL[v.currentStage || 'queued'] || v.currentStage} • {v.progress ?? 0}%
                       </p>
                     </div>
                     <Progress value={v.progress || 0} />
+                    {v.lastError?.message && (
+                      <p className="text-xs text-destructive">{v.lastError.message}</p>
+                    )}
                     {v.transcript && (
                       <details className="text-xs">
                         <summary className="cursor-pointer text-muted-foreground">Transcript (preview)</summary>
@@ -297,6 +311,16 @@ export default function DashboardPage() {
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
+                          {v.status === "processing" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => cancelProcessing(v._id)}
+                              title="Cancel processing"
+                            >
+                              Cancel
+                            </Button>
+                          )}
                           {v.status === 'pending' && (
                             <Button size="sm" onClick={() => startProcessing(v._id)}>
                               Process

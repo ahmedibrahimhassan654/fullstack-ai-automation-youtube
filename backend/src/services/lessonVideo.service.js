@@ -86,6 +86,14 @@ const uploadFile = (filePath, options) =>
     });
   });
 
+const uploadFileWithTimeout = (filePath, options, timeoutMs = 120000) =>
+  Promise.race([
+    uploadFile(filePath, options),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Cloudinary upload timed out')), timeoutMs),
+    ),
+  ]);
+
 export const generateLessonVideo = async ({
   video,
   language,
@@ -117,9 +125,11 @@ export const generateLessonVideo = async ({
   });
   if (!script.trim()) throw new Error("Could not generate lesson script");
   await report(30);
+  console.log('[lessonVideo] script done len', script.length);
 
   const selectedVoice =
     voice || (voiceId ? String(voiceId).trim() : VOICES[language] || VOICES.en);
+  console.log('[lessonVideo] starting TTS');
   const {
     buffer: audioBuffer,
     segments: lessonSegments,
@@ -191,6 +201,7 @@ export const generateLessonVideo = async ({
     `lesson-${video._id}-${language}-${Date.now()}.srt`,
   );
   fs.writeFileSync(srtFile, toSrt(burnSegments));
+  const subtitlesFilter = `subtitles=${srtFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1\\\\:")}:force_style='FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,Shadow=1,MarginV=40'`;
 
   let ffmpegArgs;
 
@@ -219,6 +230,8 @@ export const generateLessonVideo = async ({
       ...audioInputs,
       ...mixArgs,
       ...subtitleArgs,
+      "-vf",
+      subtitlesFilter,
       "-c:v",
       "libx264",
       "-preset",
@@ -253,7 +266,9 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-c:v",
+            "-vf",
+      subtitlesFilter,
+      "-c:v",
             "libx264",
             "-preset",
             "fast",
@@ -283,7 +298,9 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-c:v",
+            "-vf",
+      subtitlesFilter,
+      "-c:v",
             "libx264",
             "-preset",
             "fast",
@@ -311,7 +328,9 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "[a]",
-            "-c:v",
+            "-vf",
+      subtitlesFilter,
+      "-c:v",
             "libx264",
             "-preset",
             "fast",
@@ -335,7 +354,9 @@ export const generateLessonVideo = async ({
             "0:v:0",
             "-map",
             "1:a:0",
-            "-c:v",
+            "-vf",
+      subtitlesFilter,
+      "-c:v",
             "libx264",
             "-preset",
             "fast",
@@ -355,7 +376,7 @@ export const generateLessonVideo = async ({
     await runFfmpeg(ffmpegArgs, TEMP_DIR);
     await report(82);
 
-    const result = await uploadFile(outputFile, {
+    const result = await uploadFileWithTimeout(outputFile, {
       resource_type: "video",
       folder: `${env.cloudinaryFolder}/lessons`,
       use_filename: true,
@@ -388,7 +409,7 @@ export const generateLessonVideo = async ({
     fs.writeFileSync(subtitleFile, subtitleContent);
     let subtitlesUrl = null;
     try {
-      const subtitleUpload = await uploadFile(subtitleFile, {
+      const subtitleUpload = await uploadFileWithTimeout(subtitleFile, {
         resource_type: "raw",
         folder: `${env.cloudinaryFolder}/lessons`,
         use_filename: true,

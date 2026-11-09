@@ -24,6 +24,7 @@ router.post('/upload', (req, res, next) => {
 router.patch('/:id', video.updateVideo);
 router.post('/:id/thumbnail', video.uploadCanvasThumbnail);
 router.post('/:id/process', video.processVideo);
+router.post('/:id/cancel', video.cancelProcessing);
 router.post('/:id/ask', video.answerVideoQuestion);
 router.post('/:id/lesson', video.generateLesson);
 router.post('/:id/lesson/cancel', video.cancelLessonGeneration);

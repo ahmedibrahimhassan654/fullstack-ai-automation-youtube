@@ -403,6 +403,7 @@ const isOwnerOrAdmin = (video, user) =>
 export const runPipeline = async (videoId) => {
   const video = await Video.findById(videoId);
   if (!video) return;
+  if (video.status !== "processing") return;
 
   try {
     const originalLanguage = video.transcriptLanguage || video.originalLanguage || "en";
@@ -895,6 +896,7 @@ export const runLessonGeneration = async (
 ) => {
   const video = await Video.findById(videoId);
   if (!video) return;
+  console.log("[lesson] loaded", videoId, "lang", language);
 
   try {
     video.lessonGeneration = {
@@ -1559,6 +1561,43 @@ export const cancelDubbing = asyncHandler(async (req, res) => {
   await video.save();
   emitVideoProgress(video);
   res.status(200).json({ success: true, message: "Dubbing cancelled", data: { video: await Video.findById(video._id).lean() } });
+});
+
+export const cancelProcessing = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const err = new Error("Not authorized to cancel processing");
+    err.statusCode = 403;
+    throw err;
+  }
+  if (video.status !== "processing") {
+    return res.status(200).json({
+      success: true,
+      message: "Video is not currently processing",
+      data: { video: await Video.findById(video._id).lean() },
+    });
+  }
+
+  video.status = "failed";
+  video.currentStage = "failed";
+  video.lastError = {
+    message: "Cancelled by user",
+    stage: video.currentStage === "failed" ? "unknown" : (video.currentStage || "processing"),
+    occurredAt: new Date(),
+  };
+  await video.save();
+  emitVideoProgress(video);
+
+  res.status(200).json({
+    success: true,
+    message: "Processing cancelled",
+    data: { video: await Video.findById(video._id).lean() },
+  });
 });
 
 export const getProcessingLabel = (stage) =>

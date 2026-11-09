@@ -225,6 +225,7 @@ const callChatCompletion = async (messages, extra = {}) => {
         lastError = error;
         const message = String(error?.message || '');
         const status = Number(error?.statusCode || 0);
+        console.error('[ai] provider failed:', provider, status, message);
         if (status === 402 || /insufficient balance|credits remaining/i.test(message)) {
           disabledProviders.add(provider);
           console.warn('[ai] provider disabled for this run:', provider);
@@ -305,8 +306,9 @@ Strictly enforce:
       },
     ],
     {
-      responseFormat: { type: 'json_object' },
-      maxTokens: 3000,
+        responseFormat: { type: 'json_object' },
+        provider: 'groq',
+        maxTokens: 2200,
     }
   );
 
@@ -723,7 +725,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
             ? 'Use grammatically correct Modern Standard Arabic, tashkeel where pronunciation matters, and handle technical English terms by writing an Arabic explanation followed by the English term in parentheses on first use, for example "الاختراق (Hacking)", "المحاكاة (Simulation)", "التصدّي (Mitigation)". '
             : '') +
           'Break explanations into sequential, numbered steps that a viewer can replicate directly on screen. Provide practical setup/troubleshooting callouts where useful. ' +
-          `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(450, Math.floor(duration * 11))} characters total, including spaces and punctuation. ` +
+          `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(300, Math.floor(duration * 9))} characters total, including spaces and punctuation. ` +
           'Include a hook, objectives, a thorough explanation, key takeaways, and a recap. ' +
           'Return plain narration text only. No markdown, no headings, no labels, no JSON, no timestamps, no debug text.',
       },
@@ -743,7 +745,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       provider: 'groq',
       fast: true,
       temperature: 0.4,
-      maxTokens: 900,
+      maxTokens: 700,
     },
   );
 

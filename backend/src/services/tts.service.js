@@ -96,6 +96,7 @@ const runFfmpegConcat = (inputFiles, outputFile) =>
   });
 
 const synthesizeChunk = async (chunkText, voice, rate) => {
+  // No debug output in production; keep synthesis quiet.
   const tts = new MsEdgeTTS({ connectionTimeoutMs: 30000, synthesisTimeoutMs: 120000 });
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
@@ -113,8 +114,8 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
 
   const audioPromise = new Promise((resolve, reject) => {
     audioStream.on('data', (c) => audioChunks.push(c));
-    audioStream.on('end', () => resolve());
-    audioStream.on('error', reject);
+    audioStream.on('end', () => { console.log('[tts] audio end', voice, 'chunks', audioChunks.length); resolve(); });
+    audioStream.on('error', (e) => { console.error('[tts] audio error', voice, e?.message); reject(e); });
   });
   if (metadataStream) {
     metadataStream.on('data', (chunk) => {
@@ -129,8 +130,8 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
   }
 
   await audioPromise;
+  if (!audioChunks.length) throw new Error('Edge TTS returned empty audio');
   await new Promise((resolve) => setTimeout(resolve, 100));
-
   const sentenceBoundaries = metadataItems.filter((b) => b.Type === 'SentenceBoundary');
   const wordBoundaries = metadataItems.filter((b) => b.Type === 'WordBoundary');
 
@@ -377,6 +378,56 @@ const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
   };
 };
 
+const synthesizeChunkRobust = async (chunk, voice, rate) => {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await synthesizeChunk(chunk, voice, rate);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  const edgeFallbacks = {
+    'ar-EG-SalmaNeural': 'ar-EG-ShakirNeural',
+    'ar-EG-ShakirNeural': 'ar-SA-HamedNeural',
+    'ar-SA-ZariyahNeural': 'ar-AE-FatimaNeural',
+    'hi-IN-SwaraNeural': 'hi-IN-MadhurNeural',
+  };
+  if (edgeFallbacks[voice]) {
+    console.warn('[tts] switching Edge voice from', voice, 'to', edgeFallbacks[voice]);
+    return synthesizeChunkRobust(chunk, edgeFallbacks[voice], rate);
+  }
+
+  const clean = stripMarkdown(chunk);
+  if (clean.length <= 240) throw lastError || new Error('TTS chunk failed');
+
+  const middle = Math.floor(clean.length / 2);
+  let splitAt = clean.lastIndexOf(' ', middle);
+  if (splitAt < clean.length * 0.25) splitAt = middle;
+  const first = clean.slice(0, splitAt).trim();
+  const second = clean.slice(splitAt).trim();
+  if (!first || !second) throw lastError || new Error('TTS chunk failed');
+
+  const left = await synthesizeChunkRobust(first, voice, rate);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const right = await synthesizeChunkRobust(second, voice, rate);
+  const offset =
+    (left.segments || []).reduce((max, s) => Math.max(max, Number(s.end) || 0), 0) ||
+    (left.wordSegments || []).reduce((max, s) => Math.max(max, Number(s.end) || 0), 0) ||
+    0;
+
+  return {
+    buffer: Buffer.concat([left.buffer, right.buffer]),
+    segments: [...(left.segments || []), ...(right.segments || []).map((s) => ({ ...s, start: Number((s.start + offset).toFixed(3)), end: Number((s.end + offset).toFixed(3)) }))],
+    wordSegments: [...(left.wordSegments || []), ...(right.wordSegments || []).map((s) => ({ ...s, start: Number((s.start + offset).toFixed(3)), end: Number((s.end + offset).toFixed(3)) }))],
+    chunkEnd: (right.chunkEnd || 0) + offset,
+  };
+};
+
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
     options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
@@ -402,7 +453,7 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   const rate = options.rate || '-3%';
   const report = options.onProgress;
   const clean = stripMarkdown(text);
-  const chunks = (clean.match(/.{1,1200}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
+  const chunks = (clean.match(/.{1,320}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
 
   if (chunks.length === 0) throw new Error('No speech could be generated');
 
@@ -412,8 +463,10 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   let offset = 0;
 
   for (const chunk of chunks) {
-    const result = await synthesizeChunk(chunk, voice, rate);
+    const result = await synthesizeChunkRobust(chunk, voice, rate);
     results.push(result);
+    // Small pause helps avoid Edge TTS stream truncation on longer runs.
+    await new Promise((resolve) => setTimeout(resolve, 350));
     for (const seg of result.segments) {
       allSegments.push({
         start: Number((seg.start + offset).toFixed(3)),
