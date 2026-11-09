@@ -96,7 +96,7 @@ const runFfmpegConcat = (inputFiles, outputFile) =>
   });
 
 const synthesizeChunk = async (chunkText, voice, rate) => {
-  const tts = new MsEdgeTTS();
+  const tts = new MsEdgeTTS({ connectionTimeoutMs: 30000, synthesisTimeoutMs: 120000 });
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
     sentenceBoundaryEnabled: true,

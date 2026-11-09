@@ -713,10 +713,11 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
           'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained, and cover the entire lesson rather than only the opening. ' +
           'Sound like a warm, human mentor: open with a hook, tell a short learning journey, use conversational phrasing, reflective questions, and gentle encouragement, and vary sentence rhythm. ' +
           'Avoid sounding like a textbook: use "we", short paragraphs, and pauses implied by punctuation. ' +
+          'Use correct grammar and natural phrasing; do not leave awkward or incomplete sentences. ' +
           (targetLanguage.startsWith('ar')
-            ? 'Write Arabic with complete tashkeel/diacritics for pronunciation. Keep important technical English terms in English when they have no natural Arabic equivalent. '
+            ? 'Write grammatically correct Arabic, use complete tashkeel/diacritics for pronunciation, and write each technical English term as an Arabic explanation followed by the English term in parentheses on first use, for example "الاختراق (Hacking)". '
             : '') +
-          `The final spoken narration should last about ${duration} seconds, so write enough words to fill that duration. ` +
+          `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(500, Math.floor(duration * 12))} characters total, including spaces and punctuation. ` +
           'Include a hook, objectives, a thorough explanation, key takeaways, and a recap. ' +
           'Return plain narration text only (no markdown headings or stage directions).',
       },
@@ -736,11 +737,19 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       provider: 'groq',
       fast: true,
       temperature: 0.4,
-      maxTokens: 700,
+      maxTokens: 900,
     },
   );
 
-  return stripMarkdown(content);
+  let normalizedContent = String(content || '').trim();
+  const targetChars = Math.max(500, Number(duration) > 0 ? Math.floor(duration * 12) : 1200);
+  if (normalizedContent.length > targetChars) {
+    let cut = normalizedContent.lastIndexOf('. ', targetChars);
+    if (cut < targetChars * 0.5) cut = normalizedContent.lastIndexOf(' ', targetChars);
+    if (cut > 0) normalizedContent = normalizedContent.slice(0, cut + 1).trim();
+  }
+
+  return stripMarkdown(normalizedContent);
 };
 
 export const answerQuestion = async ({ transcript, question }) => {
