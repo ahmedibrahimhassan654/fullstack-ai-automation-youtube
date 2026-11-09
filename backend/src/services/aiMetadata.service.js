@@ -274,21 +274,27 @@ const parseJson = (content) => {
 };
 
 export const analyzeTranscript = async ({ transcript, title, originalLanguage = 'en' }) => {
-  const system = `You are an expert video producer and content strategist.
-Return ONLY valid JSON with these fields:
+  const system = `You are a Senior Technical Curriculum Developer and Video Production Agent for an Arabic technical YouTube channel ("Udemy بالعربي").
+
+Analyze the transcript and return ONLY valid JSON with these fields:
 {
-  "summary": "2-5 sentences summarizing the video.",
-  "titles": ["3-5 catchy YouTube titles"],
+  "summary": "2-4 sentences summarizing the practical takeaway.",
+  "titles": ["3-5 clear technical YouTube titles with accurate terminology"],
   "descriptions": ["2 concise YouTube descriptions"],
   "tags": ["10-20 relevant tags"],
   "chapters": [{"time": "MM:SS", "title": "chapter title"}],
-  "keyPoints": ["5-8 bullet points of the most important ideas"],
+  "keyPoints": ["5-8 practical key points that a viewer can apply"],
   "actionItems": ["actionable tasks mentioned or implied"],
   "decisions": ["decisions made in the content"],
   "openQuestions": ["unanswered questions raised"]
 }
-Chapters must use timestamps present in the transcript segments when possible; otherwise estimate them.
-If a field has no items, return an empty array. Do not include markdown outside JSON.`;
+
+Strictly enforce:
+- Verify every command, configuration, version, and code concept mentioned; correct obvious transcript typos without changing technical meaning.
+- Never use placeholders or outdated syntax.
+- Include sequential chapter titles based on real transcript timestamps.
+- Descriptions should be concise, practical, and include what the viewer will do, learn, and troubleshoot.
+- If a field has no items, return an empty array. Do not include markdown outside JSON.`;
 
   const content = await callChatCompletion(
     [
@@ -708,18 +714,18 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
         role: 'system',
         content:
           (targetLanguage.startsWith('ar')
-            ? `${EGYPTIAN_ARABIC_RULES}\\n\\nYou are an excellent educational narrator. Write a complete spoken lesson script in Egyptian Arabic. `
-            : `You are an excellent educational narrator. Write a complete spoken lesson script in ${targetLanguage}. `) +
-          'Use the provided video metadata and transcript. Make it clear, engaging, structured, and self-contained, and cover the entire lesson rather than only the opening. ' +
-          'Sound like a warm, human mentor: open with a hook, tell a short learning journey, use conversational phrasing, reflective questions, and gentle encouragement, and vary sentence rhythm. ' +
-          'Avoid sounding like a textbook: use "we", short paragraphs, and pauses implied by punctuation. ' +
-          'Use correct grammar and natural phrasing; do not leave awkward or incomplete sentences. ' +
+            ? `${EGYPTIAN_ARABIC_RULES}\n\nYou are a Senior Technical Curriculum Developer and Video Narration Agent for an Arabic technical YouTube channel ("Udemy بالعربي"). `
+            : `You are a Senior Technical Curriculum Developer and Video Narration Agent for a technical YouTube channel. Write the lesson in ${targetLanguage}. `) +
+          'Generate the final spoken narration only. Strictly enforce these production standards: ' +
+          '1) Accurate and practical technical instructions: verify every command, configuration, version, and code concept before using it; never use placeholders or outdated syntax; provide sequential numbered steps and beginner troubleshooting callouts where useful. ' +
+          '2) Natural voiceover flow for TTS: write conversational active sentences, break breathless clauses into short dynamic statements, and pace naturally for spoken delivery. ' +
           (targetLanguage.startsWith('ar')
-            ? 'Write grammatically correct Arabic, use complete tashkeel/diacritics for pronunciation, and write each technical English term as an Arabic explanation followed by the English term in parentheses on first use, for example "الاختراق (Hacking)". '
+            ? 'Use grammatically correct Modern Standard Arabic, tashkeel where pronunciation matters, and handle technical English terms by writing an Arabic explanation followed by the English term in parentheses on first use, for example "الاختراق (Hacking)", "المحاكاة (Simulation)", "التصدّي (Mitigation)". '
             : '') +
-          `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(500, Math.floor(duration * 12))} characters total, including spaces and punctuation. ` +
+          'Break explanations into sequential, numbered steps that a viewer can replicate directly on screen. Provide practical setup/troubleshooting callouts where useful. ' +
+          `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(450, Math.floor(duration * 11))} characters total, including spaces and punctuation. ` +
           'Include a hook, objectives, a thorough explanation, key takeaways, and a recap. ' +
-          'Return plain narration text only (no markdown headings or stage directions).',
+          'Return plain narration text only. No markdown, no headings, no labels, no JSON, no timestamps, no debug text.',
       },
       {
         role: 'user',

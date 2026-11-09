@@ -117,6 +117,7 @@ function lessonNumberFrom(value?: string | null) {
 type VideoDetail = {
   title?: string;
   originalFilename?: string | null;
+  attachments?: { name?: string; type?: string; url?: string | null }[];
   transcriptLanguage?: string;
   translations?: { language: string; transcript?: string }[];
   lessonVideos?: LessonPublishInfo[];
@@ -202,9 +203,17 @@ function PublishForm({ id, language }: { id: string; language: string }) {
         const body = [opening, pointLines, (meta.openQuestions || []).length ? `❓ ${(meta.openQuestions || []).join(" ")}` : ""]
           .filter(Boolean)
           .join("\n");
+        const resourceLinks = (v.attachments || [])
+          .filter((a) => a?.url)
+          .map((a) => `- ${a?.name || a.url}: ${a.url}`)
+          .join("\n");
+        const courseNav = `Course navigation: Review the full playlist and next steps on the channel. Details: ${window.location.origin}/videos/${id}`;
         const composedDescription = [
           body,
           chapterLines ? `-----------------------------------------------------------------------------------------------------\n${chapterLines}` : "",
+          resourceLinks ? `🔗 Resources, commands, and links:\n${resourceLinks}` : "",
+          `🧭 ${courseNav}`,
+          (meta.openQuestions || []).length ? `❓ ${(meta.openQuestions || []).join(" ")}` : "",
           hashtags ? `🏷️ ${hashtags}` : "",
         ]
           .filter(Boolean)
