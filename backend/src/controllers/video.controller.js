@@ -1482,6 +1482,36 @@ export const getPublishPrefill = asyncHandler(async (req, res) => {
   });
 });
 
+export const cancelLessonGeneration = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const err = new Error("Not authorized");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  video.lessonGeneration = {
+    ...(video.lessonGeneration?.toObject?.() || video.lessonGeneration || {}),
+    status: "failed",
+    progress: video.lessonGeneration?.progress || 0,
+    error: "Cancelled by user",
+    completedAt: new Date(),
+  };
+  await video.save();
+  emitVideoProgress(video);
+
+  res.status(200).json({
+    success: true,
+    message: "Lesson generation cancelled",
+    data: { video: await Video.findById(video._id).lean() },
+  });
+});
+
 export const getProcessingLabel = (stage) =>
   STAGE_LABELS[stage] || stage || "Processing";
 

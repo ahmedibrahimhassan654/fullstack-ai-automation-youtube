@@ -22,7 +22,7 @@ const GROQ_MODEL_FAST = env.aiModelFast || 'openai/gpt-oss-20b';
 
 const resolveProvider = () => {
   const p = String(env.aiProvider || 'groq').toLowerCase();
-  if (p === 'ollama' || p === 'gemini') return p;
+  if (p === 'ollama' || p === 'gemini' || p === 'deepseek') return p;
   return 'groq';
 };
 
@@ -41,7 +41,7 @@ const callOllamaCompletionOnce = async (messages, extra = {}) => {
       temperature: extra.temperature ?? 0.2,
       max_tokens: extra.maxTokens ?? 2048,
     }),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(300000),
   });
 
   const data = await response.json().catch(() => ({}));
@@ -54,11 +54,53 @@ const callOllamaCompletionOnce = async (messages, extra = {}) => {
   return data?.choices?.[0]?.message?.content || '';
 };
 
+const callDeepSeekCompletionOnce = async (messages, extra = {}) => {
+  if (!env.deepseekApiKey) {
+    const err = new Error('DEEPSEEK_API_KEY is not configured');
+    err.statusCode = 500;
+    throw err;
+  }
+  const defaultModel =
+    String(env.aiModelQuality || '').toLowerCase().includes('deepseek')
+      ? env.aiModelQuality
+      : 'deepseek-chat';
+  const model = extra.model || defaultModel;
+
+  const response = await fetch(`${env.deepseekBaseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.deepseekApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: extra.temperature ?? 0.2,
+      max_tokens: extra.maxTokens ?? 2048,
+      response_format: extra.responseFormat,
+    }),
+    signal: AbortSignal.timeout(300000),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.error?.message || data?.message || `DeepSeek chat failed (${response.status})`;
+    const err = new Error(message);
+    err.statusCode = response.status;
+    throw err;
+  }
+  return data?.choices?.[0]?.message?.content || '';
+};
+
 const callChatCompletionOnce = async (messages, extra = {}) => {
-  const provider = resolveProvider();
+  const provider = extra?.provider || resolveProvider();
 
   if (provider === 'ollama') {
     return callOllamaCompletionOnce(messages, extra);
+  }
+
+  if (provider === 'deepseek') {
+    return callDeepSeekCompletionOnce(messages, extra);
   }
 
   if (provider === 'gemini') {
@@ -87,7 +129,7 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
           max_tokens: extra.maxTokens ?? 2048,
           response_format: extra.responseFormat,
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(300000),
       },
     );
     const data = await response.json().catch(() => ({}));
@@ -107,7 +149,7 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
     throw err;
   }
 
-  const model = extra.model || GROQ_MODEL_QUALITY;
+  const model = extra.model || (extra.fast ? GROQ_MODEL_FAST : GROQ_MODEL_QUALITY);
 
   const response = await fetch(GROQ_CHAT_URL, {
     method: 'POST',
@@ -122,7 +164,7 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
       max_tokens: extra.maxTokens ?? 2048,
       response_format: extra.responseFormat,
     }),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(300000),
   });
 
   const data = await response.json().catch(() => ({}));
@@ -149,36 +191,42 @@ const retryDelayMs = (error, attempt) => {
   return Math.min(60000, 5000 * (attempt + 1));
 };
 
-const callChatCompletion = async (messages, extra = {}) => {
-  let lastError = null;
-  const maxAttempts = 5;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      return await callChatCompletionOnce(messages, extra);
-    } catch (error) {
-      lastError = error;
-      const message = String(error?.message || '');
-      const status = Number(error?.statusCode || 0);
-      const retryable =
-        status === 429 ||
-        status >= 500 ||
-        /over capacity|rate limit|timeout|temporarily unavailable/i.test(message);
-      if (!retryable || attempt === maxAttempts - 1) break;
-      await new Promise((resolve) =>
-        setTimeout(resolve, retryDelayMs(error, attempt)),
-      );
-    }
-  }
+const availableProviders = () => {
+  const list = [];
+  if (env.groqApiKey) list.push('groq');
+  if (env.geminiApiKey && String(env.aiProvider || '').toLowerCase() === 'gemini') list.push('gemini');
+  if (env.deepseekApiKey) list.push('deepseek');
+  list.push('ollama');
+  return list;
+};
 
-  // If the configured provider is unavailable/rate-limited, fall back to local/Ollama.
-  if (lastError && String(lastError?.message || '').match(/429|rate limit|quota/i) && resolveProvider() !== 'ollama') {
-    try {
-      return await callOllamaCompletionOnce(messages, {
-        ...extra,
-        model: env.ollamaModel,
-      });
-    } catch (fallbackError) {
-      console.warn('[aiMetadata] Ollama fallback failed:', fallbackError?.message || fallbackError);
+const callChatCompletion = async (messages, extra = {}) => {
+  const preferred = extra?.provider || resolveProvider();
+  const candidates = [preferred, ...availableProviders().filter((p) => p !== preferred)];
+  let lastError = null;
+
+  for (const provider of candidates) {
+    let attempts = provider === preferred ? 2 : 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await callChatCompletionOnce(messages, {
+          ...extra,
+          provider,
+          model: extra?.provider === provider ? extra?.model : undefined,
+        });
+      } catch (error) {
+        lastError = error;
+        const message = String(error?.message || '');
+        const status = Number(error?.statusCode || 0);
+        const retryable =
+          status === 429 ||
+          status >= 500 ||
+          /over capacity|rate limit|timeout|temporarily unavailable/i.test(message);
+        if (!retryable || attempt === attempts - 1) break;
+        await new Promise((resolve) =>
+          setTimeout(resolve, retryDelayMs(error, attempt)),
+        );
+      }
     }
   }
 
@@ -292,7 +340,11 @@ const callQualityChat = async (messages, extra = {}) => {
         ? String(env.aiModelQuality || '').toLowerCase().includes('gemini')
           ? env.aiModelQuality
           : 'gemini-3.5-flash-lite'
-        : env.aiModelQuality || GROQ_MODEL_QUALITY;
+        : provider === 'deepseek'
+          ? String(env.aiModelQuality || '').toLowerCase().includes('deepseek')
+            ? env.aiModelQuality
+            : 'deepseek-chat'
+          : env.aiModelQuality || GROQ_MODEL_QUALITY;
   return callChatCompletion(messages, { ...extra, model });
 };
 
@@ -651,16 +703,10 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       },
     ],
     {
+      provider: 'deepseek',
+      fast: true,
       temperature: 0.4,
-      maxTokens: 1000,
-      model:
-        resolveProvider() === 'ollama'
-          ? env.ollamaModel
-          : resolveProvider() === 'gemini'
-            ? String(env.aiModelFast || '').toLowerCase().includes('gemini')
-              ? env.aiModelFast
-              : 'gemini-3.5-flash-lite'
-            : GROQ_MODEL_FAST,
+      maxTokens: 700,
     },
   );
 

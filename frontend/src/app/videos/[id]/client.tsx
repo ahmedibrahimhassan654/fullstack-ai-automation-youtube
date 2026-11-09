@@ -680,6 +680,23 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         "Generate new lesson video"
                       )}
                     </Button>
+                    {video.lessonGeneration?.status === "processing" && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={async () => {
+                          const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson/cancel`);
+                          if (res.success && res.data?.video) {
+                            setVideo(res.data.video);
+                            toast.success("Lesson generation cancelled.");
+                          } else {
+                            toast.error(res.message || "Failed to cancel lesson generation.");
+                          }
+                        }}
+                      >
+                        Cancel generation
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       onClick={async () => {

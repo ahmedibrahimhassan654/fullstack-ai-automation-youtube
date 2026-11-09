@@ -109,39 +109,9 @@ export const generateLessonVideo = async ({
 
   await report(15);
 
-  // If a translated transcript for this language does not already exist, translate it on demand
-  // so the generated script and subtitles use the target language instead of the original English.
-  let sourceVideo = video;
-  const originalLanguage = video.transcriptLanguage || video.originalLanguage || "en";
-  const hasTranslation = (video.translations || []).some((t) => t.language === language);
-  if (
-    language &&
-    language.toLowerCase() !== String(originalLanguage).toLowerCase() &&
-    !hasTranslation &&
-    Array.isArray(video.transcriptSegments) &&
-    video.transcriptSegments.length > 0
-  ) {
-    try {
-      const translatedSegments = await translateTranscriptSegments({
-        segments: video.transcriptSegments,
-        targetLanguage: language,
-        originalLanguage,
-      });
-      const translatedTranscript = translatedSegments
-        .map((s) => s.text)
-        .join(" ")
-        .trim();
-      if (translatedTranscript) {
-        const base = typeof video.toObject === "function" ? video.toObject() : { ...video };
-        sourceVideo = { ...base, transcript: translatedTranscript, transcriptLanguage: language };
-      }
-    } catch (translationError) {
-      console.warn("[lessonVideo] on-demand translation failed:", translationError?.message);
-    }
-  }
-
+  // Let the AI write the lesson directly in the requested language.
   const script = await generateEducationalScript({
-    video: sourceVideo,
+    video,
     targetLanguage: language,
   });
   if (!script.trim()) throw new Error("Could not generate lesson script");

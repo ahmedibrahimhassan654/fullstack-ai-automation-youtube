@@ -27,6 +27,9 @@ export const env = {
   geminiBaseUrl:
     process.env.GEMINI_BASE_URL ||
     'https://generativelanguage.googleapis.com/v1beta/openai',
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
+  deepseekBaseUrl:
+    process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
   // AI provider selection: 'groq' (default) or 'ollama'
   aiProvider: (process.env.AI_PROVIDER || 'groq').toLowerCase(),
   aiModelFast: process.env.AI_MODEL_FAST || 'qwen/qwen3.8-27b',

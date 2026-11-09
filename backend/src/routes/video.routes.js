@@ -24,6 +24,7 @@ router.post('/:id/thumbnail', video.uploadCanvasThumbnail);
 router.post('/:id/process', video.processVideo);
 router.post('/:id/ask', video.answerVideoQuestion);
 router.post('/:id/lesson', video.generateLesson);
+router.post('/:id/lesson/cancel', video.cancelLessonGeneration);
 router.post('/:id/lessons/:language/publish', video.publishLessonVideo);
 router.post('/:id/dub', video.dubVideo);
 router.post('/:id/translate', video.translateVideo);
