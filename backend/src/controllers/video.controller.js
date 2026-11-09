@@ -12,6 +12,7 @@ import {
   translatePublishMetadata,
 } from "../services/aiMetadata.service.js";
 import { generateDubbedVideo } from "../services/dubbing.service.js";
+import { EDGE_VOICE_OPTIONS, VOICES } from "../services/tts.service.js";
 import { parseSubtitle } from "../services/subtitle.service.js";
 import { generateLessonVideo } from "../services/lessonVideo.service.js";
 import { ElevenLabsClient } from "elevenlabs";
@@ -401,87 +402,68 @@ const isOwnerOrAdmin = (video, user) =>
 
 export const runPipeline = async (videoId) => {
   const video = await Video.findById(videoId);
-  if (!video) {
-    console.log('[runPipeline] video not found', videoId);
-    return;
-  }
+  if (!video) return;
 
   try {
-    video.status = "processing";
-    video.currentStage = "transcription";
-    video.progress = 10;
-    video.processingStartedAt = video.processingStartedAt || new Date();
-    video.lastError = null;
-    await video.save();
-    emitVideoProgress(video);
-
-    const hasSubtitleTranscript =
+    const originalLanguage = video.transcriptLanguage || video.originalLanguage || "en";
+    const hasTranscript =
       Array.isArray(video.transcriptSegments) &&
-      video.transcriptSegments.length > 0;
+      video.transcriptSegments.length > 0 &&
+      String(video.transcript || "").trim().length > 0;
+    const hasAiMetadata = Boolean(video.aiMetadata?.summary);
+    const targetLanguages = Array.isArray(video.targetLanguages)
+      ? video.targetLanguages
+      : [];
+    const translatedLanguageSet = new Set((video.translations || []).map((t) => t.language));
+    const translationComplete =
+      targetLanguages.length === 0 ||
+      targetLanguages.every((lang) => translatedLanguageSet.has(lang));
 
-    if (hasSubtitleTranscript) {
-      // Use the user-provided SRT/VTT subtitle as the authoritative transcript
-      // (timing + text), skipping Whisper transcription. This keeps dubbing and
-      // translations aligned with the original spoken language subtitle.
-      if (!video.transcript) {
-        video.transcript = video.transcriptSegments
-          .map((s) => s.text)
-          .join(" ")
-          .trim();
-      }
-      if (!video.transcriptLanguage) {
-        video.transcriptLanguage = video.originalLanguage || "en";
-      }
-      video.currentStage = "transcribed";
-      video.progress = 40;
+    video.status = "processing";
+    video.lastError = null;
+    video.processingStartedAt = video.processingStartedAt || new Date();
+
+    const saveVideo = async (nextStage, nextProgress) => {
+      if (nextStage) video.currentStage = nextStage;
+      if (typeof nextProgress === "number") video.progress = nextProgress;
       await video.save();
       emitVideoProgress(video);
-    } else {
+    };
+
+    if (!hasTranscript) {
+      await saveVideo("transcription", 10);
+
       if (!video.publicUrl) {
         throw new Error("No uploaded video URL available for transcription");
       }
 
-      // Prefer an optimized, low-bandwidth MP3 derived from the Cloudinary video. This
-      // keeps us below the Whisper API request-size limit for large source videos.
-      // eslint-disable-next-line no-unused-vars
-      const publicUrl = video.publicUrl;
-      let fetchUrl = publicUrl;
-      if (publicUrl.includes("/video/upload/")) {
-        fetchUrl = publicUrl
+      let fetchUrl = video.publicUrl;
+      if (video.publicUrl.includes("/video/upload/")) {
+        fetchUrl = video.publicUrl
           .replace("/video/upload/", "/video/upload/ac_mp3/")
-          .replace(/\\.[^/.]+$/, ".mp3");
+          .replace(/\.[^/.]+$/, ".mp3");
       }
 
-      let response = await fetch(fetchUrl, {
-        signal: AbortSignal.timeout(300000),
-      });
-      if (!response.ok && fetchUrl !== publicUrl) {
-        // Fall back to the original file if derivation isn't available.
-        response = await fetch(publicUrl, {
-          signal: AbortSignal.timeout(300000),
-        });
-        fetchUrl = publicUrl;
+      let response = await fetch(fetchUrl, { signal: AbortSignal.timeout(300000) });
+      if (!response.ok && fetchUrl !== video.publicUrl) {
+        response = await fetch(video.publicUrl, { signal: AbortSignal.timeout(300000) });
+        fetchUrl = video.publicUrl;
       }
       if (!response.ok) {
-        throw new Error(
-          `Failed to download video for transcription (${response.status})`,
-        );
+        throw new Error(`Failed to download video for transcription (${response.status})`);
       }
+
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-
       const result = await transcribeAudio({
         buffer,
-        filename: fetchUrl.endsWith(".mp3")
-          ? "audio.mp3"
-          : video.originalFilename || "video.mp4",
+        filename: fetchUrl.endsWith(".mp3") ? "audio.mp3" : video.originalFilename || "video.mp4",
         mimeType: fetchUrl.endsWith(".mp3") ? "audio/mpeg" : video.mimeType,
         language: video.originalLanguage || video.transcriptLanguage || "en",
       });
 
       video.transcript = result.text || "";
-      video.transcriptLanguage =
-        result.language || video.originalLanguage || "en";
+      video.transcriptLanguage = result.language || video.originalLanguage || "en";
       video.transcriptSegments = (result.segments || [])
         .map((s) => ({
           start: Number(s.start) || 0,
@@ -489,25 +471,19 @@ export const runPipeline = async (videoId) => {
           text: String(s.text || "").trim(),
         }))
         .filter((s) => s.text);
-      video.currentStage = "transcribed";
-      video.progress = 40;
-      await video.save();
-      emitVideoProgress(video);
+      await saveVideo("transcribed", 40);
+    } else {
+      if (!video.currentStage || video.currentStage === "queued" || video.currentStage === "uploaded") {
+        await saveVideo("transcribed", 40);
+      }
     }
 
-    // AI analysis (titles, summary, chapters, tags, key points, action items,
-    // decisions, open questions) using the transcript.
-    video.currentStage = "analysis";
-    video.progress = 65;
-    await video.save();
-    emitVideoProgress(video);
-
-    if (video.transcript.trim()) {
+    if (!hasAiMetadata && String(video.transcript || "").trim()) {
+      await saveVideo("analysis", 65);
       const ai = await analyzeTranscript({
         transcript: video.transcript,
         title: video.title,
-        originalLanguage:
-          video.transcriptLanguage || video.originalLanguage || "en",
+        originalLanguage: video.transcriptLanguage || video.originalLanguage || "en",
       });
 
       video.aiMetadata = {
@@ -525,40 +501,41 @@ export const runPipeline = async (videoId) => {
         model: ai.model,
         generatedAt: new Date(),
       };
+      await saveVideo("analyzed", 70);
     }
 
-    // Translations (subtitle/transcript variants for requested target languages).
-    if (
-      Array.isArray(video.targetLanguages) &&
-      video.targetLanguages.length > 0 &&
-      video.transcriptSegments.length > 0
-    ) {
-      video.currentStage = "translation";
-      video.progress = 85;
-      await video.save();
-      emitVideoProgress(video);
+    const remainingLanguages = targetLanguages.filter((lang) => !translatedLanguageSet.has(lang));
+    if (remainingLanguages.length > 0) {
+      await saveVideo("translation", 85);
 
-      const translations = [];
-      for (const language of video.targetLanguages) {
+      // Prefer fast translation for many-languages / long-transcript videos.
+      const fastTranslation =
+        targetLanguages.length > 3 ||
+        (Array.isArray(video.transcriptSegments) && video.transcriptSegments.length > 12);
+
+      for (const language of remainingLanguages) {
         try {
           const segments = await translateTranscriptSegments({
             segments: video.transcriptSegments,
             targetLanguage: language,
             originalLanguage: video.transcriptLanguage || video.originalLanguage || "en",
+            fast: fastTranslation,
           });
+
           if (video.durationSeconds > 0 && segments.length > 0) {
             const last = segments[segments.length - 1];
             last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
           }
+
           const qualityScores = segments
             .map((s) => s.qualityScore)
             .filter((n) => typeof n === "number");
           const avgQuality =
             qualityScores.length > 0
-              ? qualityScores.reduce((sum, n) => sum + n, 0) /
-                qualityScores.length
+              ? qualityScores.reduce((sum, n) => sum + n, 0) / qualityScores.length
               : null;
-          translations.push({
+
+          const translation = {
             language,
             transcript: segments.map((s) => s.text).join(" "),
             segments,
@@ -569,31 +546,30 @@ export const runPipeline = async (videoId) => {
                 : segments.every((s) => s.qualityStatus !== "failed")
                 ? "passed"
                 : "failed",
-            translationAttempts: Math.max(
-              1,
-              ...segments.map((s) => s.translationAttempts || 1),
-            ),
-          });
+            translationAttempts: Math.max(1, ...segments.map((s) => s.translationAttempts || 1)),
+          };
+
+          if (!Array.isArray(video.translations)) video.translations = [];
+          video.translations = [
+            ...(video.translations || []).filter((t) => t.language !== language),
+            translation,
+          ];
+          translatedLanguageSet.add(language);
+          await saveVideo("translation", 85);
         } catch (error) {
-          // Keep processing successful even if one translation fails.
-          console.error(
-            `[processVideo] translation failed for ${language}:`,
-            error?.message,
-          );
+          console.error(`[processVideo] translation failed for ${language}:`, error?.message);
         }
       }
-      video.translations = translations;
     }
 
     video.status = "completed";
     video.currentStage = "translated";
     video.progress = 100;
     video.processingCompletedAt = new Date();
-    await video.save();
-    emitVideoProgress(video);
+    await saveVideo("translated", 100);
   } catch (error) {
     video.status = "failed";
-    video.currentStage = "failed";
+    video.currentStage = video.currentStage || "failed";
     video.lastError = {
       message: error?.message || "Processing failed",
       stage: video.currentStage || "processing",
@@ -738,7 +714,7 @@ export const updateVideo = asyncHandler(async (req, res) => {
 const isOwnerOrAdminVideo = (video, user) =>
   video.user.toString() === user._id.toString() || user.role === "admin";
 
-const runDubbing = async (videoId, language) => {
+const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice = null) => {
   const video = await Video.findById(videoId);
   if (!video) return;
 
@@ -811,7 +787,12 @@ const runDubbing = async (videoId, language) => {
     await video.save();
     emitVideoProgress(video);
 
-    const dub = await generateDubbedVideo({ video, language });
+    const dub = await generateDubbedVideo({
+      video,
+      language,
+      voice: edgeVoice || elevenLabsVoiceId,
+      elevenLabsVoiceId,
+    });
 
     video.dubbing = {
       language,
@@ -888,7 +869,13 @@ export const dubVideo = asyncHandler(async (req, res) => {
   await video.save();
   emitVideoProgress(video);
 
-  runDubbing(video._id, language).catch((err) => {
+  const dubElevenLabsVoiceId = String(
+    req.body?.voiceId || req.body?.elevenLabsVoiceId || "",
+  ).trim() || null;
+  const dubEdgeVoice = String(
+    req.body?.voice || req.body?.edgeVoice || "",
+  ).trim() || null;
+  runDubbing(video._id, language, dubElevenLabsVoiceId, dubEdgeVoice).catch((err) => {
     console.error("[dubVideo] pipeline error:", err);
   });
 
@@ -903,6 +890,7 @@ export const runLessonGeneration = async (
   videoId,
   language,
   voiceId = null,
+  voice = null,
   backgroundOnly = false,
 ) => {
   const video = await Video.findById(videoId);
@@ -941,6 +929,7 @@ export const runLessonGeneration = async (
       video,
       language,
       voiceId,
+      voice,
       backgroundOnly,
       onProgress: updateProgress,
     });
@@ -997,6 +986,8 @@ export const generateLesson = asyncHandler(async (req, res) => {
   ).trim();
   const voiceId =
     String(req.body?.voiceId || req.body?.voice_id || "").trim() || null;
+  const voice =
+    String(req.body?.voice || req.body?.edgeVoice || "").trim() || null;
   const backgroundOnly = Boolean(
     req.body?.backgroundOnly || req.body?.background || req.body?.voiceoverOnly,
   );
@@ -1022,7 +1013,7 @@ export const generateLesson = asyncHandler(async (req, res) => {
   await video.save();
   emitVideoProgress(video);
 
-  runLessonGeneration(video._id, language, voiceId, backgroundOnly).catch(
+  runLessonGeneration(video._id, language, voiceId, voice, backgroundOnly).catch(
     (err) => {
       console.error("[generateLesson] pipeline error:", err);
     },
@@ -1238,9 +1229,14 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
   const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
   const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || null);
+  const channelId = req.body?.channelId ? String(req.body.channelId).trim() : (lesson.youtubeChannelId || null);
 
-  const channelRes = await youtubeFetch(accessToken, `${YOUTUBE_API_URL}/channels?part=snippet&mine=true`);
-  const channel = (channelRes.items || [])[0] || null;
+  const channelRes = await youtubeFetch(accessToken, `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`);
+  const channels = channelRes.items || [];
+  const channel =
+    (channelId ? channels.find((c) => c.id === channelId) : null) ||
+    channels[0] ||
+    null;
 
   const thumbnailUrl = req.body?.thumbnailUrl
     ? String(req.body.thumbnailUrl).trim()
@@ -1510,6 +1506,59 @@ export const cancelLessonGeneration = asyncHandler(async (req, res) => {
     message: "Lesson generation cancelled",
     data: { video: await Video.findById(video._id).lean() },
   });
+});
+
+export const listEdgeVoices = asyncHandler(async (req, res) => {
+  const language = String(req.query.language || "").trim();
+  const codes = language ? [language] : Object.keys(EDGE_VOICE_OPTIONS);
+  const data = {};
+  for (const code of codes) {
+    data[code] = EDGE_VOICE_OPTIONS[code] || [VOICES[code] || "en-US-AriaNeural"];
+  }
+  res.status(200).json({
+    success: true,
+    message: "Edge voices",
+    data: { voices: data, language: language || null },
+  });
+});
+
+export const listYouTubeChannels = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
+  const accessToken = await getValidYouTubeAccessToken(user);
+  const channelsRes = await youtubeFetch(
+    accessToken,
+    `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`,
+  );
+  const channels = (channelsRes.items || []).map((item) => ({
+    id: item.id,
+    title: item.snippet?.title || item.id,
+    thumbnailUrl: item.snippet?.thumbnails?.default?.url || null,
+  }));
+  res.status(200).json({ success: true, message: "YouTube channels", data: { channels } });
+});
+
+export const cancelDubbing = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const err = new Error("Not authorized");
+    err.statusCode = 403;
+    throw err;
+  }
+  video.dubbing = {
+    ...(video.dubbing?.toObject?.() || video.dubbing || {}),
+    status: "failed",
+    progress: video.dubbing?.progress || 0,
+    error: "Cancelled by user",
+    completedAt: new Date(),
+  };
+  await video.save();
+  emitVideoProgress(video);
+  res.status(200).json({ success: true, message: "Dubbing cancelled", data: { video: await Video.findById(video._id).lean() } });
 });
 
 export const getProcessingLabel = (stage) =>

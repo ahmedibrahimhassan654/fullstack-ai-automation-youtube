@@ -224,7 +224,7 @@ const normalizeSegmentTiming = (segments, totalDuration) => {
   return normalized;
 };
 
-export const generateDubbedVideo = async ({ video, language }) => {
+export const generateDubbedVideo = async ({ video, language, voice = null, elevenLabsVoiceId = null }) => {
   if (!isCloudinaryConfigured()) {
     const err = new Error('Cloudinary is not configured on the server');
     err.statusCode = 500;
@@ -249,7 +249,7 @@ export const generateDubbedVideo = async ({ video, language }) => {
     throw err;
   }
 
-  const voice = VOICES[language] || VOICES.en;
+  const selectedVoice = voice || VOICES[language] || VOICES.en;
 
   const tempFiles = [];
   const clips = [];
@@ -304,7 +304,9 @@ export const generateDubbedVideo = async ({ video, language }) => {
       continue;
     }
 
-    const tts = await synthesizeSpeech(text, voice);
+    const tts = await synthesizeSpeech(text, selectedVoice, {
+      voiceId: elevenLabsVoiceId,
+    });
     if (!tts?.buffer?.length) {
       throw new Error(`TTS returned no audio for segment ${i + 1}`);
     }
@@ -445,7 +447,7 @@ export const generateDubbedVideo = async ({ video, language }) => {
       url: result.secure_url,
       storagePath: result.public_id,
       durationSeconds: Math.round(result.duration || videoDuration || 0),
-      voice,
+      voice: selectedVoice,
     };
   } finally {
     cleanup([...tempFiles, mergedAudio, outputFile]);

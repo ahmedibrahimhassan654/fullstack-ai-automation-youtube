@@ -15,12 +15,16 @@ const start = async () => {
     process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
     process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
 
-    // Resume in background without blocking the server.
-    setImmediate(() => {
-      resumeStuckVideoPipelines().catch((err) =>
-        console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
-      );
-    });
+    // Auto-resume can make long AI jobs block the dev server; keep it opt-in.
+    if (process.env.ENABLE_STARTUP_RESUME === "1") {
+      setImmediate(() => {
+        resumeStuckVideoPipelines().catch((err) =>
+          console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
+        );
+      });
+    } else {
+      console.log("[server] startup auto-resume disabled");
+    }
   });
 
   // Graceful shutdown

@@ -523,6 +523,7 @@ export const translateTranscriptSegments = async ({
   segments,
   targetLanguage,
   originalLanguage = 'en',
+  fast = false,
 }) => {
   const source = (segments || []).map(toPair).filter((s) => s.text);
 
@@ -543,6 +544,23 @@ export const translateTranscriptSegments = async ({
     return { start: s.start, end: s.end, text: s.text };
   });
 
+  // Fast mode: skip evaluation-driven retries and return the initial translation.
+  if (fast) {
+    return source.map((s, index) => ({
+      start: s.start,
+      end: s.end,
+      text: currentSegments[index].text,
+      sourceText: s.text,
+      originalLanguage: originalLanguage || 'en',
+      targetLanguage,
+      qualityScore: null,
+      qualityStatus: 'unknown',
+      qualityReason: '',
+      translationAttempts: 1,
+      wordSuggestions: [],
+    }));
+  }
+
   // 2. Evaluate against original English.
   const pairs = source.map((s, index) => ({
     original: s.text,
@@ -554,6 +572,7 @@ export const translateTranscriptSegments = async ({
   const bestScores = evaluations.map((e) =>
     e && typeof e.score === 'number' ? e.score : null,
   );
+
 
   // 3. Retry low-scoring segments with a high-quality pass.
   for (let attempt = 2; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt += 1) {

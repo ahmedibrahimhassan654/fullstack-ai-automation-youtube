@@ -100,6 +100,7 @@ type LessonPublishInfo = {
   youtubeUrl?: string | null;
   youtubePublishedAt?: string | null;
   youtubeChannelTitle?: string | null;
+  youtubeChannelId?: string | null;
   youtubePlaylistId?: string | null;
   youtubeVisibility?: string | null;
   youtubeCategoryId?: string | null;
@@ -139,6 +140,8 @@ function PublishForm({ id, language }: { id: string; language: string }) {
   const [categoryId, setCategoryId] = useState("27");
   const [playlistId, setPlaylistId] = useState("");
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
+  const [channels, setChannels] = useState<{ id: string; title: string }[]>([]);
+  const [channelId, setChannelId] = useState("");
   const [ytConnected, setYtConnected] = useState(false);
   const [ytChannelTitle, setYtChannelTitle] = useState("");
   const [publishing, setPublishing] = useState(false);
@@ -209,6 +212,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
         setPlaylistId(existingPublishLesson?.youtubePlaylistId || "");
         setThumbnailUrl(existingPublishLesson?.thumbnailUrl || v.thumbnailUrl || "");
+        if (existingPublishLesson?.youtubeChannelId) setChannelId(existingPublishLesson.youtubeChannelId);
         if (!v.thumbnailUrl && !existingPublishLesson?.thumbnailUrl) {
           const titleText = meta.titles?.[0] || v.title || "Lesson";
           const dataUrl = createCanvasThumbnailDataUrl(titleText, language);
@@ -233,6 +237,12 @@ function PublishForm({ id, language }: { id: string; language: string }) {
       api.get<{ playlists: { id: string; title: string }[] }>("/api/videos/youtube/playlists").then((r) => {
         if (r.success && r.data?.playlists) setPlaylists(r.data.playlists);
       });
+      api.get<{ channels: { id: string; title: string }[] }>("/api/videos/youtube/channels").then((r) => {
+        if (r.success && r.data?.channels) {
+          setChannels(r.data.channels);
+          setChannelId((current) => current || r.data?.channels?.[0]?.id || "");
+        }
+      });
       api.get<{ connected?: boolean; channelTitle?: string | null }>("/api/auth/youtube/status").then((r) => {
         if (r.success) {
           setYtConnected(Boolean(r.data?.connected));
@@ -252,6 +262,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
         visibility,
         categoryId,
         playlistId: playlistId || undefined,
+        channelId: channelId || undefined,
         thumbnailUrl: thumbnailUrl.trim() || undefined,
       },
     );
@@ -330,6 +341,40 @@ function PublishForm({ id, language }: { id: string; language: string }) {
                   />
                 )}
               </div>
+              <div className="space-y-2">
+                <Label>YouTube channel</Label>
+                <select
+                  value={channelId}
+                  onChange={(e) => setChannelId(e.target.value)}
+                  className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  {channels.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title}
+                    </option>
+                  ))}
+                </select>
+                {existingPublish?.youtubeChannelTitle && (
+                  <p className="text-xs text-muted-foreground">
+                    Last published channel: {existingPublish.youtubeChannelTitle}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Playlist</Label>
+                <select
+                  value={playlistId}
+                  onChange={(e) => setPlaylistId(e.target.value)}
+                  className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  <option value="">No playlist</option>
+                  {playlists.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Visibility</Label>
@@ -351,21 +396,6 @@ function PublishForm({ id, language }: { id: string; language: string }) {
               <div className="space-y-2">
                 <Label>Destination channel</Label>
                 <Input value={ytConnected ? ytChannelTitle || "Connected channel" : "Not connected"} readOnly />
-              </div>
-              <div className="space-y-2">
-                <Label>Playlist</Label>
-                <select
-                  value={playlistId}
-                  onChange={(e) => setPlaylistId(e.target.value)}
-                  className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                >
-                  <option value="">No playlist</option>
-                  {playlists.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.title}
-                    </option>
-                  ))}
-                </select>
               </div>
               <div className="flex items-center gap-2">
                 <Button onClick={publish} disabled={publishing || !ytConnected}>

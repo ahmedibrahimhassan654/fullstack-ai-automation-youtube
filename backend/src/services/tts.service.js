@@ -24,6 +24,31 @@ export const VOICES = {
   pl: 'pl-PL-ZofiaNeural',
 };
 
+export const EDGE_VOICE_OPTIONS = {
+  en: ['en-US-JennyNeural', 'en-US-GuyNeural', 'en-US-AriaNeural', 'en-US-AndrewNeural'],
+  es: ['es-ES-ElviraNeural', 'es-ES-AlvaroNeural', 'es-MX-DaliaNeural'],
+  fr: ['fr-FR-DeniseNeural', 'fr-FR-HenriNeural', 'fr-CA-SylvieNeural'],
+  de: ['de-DE-KatjaNeural', 'de-DE-ConradNeural', 'de-AT-IngridNeural'],
+  it: ['it-IT-ElsaNeural', 'it-IT-DiegoNeural'],
+  pt: ['pt-BR-FranciscaNeural', 'pt-BR-AntonioNeural', 'pt-PT-FernandaNeural'],
+  ru: ['ru-RU-SvetlanaNeural', 'ru-RU-DmitryNeural'],
+  ar: [
+    'ar-EG-SalmaNeural',
+    'ar-EG-ShakirNeural',
+    'ar-SA-ZariyahNeural',
+    'ar-SA-HamedNeural',
+    'ar-AE-FatimaNeural',
+    'ar-AE-HamdanNeural',
+  ],
+  hi: ['hi-IN-SwaraNeural', 'hi-IN-MadhurNeural'],
+  zh: ['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-CN-XiaochenNeural'],
+  ja: ['ja-JP-NanamiNeural', 'ja-JP-KeitaNeural'],
+  ko: ['ko-KR-SunHiNeural', 'ko-KR-InJoonNeural'],
+  tr: ['tr-TR-EmelNeural', 'tr-TR-AhmetNeural'],
+  nl: ['nl-NL-ColetteNeural', 'nl-NL-MaartenNeural'],
+  pl: ['pl-PL-ZofiaNeural', 'pl-PL-MarekNeural'],
+};
+
 const stripMarkdown = (text) =>
   String(text || '')
     .replace(/```[\s\S]*?```/g, '')
@@ -316,6 +341,42 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
   };
 };
 
+const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
+  if (!env.googleTtsApiKey) {
+    const err = new Error('GOOGLE_TTS_API_KEY is not configured');
+    err.statusCode = 500;
+    throw err;
+  }
+  const clean = stripMarkdown(text);
+  if (!clean.trim()) throw new Error('No speech could be generated');
+  const name = String(voiceName || env.googleTtsVoice || '').trim();
+  if (!name) throw new Error('A Google TTS voice name is required (e.g. ar-XA-Wavenet-A)');
+  const languageCode = name.split('-').slice(0, 2).join('-');
+  const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(env.googleTtsApiKey)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: { text: clean },
+      voice: { languageCode, name },
+      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0.0 },
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data?.error?.message || `Google TTS failed (${res.status})`);
+    err.statusCode = res.status;
+    throw err;
+  }
+  const buffer = Buffer.from(String(data.audioContent || ''), 'base64');
+  if (!buffer.length) throw new Error('Google TTS returned empty audio');
+  return {
+    buffer,
+    segments: [{ start: 0, end: Math.max(1, clean.split(/\\s+/).length / 2.5), text: clean }],
+    wordSegments: [],
+  };
+};
+
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
     options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
@@ -325,7 +386,16 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
     } catch (error) {
       const message = String(error?.message || '');
       // Do not stop the whole lesson if an optional paid voice is out of credits.
-      console.warn('[tts] ElevenLabs failed; falling back to free Edge TTS:', message);
+      console.warn('[tts] ElevenLabs failed; trying Google Cloud TTS:', message);
+    }
+  }
+
+  const googleVoice = String(options.googleVoice || env.googleTtsVoice || '').trim();
+  if (googleVoice && env.googleTtsApiKey) {
+    try {
+      return await synthesizeWithGoogleCloud(text, googleVoice, options);
+    } catch (error) {
+      console.warn('[tts] Google Cloud TTS failed; falling back to free Edge TTS:', error?.message || error);
     }
   }
 

@@ -90,6 +90,7 @@ export const generateLessonVideo = async ({
   video,
   language,
   voiceId,
+  voice,
   backgroundOnly = false,
   onProgress,
 }) => {
@@ -117,14 +118,13 @@ export const generateLessonVideo = async ({
   if (!script.trim()) throw new Error("Could not generate lesson script");
   await report(30);
 
-  const voice = voiceId
-    ? String(voiceId).trim()
-    : VOICES[language] || VOICES.en;
+  const selectedVoice =
+    voice || (voiceId ? String(voiceId).trim() : VOICES[language] || VOICES.en);
   const {
     buffer: audioBuffer,
     segments: lessonSegments,
     wordSegments: lessonWordSegments,
-  } = await synthesizeSpeech(script, voice, {
+  } = await synthesizeSpeech(script, selectedVoice, {
     voiceId: voiceId ? String(voiceId).trim() : undefined,
     onProgress: async (value) => {
       await onProgress?.(30 + Math.round(value * 0.2));
@@ -411,7 +411,7 @@ export const generateLessonVideo = async ({
       durationSeconds: Math.round(
         result.duration || video.durationSeconds || 0,
       ),
-      voice,
+      voice: selectedVoice,
       script,
       segments: (backgroundOnly ? burnSegments : lessonSegments) || [],
       subtitlesUrl,

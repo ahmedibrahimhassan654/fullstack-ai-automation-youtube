@@ -121,6 +121,9 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [generatingLesson, setGeneratingLesson] = useState(false);
   const [generatingDub, setGeneratingDub] = useState(false);
   const [lessonVoiceId, setLessonVoiceId] = useState("");
+  const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
+  const [lessonEdgeVoice, setLessonEdgeVoice] = useState("");
+  const [dubEdgeVoice, setDubEdgeVoice] = useState("");
   const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
 
   const load = async () => {
@@ -152,6 +155,22 @@ export default function VideoDetailClient({ id }: { id: string }) {
       if (res.success && res.data?.voices) setElevenVoices(res.data.voices);
     });
   }, []);
+
+  useEffect(() => {
+    api.get<{ voices: Record<string, string[]> }>("/api/videos/edge-voices").then((res) => {
+      if (res.success && res.data?.voices) setEdgeVoiceOptionsByLang(res.data.voices);
+    });
+  }, []);
+
+  useEffect(() => {
+    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    if (opts.length && !opts.includes(lessonEdgeVoice)) setLessonEdgeVoice(opts[0]);
+  }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+
+  useEffect(() => {
+    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    if (opts.length && !opts.includes(dubEdgeVoice)) setDubEdgeVoice(opts[0]);
+  }, [lessonLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
     if (!video) return;
@@ -545,10 +564,23 @@ export default function VideoDetailClient({ id }: { id: string }) {
                           </option>
                         ))}
                     </select>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="dubEdgeVoice">Dub voice</Label>
+                      <select
+                        id="dubEdgeVoice"
+                        value={dubEdgeVoice}
+                        onChange={(e) => setDubEdgeVoice(e.target.value)}
+                        className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                      >
+                        {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                    </div>
                     <Button
                       onClick={async () => {
                         setGeneratingDub(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: lessonLanguage });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: lessonLanguage, voice: dubEdgeVoice });
                         if (res.success) {
                           toast.success(res.message || "Dubbing started.");
                           if (res.data?.video) setVideo(res.data.video);
@@ -576,6 +608,13 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   </div>
                   {video.dubbing?.status === "processing" && (
                     <Progress value={video.dubbing.progress || 0} className="h-2" />
+                  )}
+                  {video.dubbing?.status === "processing" && (
+                    <Button variant="destructive" size="sm" onClick={async () => {
+                      const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub/cancel`);
+                      if (res.success && res.data?.video) { setVideo(res.data.video); toast.success("Dubbing cancelled."); }
+                      else toast.error(res.message || "Failed to cancel dubbing.");
+                    }}>Cancel dubbing</Button>
                   )}
                   {video.dubbing?.status === "failed" && video.dubbing.error && (
                     <p className="text-sm text-destructive">Last dubbing error: {video.dubbing.error}</p>
@@ -626,7 +665,18 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         ))}
                     </select>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Label htmlFor="lessonVoiceId">Voice ID (optional)</Label>
+                      <Label htmlFor="lessonEdgeVoice">Free Edge voice</Label>
+                      <select
+                        id="lessonEdgeVoice"
+                        value={lessonEdgeVoice}
+                        onChange={(e) => setLessonEdgeVoice(e.target.value)}
+                        className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                      >
+                        {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                      <Label htmlFor="lessonVoiceId">ElevenLabs voice ID (optional)</Label>
                       <select
                         id="lessonVoiceId"
                         value={lessonVoiceId}
@@ -655,7 +705,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                     <Button
                       onClick={async () => {
                         setGeneratingLesson(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, backgroundOnly: false });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/lesson`, { language: lessonLanguage, voiceId: lessonVoiceId.trim() || undefined, voice: lessonEdgeVoice, backgroundOnly: false });
                         if (res.success) {
                           toast.success(res.message || "Lesson generation started.");
                           if (res.data?.video) setVideo(res.data.video);
