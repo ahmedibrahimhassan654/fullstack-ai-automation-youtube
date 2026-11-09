@@ -109,8 +109,14 @@ type LessonPublishInfo = {
   youtubeTags?: string[] | null;
   thumbnailUrl?: string | null;
 };
+function lessonNumberFrom(value?: string | null) {
+  const match = String(value || "").trim().match(/^(\d+)/);
+  return match ? match[1] : null;
+}
+
 type VideoDetail = {
   title?: string;
+  originalFilename?: string | null;
   transcriptLanguage?: string;
   translations?: { language: string; transcript?: string }[];
   lessonVideos?: LessonPublishInfo[];
@@ -177,35 +183,41 @@ function PublishForm({ id, language }: { id: string; language: string }) {
         const chapters = (meta.chapters || [])
           .filter((c) => c?.title)
           .map((c) => `${c.time || "00:00"} - ${c.title}`)
-          .join("\\n");
-        const keyPoints = (meta.keyPoints || []).map((p) => `- ${p}`).join("\\n");
-        const questions = (meta.openQuestions || []).map((q) => `- ${q}`).join("\\n");
+          .join("\n");
+        const keyPoints = (meta.keyPoints || []).map((p) => `- ${p}`).join("\n");
+        const questions = (meta.openQuestions || []).map((q) => `- ${q}`).join("\n");
         const hashtags = (meta.tags || [])
-          .map((tag) => `#${String(tag).trim().replace(/\\s+/g, "")}`)
+          .map((tag) => `#${String(tag).trim().replace(/\s+/g, "")}`)
           .filter((tag) => tag !== "#")
           .join(" ");
         const opening = (descriptionText || summary || "").trim();
         const pointLines = (meta.keyPoints || [])
           .map((p) => `🔹 ${String(p).trim()}`)
           .filter(Boolean)
-          .join("\\n");
+          .join("\n");
         const chapterLines = (meta.chapters || [])
           .filter((c) => c?.title)
           .map((c) => `${c.time || "00:00"} — ${c.title}`)
-          .join("\\n");
+          .join("\n");
         const body = [opening, pointLines, (meta.openQuestions || []).length ? `❓ ${(meta.openQuestions || []).join(" ")}` : ""]
           .filter(Boolean)
-          .join("\\n");
+          .join("\n");
         const composedDescription = [
           body,
-          chapterLines ? `-----------------------------------------------------------------------------------------------------\\n${chapterLines}` : "",
+          chapterLines ? `-----------------------------------------------------------------------------------------------------\n${chapterLines}` : "",
           hashtags ? `🏷️ ${hashtags}` : "",
         ]
           .filter(Boolean)
-          .join("\\n\\n");
+          .join("\n\n");
 
         const existingPublishLesson = (v.lessonVideos || []).find((item) => item.language === language);
-        setTitle(existingPublishLesson?.youtubeTitle || meta.titles?.[0] || `${v.title || "Lesson"} (${language})`);
+        const preferredTitle = existingPublishLesson?.youtubeTitle || meta.titles?.[0] || `${v.title || "Lesson"} (${language})`;
+        const lessonNumber = lessonNumberFrom(v.title) || lessonNumberFrom(v.originalFilename);
+        const titledWithNumber =
+          lessonNumber && !String(preferredTitle).trim().match(/^\d+/)
+            ? `${lessonNumber}. ${preferredTitle}`
+            : preferredTitle;
+        setTitle(titledWithNumber);
         setDescription(existingPublishLesson?.youtubeDescription || composedDescription);
         setTags(((existingPublishLesson?.youtubeTags && existingPublishLesson.youtubeTags.length ? existingPublishLesson.youtubeTags : (meta.tags || [])) as string[]).join(", "));
         setVisibility(existingPublishLesson?.youtubeVisibility || v.youtubeVisibility || "private");
@@ -227,6 +239,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
           }
         }
         setCategoryId(v.youtubeCategoryId || "27");
+
       } else {
         toast.error(res.message || "Failed to load video.");
       }
