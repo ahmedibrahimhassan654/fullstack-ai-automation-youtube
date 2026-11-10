@@ -99,6 +99,7 @@ type LessonPublishInfo = {
   source?: "lesson" | "dub";
   url?: string | null;
   durationSeconds?: number | null;
+  voice?: string | null;
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
   youtubePublishedAt?: string | null;

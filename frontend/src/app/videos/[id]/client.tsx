@@ -123,6 +123,14 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
   const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
 
+  // Study-journey lesson render is a separate product from dubbing, so it keeps
+  // its own language / voice selection state.
+  const [lessonLanguage, setLessonLanguage] = useState("");
+  const [generatingLesson, setGeneratingLesson] = useState(false);
+  const [lessonEdgeVoice, setLessonEdgeVoice] = useState("");
+  const [lessonVoiceId, setLessonVoiceId] = useState("");
+  const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
+
   const load = async () => {
     setLoading(true);
     const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
@@ -136,6 +144,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
       setDubLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
+      setLessonLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -163,6 +172,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
     const opts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
     if (opts.length && !opts.includes(dubEdgeVoice)) setDubEdgeVoice(opts[0]);
   }, [dubLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+
+  useEffect(() => {
+    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    if (opts.length && !opts.includes(lessonEdgeVoice)) setLessonEdgeVoice(opts[0]);
+  }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
     if (!video) return;
