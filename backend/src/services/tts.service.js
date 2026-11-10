@@ -72,6 +72,123 @@ const escapeXml = (text) =>
 
 const KHz100ns = 10000000;
 
+// --- Mixed script synthesis ----------------------------------------------------
+// Arabic narration that mentions English technical names (ISO, Kali Linux,
+// React) and numbers sounds wrong when a single Arabic voice reads all of it:
+// the Arabic voice squashes the Latin names into Arabic phonetics and spells
+// numbers out digit by digit. Each script run is therefore spoken by a voice
+// that is native to it.
+
+// Voice used for the English fragments inside a non-English narration. It is
+// matched to the gender of the target voice so the dub keeps one speaker.
+const TECHNICAL_TERM_VOICE_MAP = {
+  'ar-EG-SalmaNeural': 'en-US-JennyNeural',
+  'ar-EG-ShakirNeural': 'en-US-GuyNeural',
+  'ar-AE-FatimaNeural': 'en-US-JennyNeural',
+  'ar-AE-HamdanNeural': 'en-US-GuyNeural',
+  'ar-SA-ZariyahNeural': 'en-US-JennyNeural',
+  'ar-SA-HamedNeural': 'en-US-GuyNeural',
+};
+
+const DEFAULT_TECHNICAL_TERM_VOICE = 'en-US-AriaNeural';
+
+export const technicalTermVoiceFor = (voice) =>
+  TECHNICAL_TERM_VOICE_MAP[String(voice || '')] || DEFAULT_TECHNICAL_TERM_VOICE;
+
+const ARABIC_SCRIPT_PATTERN = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+const LATIN_RUN_PATTERN = /[A-Za-z0-9]/;
+// Letters and digits are speakable; diacritics and punctuation on their own
+// are not (Edge returns empty audio for them).
+const SPEAKABLE_PATTERN = /[\p{L}\p{N}]/u;
+
+/**
+ * Splits a sentence into runs of target-script text and runs of Latin text
+ * (technical names, numbers). Spaces and punctuation stay with the run they
+ * follow.
+ */
+export const splitIntoScriptRuns = (text, { minLatinLength = 2 } = {}) => {
+  const value = String(text || '');
+  if (!value) return [];
+
+  const runs = [];
+  let current = null;
+
+  const push = (kind, chunk) => {
+    if (!current || current.kind !== kind) {
+      if (current) runs.push(current);
+      current = { kind, text: chunk };
+    } else {
+      current.text += chunk;
+    }
+  };
+
+  for (const ch of value) {
+    if (ARABIC_SCRIPT_PATTERN.test(ch)) {
+      push('target', ch);
+    } else if (LATIN_RUN_PATTERN.test(ch)) {
+      push('latin', ch);
+    } else if (current) {
+      current.text += ch;
+    } else {
+      current = { kind: 'target', text: ch };
+    }
+  }
+  if (current) runs.push(current);
+
+  const cleaned = runs
+    .map((run) => ({ kind: run.kind, text: run.text.trim() }))
+    .filter((run) => run.text);
+
+  // A run without letters (a stray diacritic or punctuation) is not
+  // speakable on its own, and a one letter Latin fragment is not worth its
+  // own request. Both are glued to a neighbour.
+  const isGlueable = (run) =>
+    !SPEAKABLE_PATTERN.test(run.text) ||
+    (run.kind === 'latin' && run.text.replace(/[^A-Za-z0-9]/g, '').length < minLatinLength);
+
+  const merged = [];
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const run = cleaned[i];
+    if (isGlueable(run)) {
+      const previous = merged[merged.length - 1];
+      if (previous) {
+        previous.text = `${previous.text} ${run.text}`;
+        continue;
+      }
+      const next = cleaned[i + 1];
+      if (next) {
+        next.text = `${run.text} ${next.text}`;
+        continue;
+      }
+      continue;
+    }
+    merged.push({ ...run });
+  }
+
+  // A stray Arabic diacritic can end up glued to a Latin name; an English
+  // voice cannot pronounce it, so it is removed.
+  return merged
+    .map((run) => ({
+      ...run,
+      text: run.kind === 'latin' ? run.text.replace(/\p{M}/gu, '').trim() : run.text,
+    }))
+    .filter((run) => run.text);
+};
+
+const runFfmpegTrim = (args) =>
+  new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegStatic, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', (err) => reject(err));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg failed (${code}): ${stderr.slice(-500)}`));
+    });
+  });
+
 const runFfmpegConcat = (inputFiles, outputFile) =>
   new Promise((resolve, reject) => {
     const listFile = path.join(os.tmpdir(), `concat-${Date.now()}.txt`);
@@ -496,6 +613,216 @@ const synthesizeChunkRobust = async (chunk, voice, rate, depth = 0) => {
   throw lastError || new Error('TTS chunk failed');
 };
 
+/**
+ * Speaks a sentence that mixes scripts, giving every run the voice that is
+ * native to it.
+ *
+ * "افتح ملف ISO من Kali Linux" is spoken as Arabic with an Arabic voice and
+ * the English names with an English voice, instead of the Arabic voice
+ * mangling them into Arabic phonetics.
+ */
+export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => {
+  const secondaryVoice =
+    options.secondaryVoice || technicalTermVoiceFor(voice);
+  const runs = splitIntoScriptRuns(text);
+
+  const hasLatin = runs.some((run) => run.kind === 'latin');
+  const hasTarget = runs.some((run) => run.kind === 'target');
+
+  if (!hasLatin || !hasTarget) {
+    return synthesizeSpeech(text, voice, { ...options, mixedScript: false });
+  }
+
+  const pcmParts = [];
+  const buffers = [];
+  const segments = [];
+  const wordSegments = [];
+  let offset = 0;
+
+  for (const run of runs) {
+    // A run without letters or digits cannot be spoken (Edge returns empty
+    // audio for a stray diacritic), so it is skipped instead of failing the
+    // whole sentence.
+    if (!SPEAKABLE_PATTERN.test(run.text)) continue;
+
+    const runVoice = run.kind === 'latin' ? secondaryVoice : voice;
+
+    let result = null;
+    try {
+      result = await synthesizeSpeech(run.text, runVoice, {
+        ...options,
+        mixedScript: false,
+      });
+    } catch (error) {
+      console.warn('[tts] mixed script run failed, skipping:', error?.message);
+      continue;
+    }
+    if (!result?.buffer?.length) continue;
+
+    // Raw PCM is concatenated byte for byte; the WAV wrapper is added once
+    // at the end.
+    const pcm = result.pcm || (await decodeToPcm(result.buffer));
+    if (pcm?.length) pcmParts.push(pcm);
+    else buffers.push(result.buffer);
+
+    for (const seg of result.segments || []) {
+      segments.push({
+        ...seg,
+        start: Number((Number(seg.start || 0) + offset).toFixed(3)),
+        end: Number((Number(seg.end || 0) + offset).toFixed(3)),
+      });
+    }
+    for (const seg of result.wordSegments || []) {
+      wordSegments.push({
+        ...seg,
+        start: Number((Number(seg.start || 0) + offset).toFixed(3)),
+        end: Number((Number(seg.end || 0) + offset).toFixed(3)),
+      });
+    }
+
+    const lastEnd =
+      (result.segments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      (result.wordSegments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      0;
+    offset += lastEnd;
+  }
+
+  let finalBuffer;
+  if (pcmParts.length > 0) {
+    finalBuffer = pcmToWav(Buffer.concat(pcmParts));
+  } else if (buffers.length === 1) {
+    finalBuffer = buffers[0];
+  } else {
+    finalBuffer = Buffer.concat(buffers);
+  }
+
+  return {
+    buffer: finalBuffer,
+    pcm: pcmParts.length > 0 ? Buffer.concat(pcmParts) : null,
+    segments,
+    wordSegments,
+    chunkEnd: offset,
+  };
+};
+
+/**
+ * Wraps raw 16 bit PCM in a WAV container.
+ *
+ * The pipeline works with raw PCM internally because raw samples can be
+ * concatenated byte for byte, while WAV files cannot (every file carries its
+ * own header).
+ */
+const pcmToWav = (pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) => {
+  const data = pcm || Buffer.alloc(0);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE((sampleRate * channels * bitsPerSample) / 8, 28);
+  header.writeUInt16LE((channels * bitsPerSample) / 8, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+};
+
+/**
+ * Cuts the silent padding Edge TTS puts around every request.
+ *
+ * The word boundaries tell us exactly where the speech is: the request starts
+ * ~0.1s in and ends ~0.95s before the audio does. Cutting with `atrim` on
+ * those known boundaries is precise, unlike a level threshold which would
+ * also chew into quiet speech.
+ *
+ * A sentence with internal pauses kept its ~1s of trailing silence, which
+ * inflated every measured duration, forced the whole dub into a heavier tempo
+ * compression and left audible gaps between the sentences.
+ */
+const trimToSpeechSpan = async (buffer, startSeconds, endSeconds) => {
+  if (!buffer?.length) return null;
+
+  const safeStart = Math.max(0, Number(startSeconds) - 0.05);
+  const safeEnd = Math.max(safeStart + 0.05, Number(endSeconds) + 0.1);
+
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inputPath = path.join(os.tmpdir(), `tts-trim-in-${stamp}.mp3`);
+  const outputPath = path.join(os.tmpdir(), `tts-trim-out-${stamp}.pcm`);
+
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    await runFfmpegTrim([
+      '-y',
+      '-i',
+      inputPath,
+      '-af',
+      `atrim=start=${safeStart.toFixed(3)}:end=${safeEnd.toFixed(3)},asetpts=PTS-STARTPTS`,
+      '-f',
+      's16le',
+      '-ar',
+      '24000',
+      '-ac',
+      '1',
+      outputPath,
+    ]);
+
+    if (!fs.existsSync(outputPath)) return null;
+    const pcm = fs.readFileSync(outputPath);
+    return pcm.length ? pcm : null;
+  } catch (error) {
+    console.warn('[tts] speech trim failed, keeping original audio:', error?.message);
+    return null;
+  } finally {
+    for (const file of [inputPath, outputPath]) {
+      try {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      } catch {
+        // ignore
+      }
+    }
+  }
+};
+
+/** Decodes any audio buffer to raw 16 bit PCM. */
+const decodeToPcm = async (buffer) => {
+  if (!buffer?.length) return null;
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inputPath = path.join(os.tmpdir(), `tts-dec-in-${stamp}.mp3`);
+  const outputPath = path.join(os.tmpdir(), `tts-dec-out-${stamp}.pcm`);
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    await runFfmpegTrim([
+      '-y',
+      '-i',
+      inputPath,
+      '-f',
+      's16le',
+      '-ar',
+      '24000',
+      '-ac',
+      '1',
+      outputPath,
+    ]);
+    if (!fs.existsSync(outputPath)) return null;
+    const pcm = fs.readFileSync(outputPath);
+    return pcm.length ? pcm : null;
+  } catch {
+    return null;
+  } finally {
+    for (const file of [inputPath, outputPath]) {
+      try {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      } catch {
+        // ignore
+      }
+    }
+  }
+};
+
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
     options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
@@ -509,6 +836,12 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
     provider === 'edge' ||
     options.forceEdge === true ||
     (provider !== 'elevenlabs' && provider !== 'google' && looksLikeEdgeVoice);
+
+  // Mixed script narration: English technical names and numbers inside an
+  // Arabic sentence are spoken by an English voice.
+  if (forceEdge && options.mixedScript === true) {
+    return synthesizeSpeechMixedScript(text, voice, options);
+  }
 
   if (!forceEdge && elevenLabsVoiceId && env.elevenLabsApiKey) {
     try {
@@ -598,9 +931,39 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
 
   const finalSegments = allSegments.filter((s) => s.text);
   const finalWordSegments = allWordSegments.filter((s) => s.text);
+
+  // Cut the padding Edge adds around every request, using the word
+  // boundaries it reported so no speech is touched.
+  let finalOut = finalBuffer;
+  let pcm = null;
+  let shift = 0;
+  if (finalWordSegments.length > 0) {
+    const first = Math.min(...finalWordSegments.map((s) => Number(s.start) || 0));
+    const last = Math.max(...finalWordSegments.map((s) => Number(s.end) || 0));
+    if (last > first) {
+      const trimmed = await trimToSpeechSpan(finalBuffer, first, last);
+      if (trimmed) {
+        pcm = trimmed;
+        finalOut = pcmToWav(trimmed);
+        shift = first;
+      }
+    }
+  }
+
+  const shifted = (segments) =>
+    segments.map((seg) => ({
+      ...seg,
+      start: Number(Math.max(0, Number(seg.start || 0) - shift).toFixed(3)),
+      end: Number(Math.max(0, Number(seg.end || 0) - shift).toFixed(3)),
+    }));
+
   return {
-    buffer: finalBuffer,
-    segments: finalSegments.length > 0 ? finalSegments : [{ start: 0, end: 0, text: clean }],
-    wordSegments: finalWordSegments,
+    buffer: finalOut,
+    pcm,
+    segments:
+      shifted(finalSegments).length > 0
+        ? shifted(finalSegments)
+        : [{ start: 0, end: 0, text: clean }],
+    wordSegments: shifted(finalWordSegments),
   };
 };

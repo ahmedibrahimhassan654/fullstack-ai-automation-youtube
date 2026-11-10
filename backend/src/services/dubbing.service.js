@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
-import { synthesizeSpeech, VOICES } from './tts.service.js';
+import { synthesizeSpeech, technicalTermVoiceFor, VOICES } from './tts.service.js';
 import {
   translateTranscriptSegments,
   findUntranslatedSegments,
@@ -391,9 +391,16 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   // Google voice is configured in the environment.
   const useEdge = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(selectedVoice));
   const ttsOptions = useEdge
-    // A slightly brisker delivery than the default (-3%) buys back tempo
-    // budget, so the whole dub fits the video without sounding rushed.
-    ? { provider: 'edge', rate: '+2%' }
+    ? {
+        provider: 'edge',
+        // A slightly brisker delivery than the default (-3%) buys back tempo
+        // budget, so the whole dub fits the video without sounding rushed.
+        rate: '+2%',
+        // Technical names and numbers inside the Arabic are spoken by an
+        // English voice so they are pronounced correctly.
+        mixedScript: true,
+        secondaryVoice: technicalTermVoiceFor(selectedVoice),
+      }
     : { provider: 'elevenlabs', voiceId: elevenLabsVoiceId };
 
   const blocks = mergeCuesIntoSentences(segments, videoDuration);
