@@ -6,7 +6,10 @@ import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { synthesizeSpeech, VOICES } from './tts.service.js';
-import { translateTranscriptSegments } from './aiMetadata.service.js';
+import {
+  translateTranscriptSegments,
+  findUntranslatedSegments,
+} from './aiMetadata.service.js';
 
 const TEMP_DIR = os.tmpdir();
 
@@ -140,7 +143,7 @@ const normalizeToWav = async (inputPath, outputPath) => {
   ]);
 };
 
-const getTranslationSegments = async (video, language) => {
+const getTranslationSegments = async (video, language, onProgress = null) => {
   const originalLanguage = video.originalLanguage || video.transcriptLanguage || 'en';
   if (String(language).toLowerCase() === String(originalLanguage).toLowerCase()) {
     return (video.transcriptSegments || []).map((s) => ({
@@ -154,11 +157,30 @@ const getTranslationSegments = async (video, language) => {
     (t) => String(t.language).toLowerCase() === String(language).toLowerCase(),
   );
   if (existing?.segments?.length) {
-    return existing.segments.map((s) => ({
+    const segments = existing.segments.map((s) => ({
       start: Number(s.start) || 0,
       end: Number(s.end) || 0,
       text: String(s.text || '').trim(),
     }));
+
+    // A stored translation can be stale, or it can have been saved while the
+    // AI provider was rate limited and still contain the source language.
+    // Dubbing it would speak English with a foreign voice, so it is verified
+    // first and re-translated when it is not really in the target language.
+    const untranslated = findUntranslatedSegments({
+      segments,
+      targetLanguage: language,
+      sourceSegments: video.transcriptSegments || [],
+      sourceLanguage: originalLanguage,
+    });
+
+    if (untranslated.length === 0) {
+      return segments;
+    }
+
+    console.warn(
+      `[dubbing] stored translation for ${language} still has ${untranslated.length} untranslated segment(s) - re-translating`,
+    );
   }
 
   if (Array.isArray(video.transcriptSegments) && video.transcriptSegments.length) {
@@ -166,7 +188,24 @@ const getTranslationSegments = async (video, language) => {
       segments: video.transcriptSegments,
       targetLanguage: language,
       originalLanguage,
+      onProgress,
     });
+
+    const untranslated = findUntranslatedSegments({
+      segments: translated,
+      targetLanguage: language,
+      sourceSegments: video.transcriptSegments || [],
+      sourceLanguage: originalLanguage,
+    });
+    if (untranslated.length > 0) {
+      const err = new Error(
+        `Translation to ${language} is incomplete: ${untranslated.length} of ${translated.length} segments are still in ${originalLanguage}. The AI provider is most likely rate limited - please try again.`,
+      );
+      err.code = 'TRANSLATION_FAILED';
+      err.statusCode = 502;
+      throw err;
+    }
+
     return translated.map((s) => ({
       start: Number(s.start) || 0,
       end: Number(s.end) || 0,
@@ -208,7 +247,12 @@ const normalizeSegmentTiming = (segments, totalDuration) => {
   return normalized;
 };
 
-const MAX_TEMPO = 1.6;
+// Arabic and other non-latin languages need noticeably longer than English
+// for the same content. Speeding the voice up to 1.6x was the reason the
+// dub sounded rushed and the pronunciation came out wrong, so the tempo is
+// kept close to natural and the remaining overflow is left as a short pause
+// instead of being crammed into the next sentence.
+const MAX_TEMPO = 1.3;
 
 /**
  * Merge subtitle cues into whole sentences.
@@ -253,22 +297,18 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
 };
 
 /**
- * Converts the spoken clip so that it fits the available window.
- * Never truncates audio (truncation was what cut words in the middle) -
- * if it still does not fit after MAX_TEMPO it is allowed to overflow into the
- * next pause, which keeps every word audible.
+ * Applies a single tempo factor to a clip.
+ *
+ * The whole dub uses one uniform tempo (see `planDubTiming`) instead of
+ * speeding every sentence up individually, which is what made some sentences
+ * sound rushed while others stayed natural.
  */
-const fitSpeechToWindow = async (inputPath, outputPath, sourceDuration, windowSeconds) => {
-  const safeWindow = Math.max(0.5, Number(windowSeconds) || 0.5);
-  const safeSource = Math.max(0.05, Number(sourceDuration) || 0.05);
-  const ratio = safeSource / safeWindow;
-
-  if (ratio <= 1.02) {
+const applyTempo = async (inputPath, outputPath, tempo) => {
+  if (tempo <= 1.02) {
     await normalizeToWav(inputPath, outputPath);
-    return safeSource;
+    return (await getAudioDurationSeconds(outputPath)) || 0;
   }
 
-  const tempo = Math.min(MAX_TEMPO, ratio);
   await runFfmpeg([
     '-y',
     '-i',
@@ -284,8 +324,28 @@ const fitSpeechToWindow = async (inputPath, outputPath, sourceDuration, windowSe
     outputPath,
   ]);
 
-  const actual = await getAudioDurationSeconds(outputPath);
-  return actual || safeSource / tempo;
+  return (await getAudioDurationSeconds(outputPath)) || 0;
+};
+
+/**
+ * Works out the single tempo that lets the whole narration fit the video.
+ *
+ * The target language is usually longer than the English source (Arabic needs
+ * ~1.3x the time for the same content), so the dub has to be compressed to
+ * stay in sync. Compressing it once, uniformly, keeps the voice natural -
+ * per-sentence clamping produced a rushed voice on some lines and a slow one
+ * on others.
+ */
+export const planDubTiming = ({ totalSpeechSeconds, videoDuration }) => {
+  const totalSpeech = Math.max(0, Number(totalSpeechSeconds) || 0);
+  const available = Math.max(0, Number(videoDuration) || 0);
+
+  if (!totalSpeech || !available) return 1;
+
+  const required = totalSpeech / available;
+  if (required <= 1.02) return 1;
+
+  return Math.min(MAX_TEMPO, required);
 };
 
 export const generateDubbedVideo = async ({ video, language, voice = null, elevenLabsVoiceId = null, onProgress = null }) => {
@@ -296,8 +356,21 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   }
 
   const videoDuration = Math.max(0, Number(video.durationSeconds) || 0);
+  const reportProgress = async (value) => {
+    if (!onProgress) return;
+    try {
+      await onProgress(value);
+    } catch (progressError) {
+      if (progressError?.code === 'DUB_CANCELLED') throw progressError;
+    }
+  };
+
   const segments = normalizeSegmentTiming(
-    (await getTranslationSegments(video, language)).map((s) => ({
+    (await getTranslationSegments(video, language, async (ratio) => {
+      // Translating the transcript is the slowest part of a dub, so it gets
+      // its own slice of the progress bar instead of looking stuck.
+      await reportProgress(Math.min(35, 10 + Math.round(ratio * 25)));
+    })).map((s) => ({
       start: Math.max(0, Number(s.start) || 0),
       end: Math.max(Number(s.end) || 0, (Number(s.start) || 0) + 0.1),
       text: String(s.text || '').trim(),
@@ -318,7 +391,9 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   // Google voice is configured in the environment.
   const useEdge = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(selectedVoice));
   const ttsOptions = useEdge
-    ? { provider: 'edge' }
+    // A slightly brisker delivery than the default (-3%) buys back tempo
+    // budget, so the whole dub fits the video without sounding rushed.
+    ? { provider: 'edge', rate: '+2%' }
     : { provider: 'elevenlabs', voiceId: elevenLabsVoiceId };
 
   const blocks = mergeCuesIntoSentences(segments, videoDuration);
@@ -326,37 +401,13 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   const tempFiles = [];
   const clips = [];
   const burnSegments = [];
-  let cursor = 0;
+  const prepared = [];
 
+  // Phase 1 - speak every sentence at natural speed and measure it.
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i];
 
-    if (videoDuration > 0 && block.start >= videoDuration) {
-      cursor = videoDuration;
-      break;
-    }
-
-    // If the previous sentence overflowed we simply continue from the cursor
-    // instead of cutting the audio short.
-    const startAt = Math.max(block.start, cursor);
-    const leadingGap = startAt - cursor;
-    if (leadingGap > 0.02) {
-      const silenceFile = path.join(
-        TEMP_DIR,
-        `dub-silence-${video._id}-${i}-${Date.now()}.wav`,
-      );
-      tempFiles.push(silenceFile);
-      if (await createSilenceWav(leadingGap, silenceFile)) {
-        clips.push(silenceFile);
-        cursor += leadingGap;
-      }
-    }
-
-    const nextStart = Math.min(
-      block.nextStart > startAt ? block.nextStart : videoDuration || block.end,
-      videoDuration || Number.POSITIVE_INFINITY,
-    );
-    const window = Math.max(0.8, nextStart - startAt);
+    if (videoDuration > 0 && block.start >= videoDuration) break;
 
     const tts = await synthesizeSpeech(block.text, selectedVoice, ttsOptions);
     if (!tts?.buffer?.length) {
@@ -370,23 +421,63 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     tempFiles.push(rawTtsFile);
     fs.writeFileSync(rawTtsFile, tts.buffer);
 
-    let sourceDuration = await getAudioDurationSeconds(rawTtsFile);
-    if (!sourceDuration) {
-      sourceDuration = estimateSpeechSeconds(block.text, language);
+    let duration = await getAudioDurationSeconds(rawTtsFile);
+    if (!duration) {
+      duration = estimateSpeechSeconds(block.text, language);
+    }
+
+    prepared.push({ block, index: i, rawFile: rawTtsFile, duration });
+
+    await reportProgress(
+      Math.min(60, 35 + Math.round(((i + 1) / blocks.length) * 25)),
+    );
+  }
+
+  if (prepared.length === 0) {
+    throw new Error('Audio timeline assembly produced no clips');
+  }
+
+  // Phase 2 - one tempo for the whole narration so the voice stays even.
+  const totalSpeech = prepared.reduce((sum, item) => sum + item.duration, 0);
+  const tempo = planDubTiming({
+    totalSpeechSeconds: totalSpeech,
+    videoDuration,
+  });
+  if (tempo > 1.02) {
+    console.log(
+      `[dubbing] compressing narration from ${totalSpeech.toFixed(1)}s to fit ${videoDuration}s (tempo ${tempo.toFixed(3)})`,
+    );
+  }
+
+  // Phase 3 - place the sentences on the timeline.
+  let cursor = 0;
+
+  for (let i = 0; i < prepared.length; i += 1) {
+    const { block, index, rawFile } = prepared[i];
+
+    // If the previous sentence overflowed we simply continue from the cursor
+    // instead of cutting the audio short.
+    const startAt = Math.max(block.start, cursor);
+    const leadingGap = startAt - cursor;
+    if (leadingGap > 0.02) {
+      const silenceFile = path.join(
+        TEMP_DIR,
+        `dub-silence-${video._id}-${index}-${Date.now()}.wav`,
+      );
+      tempFiles.push(silenceFile);
+      if (await createSilenceWav(leadingGap, silenceFile)) {
+        clips.push(silenceFile);
+        cursor += leadingGap;
+      }
     }
 
     const fittedFile = path.join(
       TEMP_DIR,
-      `dub-fit-${video._id}-${language}-${i}-${Date.now()}.wav`,
+      `dub-fit-${video._id}-${language}-${index}-${Date.now()}.wav`,
     );
     tempFiles.push(fittedFile);
 
-    const fittedDuration = await fitSpeechToWindow(
-      rawTtsFile,
-      fittedFile,
-      sourceDuration,
-      window,
-    );
+    const fittedDuration = await applyTempo(rawFile, fittedFile, tempo);
 
     clips.push(fittedFile);
     burnSegments.push({
@@ -399,11 +490,11 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
       ),
       text: block.text,
     });
-    cursor += fittedDuration > 0 ? fittedDuration : window;
+    cursor += fittedDuration > 0 ? fittedDuration : Math.max(0.4, block.end - block.start);
 
     if (onProgress) {
       try {
-        await onProgress(Math.min(90, 10 + Math.round(((i + 1) / blocks.length) * 80)));
+        await onProgress(Math.min(90, 60 + Math.round(((i + 1) / prepared.length) * 30)));
       } catch (progressError) {
         // A cancellation must stop the dub; other progress errors are harmless.
         if (progressError?.code === 'DUB_CANCELLED') throw progressError;

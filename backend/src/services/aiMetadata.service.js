@@ -20,6 +20,10 @@ const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL_QUALITY = env.aiModelQuality || 'openai/gpt-oss-120b';
 const GROQ_MODEL_FAST = env.aiModelFast || 'openai/gpt-oss-20b';
 
+// gpt-oss models are reasoning models: they spend thousands of tokens on
+// hidden reasoning before answering, which is what exhausted the rate limit.
+const isReasoningModel = (model) => /gpt-oss/i.test(String(model || ''));
+
 const resolveProvider = () => {
   const p = String(env.aiProvider || 'groq').toLowerCase();
   if (p === 'ollama' || p === 'gemini' || p === 'deepseek') return p;
@@ -163,6 +167,10 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
       temperature: extra.temperature ?? 0.2,
       max_tokens: extra.maxTokens ?? 2048,
       response_format: extra.responseFormat,
+      // gpt-oss burns thousands of reasoning tokens per call. On the free
+      // 8k tokens-per-minute tier that starves the translation and the
+      // remaining batches silently fall back to the source language.
+      ...(isReasoningModel(model) ? { reasoning_effort: 'low' } : {}),
     }),
     signal: AbortSignal.timeout(300000),
   });
@@ -195,10 +203,15 @@ const disabledProviders = new Set();
 
 const availableProviders = () => {
   const list = [];
+  const preferred = resolveProvider();
   if (env.groqApiKey && !disabledProviders.has('groq')) list.push('groq');
-  if (env.geminiApiKey && !disabledProviders.has('gemini') && String(env.aiProvider || '').toLowerCase() === 'gemini') list.push('gemini');
+  // Gemini is a real fallback whenever the key exists - it gives the
+  // translation a second engine when Groq hits its rate limit.
+  if (env.geminiApiKey && !disabledProviders.has('gemini')) list.push('gemini');
   if (env.deepseekApiKey && !disabledProviders.has('deepseek')) list.push('deepseek');
-  if (!disabledProviders.has('ollama')) list.push('ollama');
+  // Ollama is opt-in (AI_PROVIDER=ollama). Including it by default only added
+  // a failing round trip to every rate limited call.
+  if (preferred === 'ollama' && !disabledProviders.has('ollama')) list.push('ollama');
   return list;
 };
 
@@ -213,7 +226,10 @@ const callChatCompletion = async (messages, extra = {}) => {
 
   for (const provider of candidates) {
     if (disabledProviders.has(provider)) continue;
-    let attempts = provider === preferred ? 2 : 1;
+    // A rate limited provider needs more patience than a hard failure: the
+    // provider tells us how long to wait, and waiting is what makes the
+    // translation succeed instead of falling back to the source language.
+    let attempts = provider === preferred ? 4 : 2;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await callChatCompletionOnce(messages, {
@@ -341,6 +357,124 @@ const chunkArray = (items, size) => {
   return chunks;
 };
 
+// --- Target language detection ------------------------------------------------
+// A translation that is still in the source language must never reach the TTS
+// engine: dubbing English text with an Arabic voice is what produced the
+// "bad english" audio, so every translation is verified before it is used.
+const TARGET_SCRIPT_PATTERNS = {
+  ar: /[\u0600-\u06FF]/g,
+  fa: /[\u0600-\u06FF]/g,
+  ur: /[\u0600-\u06FF]/g,
+  ps: /[\u0600-\u06FF]/g,
+  he: /[\u0590-\u05FF]/g,
+  ru: /[\u0400-\u04FF]/g,
+  uk: /[\u0400-\u04FF]/g,
+  bg: /[\u0400-\u04FF]/g,
+  hi: /[\u0900-\u097F]/g,
+  mr: /[\u0900-\u097F]/g,
+  bn: /[\u0980-\u09FF]/g,
+  th: /[\u0E00-\u0E7F]/g,
+  zh: /[\u3400-\u9FFF]/g,
+  ja: /[\u3040-\u30FF\u3400-\u9FFF]/g,
+  ko: /[\uAC00-\uD7AF\u1100-\u11FF]/g,
+  el: /[\u0370-\u03FF]/g,
+};
+
+const LETTER_PATTERN = /\p{L}/gu;
+const LATIN_LETTER_PATTERN = /[A-Za-z]/g;
+const TASHKEEL_PATTERN = /[\u064B-\u0652]/g;
+const ARABIC_LETTER_PATTERN = /[\u0600-\u06FF]/g;
+
+/**
+ * True when the text carries Arabic diacritics. Without tashkeel the neural
+ * voice mispronounces ambiguous words, which is what made the dub sound
+ * unnatural.
+ */
+export const hasTashkeel = (text) => countMatches(text, TASHKEEL_PATTERN) > 0;
+
+const hasArabicLetters = (text) => countMatches(text, ARABIC_LETTER_PATTERN) > 0;
+
+const countMatches = (text, pattern) => (String(text || '').match(pattern) || []).length;
+
+const normalizeForCompare = (text) =>
+  String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const languageBase = (value) => String(value || '').toLowerCase().split(/[-_]/)[0];
+
+/**
+ * True when `text` is genuinely written in the target language.
+ *
+ * - Non-latin targets (ar, ru, zh, ...) must contain a real share of the
+ *   target script. Latin technical terms inside the sentence are tolerated,
+ *   but an English sentence is rejected.
+ * - Latin-script targets are accepted when the text changed. A segment that is
+ *   still identical to the source is only accepted when it is a short
+ *   technical term rather than a whole sentence.
+ */
+export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sourceLanguage = '') => {
+  const value = String(text || '').trim();
+  if (!value) return false;
+
+  const target = languageBase(targetLanguage);
+  const source = languageBase(sourceLanguage);
+  if (source && source === target) return true;
+
+  const letters = countMatches(value, LETTER_PATTERN);
+  if (letters === 0) return true; // numbers and symbols only
+
+  const scriptPattern = TARGET_SCRIPT_PATTERNS[target];
+  if (scriptPattern) {
+    const targetChars = countMatches(value, scriptPattern);
+    const sourceValue = String(sourceText || '').trim();
+    const sourceTargetChars = countMatches(sourceValue, scriptPattern);
+
+    // The translation has to carry more of the target script than the source
+    // did. "إلى Kali Linux" gains Arabic characters and passes, while the
+    // untranslated "Have already downloaded the ISO file" does not.
+    if (targetChars > sourceTargetChars) return true;
+
+    if (targetChars === 0 && sourceTargetChars === 0) {
+      // Neither side uses the target script. That is only acceptable for a
+      // short label such as a product name ("Kali Linux"), never for a
+      // sentence that should have been translated.
+      return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+    }
+
+    return false;
+  }
+
+  const sourceValue = String(sourceText || '').trim();
+  if (!sourceValue) return true;
+  if (normalizeForCompare(value) === normalizeForCompare(sourceValue)) {
+    // Unchanged: acceptable for a short technical term, not for a sentence.
+    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+  }
+  return true;
+};
+
+/**
+ * Lists the segments of a translation that are still in the source language.
+ */
+export const findUntranslatedSegments = ({
+  segments,
+  targetLanguage,
+  sourceSegments = [],
+  sourceLanguage = '',
+}) => {
+  const untranslated = [];
+  (segments || []).forEach((segment, index) => {
+    const source = sourceSegments?.[index]?.text || segment?.sourceText || '';
+    if (!isTargetLanguageText(segment?.text, targetLanguage, source, sourceLanguage)) {
+      untranslated.push({ index, text: String(segment?.text || '').slice(0, 120) });
+    }
+  });
+  return untranslated;
+};
+
 const QUALITY_THRESHOLD = 8;
 const MAX_TRANSLATION_ATTEMPTS = 3;
 
@@ -352,6 +486,8 @@ const toPair = (segment) => ({
 
 const callQualityChat = async (messages, extra = {}) => {
   const provider = resolveProvider();
+  // The bulk translation runs on the fast model: it is far cheaper per batch,
+  // which keeps the whole transcript inside the rate limit budget.
   const model =
     provider === 'ollama'
       ? env.ollamaModel
@@ -363,11 +499,150 @@ const callQualityChat = async (messages, extra = {}) => {
           ? String(env.aiModelQuality || '').toLowerCase().includes('deepseek')
             ? env.aiModelQuality
             : 'deepseek-chat'
-          : env.aiModelQuality || GROQ_MODEL_QUALITY;
+          : extra.fast
+            ? env.aiModelFast || GROQ_MODEL_FAST
+            : env.aiModelQuality || GROQ_MODEL_QUALITY;
   return callChatCompletion(messages, { ...extra, model });
 };
 
-const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = false, context = [] }) => {
+const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context = [] }) => {
+  const system =
+    'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
+    'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
+    (String(targetLanguage).toLowerCase().startsWith('ar')
+      ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
+      : '') +
+    (highQuality
+      ? 'Produce a HIGH-QUALITY translation: accurate meaning, natural phrasing, correct grammar, consistent terminology, and faithful tone. Avoid literal word-by-word translation; adapt idioms naturally. '
+      : '') +
+    'Return ONLY valid JSON: {"segments":["translated text 1","translated text 2"]}. ' +
+    'Return exactly ' +
+    batch.length +
+    ' strings, in the same order as the input segments, and translate each one.';
+
+  const userLines = [`Target language: ${targetLanguage}`, '', 'Segments (original English):', JSON.stringify(batch)];
+
+  if (context.length && context.some((c) => c)) {
+    userLines.push('', 'Previous low-scoring attempts to improve upon:');
+    userLines.push(
+      JSON.stringify(
+        batch.map((s, index) => ({
+          original: s.text,
+          previous: context[index]?.previous || '',
+          previousScore: context[index]?.score ?? null,
+          issues: context[index]?.reason || '',
+          suggestions: context[index]?.suggestions || [],
+        })),
+      ),
+    );
+    userLines.push(
+      'Use the feedback/issues above to fix mistakes. Keep any genuinely good phrases, but improve accuracy and naturalness until the translation would score at least 8/10.',
+    );
+  }
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: userLines.join('\n') },
+  ];
+};
+
+/**
+ * One attempt at translating a batch. Returns null when the batch could not be
+ * translated - it never falls back to the source text, because a silent
+ * fallback is what made the dub speak English with an Arabic voice.
+ */
+const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [] }) => {
+  const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
+  let content = '';
+  try {
+    content = highQuality
+      ? await callQualityChat(messages, {
+          temperature: 0.15,
+          maxTokens: 3500,
+          responseFormat: { type: 'json_object' },
+        })
+      : await callQualityChat(messages, {
+          fast: true,
+          temperature: 0.1,
+          maxTokens: 3500,
+          responseFormat: { type: 'json_object' },
+        });
+  } catch (e) {
+    console.error('[translateSegmentsOnce] chat error:', e?.message);
+    return null;
+  }
+
+  const parsed = parseJson(content);
+  const rawSegments = parsed?.segments;
+  if (!Array.isArray(rawSegments) || rawSegments.length !== batch.length) {
+    console.warn(
+      '[translateSegmentsOnce] batch rejected: expected',
+      batch.length,
+      'segments, got',
+      rawSegments?.length ?? 'none',
+    );
+    return null;
+  }
+
+  // Accept both the compact array of strings and the verbose object format.
+  const translated = rawSegments.map((seg, index) => ({
+    start: batch[index].start,
+    end: batch[index].end,
+    text: stripMarkdown(
+      typeof seg === 'string' ? seg : typeof seg?.text === 'string' ? seg.text : '',
+    ),
+  }));
+
+  const wrongLanguage = translated.find(
+    (seg, index) =>
+      !seg.text || !isTargetLanguageText(seg.text, targetLanguage, batch[index].text),
+  );
+  if (wrongLanguage) {
+    console.warn(
+      '[translateSegmentsOnce] batch rejected: segment',
+      wrongLanguage.text?.slice(0, 60) || '(empty)',
+      'is not in the target language',
+    );
+    return null;
+  }
+
+  return translated;
+};
+
+/**
+ * Translates a batch, halving it whenever a batch fails so that one bad
+ * batch cannot poison the whole transcript.
+ */
+const translateBatchResilient = async ({ batch, targetLanguage, highQuality, context = [] }) => {
+  const translated = await translateBatchOnce({ batch, targetLanguage, highQuality, context });
+  if (translated) return translated;
+
+  if (batch.length === 1) {
+    const err = new Error(
+      `Could not translate a segment into ${targetLanguage}: "${String(batch[0].text).slice(0, 80)}"`,
+    );
+    err.code = 'TRANSLATION_FAILED';
+    err.statusCode = 502;
+    throw err;
+  }
+
+  const mid = Math.ceil(batch.length / 2);
+  const head = await translateBatchResilient({
+    batch: batch.slice(0, mid),
+    targetLanguage,
+    highQuality,
+    context: context.slice(0, mid),
+  });
+  const tail = await translateBatchResilient({
+    batch: batch.slice(mid),
+    targetLanguage,
+    highQuality,
+    context: context.slice(mid),
+  });
+  return [...head, ...tail];
+};
+
+const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = false, context = [], onProgress = null }) => {
   const input = (segments || []).map(toPair).filter((s) => s.text);
   if (input.length === 0) return [];
 
@@ -375,73 +650,27 @@ const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = f
   const batches = chunkArray(input, 12);
 
   let cursor = 0;
-  for (const batch of batches) {
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
     const batchContext = context.slice(cursor, cursor + batch.length);
     cursor += batch.length;
 
     const safe = batch.map(({ start, end, text }) => ({ start, end, text }));
-    let parsed = null;
+    output.push(
+      ...(await translateBatchResilient({
+        batch: safe,
+        targetLanguage,
+        highQuality,
+        context: batchContext,
+      })),
+    );
 
-    const system =
-      'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
-      'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
-      (String(targetLanguage).toLowerCase().startsWith('ar')
-        ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
-        : '') +
-      (highQuality
-        ? 'Produce a HIGH-QUALITY translation: accurate meaning, natural phrasing, correct grammar, consistent terminology, and faithful tone. Avoid literal word-by-word translation; adapt idioms naturally. '
-        : '') +
-      'Return ONLY valid JSON: {"segments":[{"start":number,"end":number,"text":string}]}. ' +
-      'Keep start/end unchanged, keep the same number of segments, and translate naturally.';
-
-    const userLines = [`Target language: ${targetLanguage}`, '', 'Segments (original English):', JSON.stringify(safe)];
-
-    if (batchContext.length && batchContext.some((c) => c)) {
-      userLines.push('', 'Previous low-scoring attempts to improve upon:');
-      userLines.push(
-        JSON.stringify(
-          batch.map((s, index) => ({
-            original: s.text,
-            previous: batchContext[index]?.previous || '',
-            previousScore: batchContext[index]?.score ?? null,
-            issues: batchContext[index]?.reason || '',
-            suggestions: batchContext[index]?.suggestions || [],
-          })),
-        ),
-      );
-      userLines.push(
-        'Use the feedback/issues above to fix mistakes. Keep any genuinely good phrases, but improve accuracy and naturalness until the translation would score at least 8/10.',
-      );
-    }
-
-    try {
-      const content = await callQualityChat(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: userLines.join('\n') },
-        ],
-        {
-          temperature: highQuality ? 0.15 : 0.1,
-          maxTokens: 3500,
-          responseFormat: { type: 'json_object' },
-        },
-      );
-      parsed = parseJson(content);
-    } catch (e) {
-      console.error('[translateSegmentsOnce] chat error:', e?.message);
-      parsed = null;
-    }
-
-    if (parsed && Array.isArray(parsed.segments) && parsed.segments.length === batch.length) {
-      output.push(
-        ...parsed.segments.map((seg, index) => ({
-          start: Number(seg?.start ?? batch[index].start),
-          end: Number(seg?.end ?? batch[index].end),
-          text: stripMarkdown(seg?.text ?? batch[index].text),
-        })),
-      );
-    } else {
-      output.push(...batch.map((s) => ({ ...s, text: stripMarkdown(s.text) })));
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress((batchIndex + 1) / batches.length);
+      } catch {
+        // progress reporting must never break the translation
+      }
     }
   }
 
@@ -470,6 +699,9 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
   for (const batch of batches) {
     let parsed = null;
     try {
+      // The evaluation is advisory (it only decides what to retry), so it runs
+      // on the fast model. Scoring with the reasoning model burned the whole
+      // rate limit budget and slowed the dub down to a crawl.
       const content = await callQualityChat(
         [
           {
@@ -479,10 +711,9 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
               'Compare each ORIGINAL (English) sentence with its TRANSLATED sentence. ' +
               'Score from 0 to 10 (decimals allowed) for: meaning accuracy, completeness, grammar, naturalness, and preservation of intent. ' +
               'A score of 8 or higher means the translation is acceptable. ' +
-              'If you notice English words that were left untranslated or are understandable to a non-expert, ' +
-              'suggest an equivalent word/phrase in the TARGET LANGUAGE based on the whole sentence context (not word-by-word). ' +
-              'Return ONLY valid JSON: {"results":[{"index":number,"score":number,"reason":string,"suggestions":[{"english":string,"equivalent":string}]}]}. ' +
-              'One result per input item, same order as given.',
+              'If you notice English words that were left untranslated, suggest an equivalent phrase in the TARGET LANGUAGE based on the whole sentence context (not word-by-word). ' +
+              'Return ONLY valid JSON: {"results":[{"i":number,"s":number,"r":string,"w":[{"e":string,"x":string}]}]}. ' +
+              'One result per input item, same order as given. Keep "r" under 12 words and only include "w" suggestions when the score is below 8.',
           },
           {
             role: 'user',
@@ -492,8 +723,9 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
           },
         ],
         {
+          fast: true,
           temperature: 0.0,
-          maxTokens: 4000,
+          maxTokens: 2000,
           responseFormat: { type: 'json_object' },
         },
       );
@@ -505,20 +737,20 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
     if (parsed && Array.isArray(parsed.results) && parsed.results.length === batch.length) {
       for (let i = 0; i < batch.length; i += 1) {
         const r = parsed.results[i] || {};
-        const scoreRaw = Number(r.score);
+        const scoreRaw = Number(r.s ?? r.score);
         const score = Number.isFinite(scoreRaw) ? Math.max(0, Math.min(10, scoreRaw)) : null;
-        const suggestions = Array.isArray(r.suggestions)
-          ? r.suggestions
+        const suggestions = Array.isArray(r.w ?? r.suggestions)
+          ? (r.w ?? r.suggestions)
               .map((s) => ({
-                english: String(s?.english || '').trim(),
-                equivalent: String(s?.equivalent || '').trim(),
+                english: String(s?.e ?? s?.english ?? '').trim(),
+                equivalent: String(s?.x ?? s?.equivalent ?? '').trim(),
               }))
               .filter((s) => s.english && s.equivalent)
           : [];
         results[batch[i].index] = {
           index: batch[i].index,
           score,
-          reason: stripMarkdown(String(r.reason || '')),
+          reason: stripMarkdown(String(r.r ?? r.reason ?? '')),
           suggestions,
         };
       }
@@ -533,16 +765,39 @@ export const translateTranscriptSegments = async ({
   targetLanguage,
   originalLanguage = 'en',
   fast = false,
+  onProgress = null,
 }) => {
   const source = (segments || []).map(toPair).filter((s) => s.text);
 
   if (source.length === 0) return [];
+
+  // Nothing to translate when the target matches the source language. Calling
+  // the model here only burns rate limit and can return the source unchanged.
+  if (
+    languageBase(targetLanguage) &&
+    languageBase(targetLanguage) === languageBase(originalLanguage)
+  ) {
+    return source.map((s) => ({
+      start: s.start,
+      end: s.end,
+      text: s.text,
+      sourceText: s.text,
+      originalLanguage: originalLanguage || 'en',
+      targetLanguage,
+      qualityScore: null,
+      qualityStatus: 'unknown',
+      qualityReason: '',
+      translationAttempts: 0,
+      wordSuggestions: [],
+    }));
+  }
 
   // 1. Initial translation.
   const initial = await translateSegmentsOnce({
     segments: source,
     targetLanguage,
     highQuality: false,
+    onProgress,
   });
 
   const currentSegments = source.map((s, index) => {
@@ -584,12 +839,22 @@ export const translateTranscriptSegments = async ({
 
 
   // 3. Retry low-scoring segments with a high-quality pass.
+  //
+  // Arabic segments without tashkeel are retried as well: the diacritics are
+  // what let the neural voice pronounce the words correctly, and the bulk
+  // (fast) model does not add them consistently.
+  const needsTashkeel = String(targetLanguage || '').toLowerCase().startsWith('ar');
   for (let attempt = 2; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt += 1) {
     const lowIndices = source
       .map((_, index) => index)
       .filter((index) => {
         const score = bestScores[index];
-        return score !== null && score < QUALITY_THRESHOLD;
+        const lowScore = score !== null && score < QUALITY_THRESHOLD;
+        const missingTashkeel =
+          needsTashkeel &&
+          hasArabicLetters(currentSegments[index].text) &&
+          !hasTashkeel(currentSegments[index].text);
+        return lowScore || missingTashkeel;
       });
 
     if (lowIndices.length === 0) break;

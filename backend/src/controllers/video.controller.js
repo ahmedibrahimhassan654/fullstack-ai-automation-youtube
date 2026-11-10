@@ -10,6 +10,7 @@ import {
   answerQuestion,
   translateTranscriptSegments,
   translatePublishMetadata,
+  findUntranslatedSegments,
 } from "../services/aiMetadata.service.js";
 import { generateDubbedVideo } from "../services/dubbing.service.js";
 import { EDGE_VOICE_OPTIONS, VOICES } from "../services/tts.service.js";
@@ -719,64 +720,100 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
   const video = await Video.findById(videoId);
   if (!video) return;
 
-  // Translate on demand so dubbing works for languages requested at dub time.
-  const hasTranslation = (video.translations || []).some(
-    (t) => t.language === language,
-  );
-  if (
-    !hasTranslation &&
-    language !== (video.originalLanguage || "en") &&
-    Array.isArray(video.transcriptSegments) &&
-    video.transcriptSegments.length > 0
-  ) {
-    try {
-      const segments = await translateTranscriptSegments({
-        segments: video.transcriptSegments,
-        targetLanguage: language,
-        originalLanguage: video.transcriptLanguage || video.originalLanguage || "en",
-      });
-      if (video.durationSeconds > 0 && segments.length > 0) {
-        const last = segments[segments.length - 1];
-        last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
-      }
-      const qualityScores = segments
-        .map((s) => s.qualityScore)
-        .filter((n) => typeof n === "number");
-      const avgQuality =
-        qualityScores.length > 0
-          ? qualityScores.reduce((sum, n) => sum + n, 0) / qualityScores.length
-          : null;
-      video.translations = [
-        ...(video.translations || []),
-        {
-          language,
-          transcript: segments.map((s) => s.text).join(" "),
-          segments,
-          qualityScore: avgQuality,
-          qualityStatus:
-            qualityScores.length === 0
-              ? "unknown"
-              : segments.every((s) => s.qualityStatus !== "failed")
-              ? "passed"
-              : "failed",
-          translationAttempts: Math.max(
-            1,
-            ...segments.map((s) => s.translationAttempts || 1),
-          ),
-        },
-      ];
-      await video.save();
-      emitVideoProgress(video);
-    } catch (translationError) {
-      // Fall back to the original transcript if translation is unavailable.
-      console.error(
-        "[runDubbing] translation failed:",
-        translationError?.message,
-      );
-    }
-  }
+  const originalLanguage =
+    video.transcriptLanguage || video.originalLanguage || "en";
 
   try {
+    // Make sure a usable translation exists before dubbing. A stored
+    // translation can still contain the source language when the AI provider
+    // was rate limited while it was created, and dubbing it would speak
+    // English with a foreign voice.
+    const needsTranslation =
+      language !== originalLanguage &&
+      Array.isArray(video.transcriptSegments) &&
+      video.transcriptSegments.length > 0;
+
+    if (needsTranslation) {
+      const stored = (video.translations || []).find(
+        (t) => String(t.language).toLowerCase() === String(language).toLowerCase(),
+      );
+      const storedIsUsable =
+        stored?.segments?.length > 0 &&
+        findUntranslatedSegments({
+          segments: stored.segments,
+          targetLanguage: language,
+          sourceSegments: video.transcriptSegments,
+          sourceLanguage: originalLanguage,
+        }).length === 0;
+
+      if (!storedIsUsable) {
+        if (stored?.segments?.length) {
+          console.warn(
+            `[runDubbing] stored ${language} translation is not fully translated - re-translating`,
+          );
+        }
+
+        const segments = await translateTranscriptSegments({
+          segments: video.transcriptSegments,
+          targetLanguage: language,
+          originalLanguage,
+        });
+
+        const untranslated = findUntranslatedSegments({
+          segments,
+          targetLanguage: language,
+          sourceSegments: video.transcriptSegments,
+          sourceLanguage: originalLanguage,
+        });
+        if (untranslated.length > 0) {
+          const err = new Error(
+            `Translation to ${language} is incomplete: ${untranslated.length} of ${segments.length} segments could not be translated. The AI provider is most likely rate limited - please try again.`,
+          );
+          err.statusCode = 502;
+          throw err;
+        }
+
+        if (video.durationSeconds > 0 && segments.length > 0) {
+          const last = segments[segments.length - 1];
+          last.end = Math.max(Number(last.end) || 0, video.durationSeconds);
+        }
+        const qualityScores = segments
+          .map((s) => s.qualityScore)
+          .filter((n) => typeof n === "number");
+        const avgQuality =
+          qualityScores.length > 0
+            ? qualityScores.reduce((sum, n) => sum + n, 0) / qualityScores.length
+            : null;
+
+        // Replace any stale translation and cache the good one, so the next
+        // dub of the same language is instant.
+        video.translations = [
+          ...(video.translations || []).filter(
+            (t) =>
+              String(t.language).toLowerCase() !== String(language).toLowerCase(),
+          ),
+          {
+            language,
+            transcript: segments.map((s) => s.text).join(" "),
+            segments,
+            qualityScore: avgQuality,
+            qualityStatus:
+              qualityScores.length === 0
+                ? "unknown"
+                : segments.every((s) => s.qualityStatus !== "failed")
+                ? "passed"
+                : "failed",
+            translationAttempts: Math.max(
+              1,
+              ...segments.map((s) => s.translationAttempts || 1),
+            ),
+          },
+        ];
+        await video.save();
+        emitVideoProgress(video);
+      }
+    }
+
     video.dubbing = {
       language,
       status: "processing",
@@ -1839,12 +1876,40 @@ export const translateVideo = asyncHandler(async (req, res) => {
     completedAt: null,
   };
 
+  const originalLanguage =
+    video.transcriptLanguage || video.originalLanguage || "en";
+
   const segments = await translateTranscriptSegments({
     segments: video.transcriptSegments,
     targetLanguage: language,
-    originalLanguage:
-      video.transcriptLanguage || video.originalLanguage || "en",
+    originalLanguage,
   });
+
+  // Never store a half-translated transcript: the dubbing step reads these
+  // segments, and a segment that is still in the source language is spoken
+  // with the target voice, which sounds like broken English in an Arabic dub.
+  const untranslated = findUntranslatedSegments({
+    segments,
+    targetLanguage: language,
+    sourceSegments: video.transcriptSegments,
+    sourceLanguage: originalLanguage,
+  });
+  if (untranslated.length > 0) {
+    video.dubbing = {
+      language,
+      status: "failed",
+      progress: 0,
+      error: `Translation incomplete: ${untranslated.length} of ${segments.length} segments are still in ${originalLanguage}. The AI provider is most likely rate limited - please try again.`,
+      startedAt: video.dubbing?.startedAt || new Date(),
+      completedAt: new Date(),
+    };
+    await video.save();
+    const err = new Error(
+      `Translation to ${language} is incomplete: ${untranslated.length} of ${segments.length} segments could not be translated. The AI provider is most likely rate limited - please try again.`,
+    );
+    err.statusCode = 502;
+    throw err;
+  }
 
   if (video.durationSeconds > 0 && segments.length > 0) {
     const last = segments[segments.length - 1];
