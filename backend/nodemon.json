@@ -1,0 +1,6 @@
+{
+  "watch": ["src", "api", "scripts", ".env"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": ["backup/**", "*.log", "node_modules/**", "*.json.map"],
+  "delay": 300
+}
