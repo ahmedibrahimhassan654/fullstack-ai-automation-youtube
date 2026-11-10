@@ -7,12 +7,16 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "data:status": "node scripts/dataMigration.mjs status",
+    "data:export": "node scripts/dataMigration.mjs export",
+    "data:import": "node scripts/dataMigration.mjs import"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^7.2.0",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.0.0",
+    "bson": "^6.10.4",
     "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",

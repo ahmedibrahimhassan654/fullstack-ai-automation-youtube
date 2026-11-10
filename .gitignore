@@ -12,3 +12,6 @@ dist/
 Thumbs.db
 .history/
 .mongo-data/
+migration-bundle-*/
+migration-bundle-*.zip
+backend/backup/

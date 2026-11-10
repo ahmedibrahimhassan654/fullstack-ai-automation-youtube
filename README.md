@@ -70,3 +70,45 @@ cd backend && cp .env.example .env && npm install && npm run dev
 # Terminal 2
 cd frontend && cp .env.example .env.local && npm install && npm run dev
 ```
+
+## Moving to another machine
+
+All persistent app data lives in the local MongoDB (`ai_youtube_automation`).
+Media files are in Cloudinary, so nothing else needs copying.
+
+### One-shot bundle (recommended)
+
+```bash
+node scripts/createMigrationBundle.mjs
+```
+
+Creates `migration-bundle-<timestamp>/` plus a `.zip` containing:
+
+- `project/` — full source with git history and `.env` files
+- `databases/mongo-ai_youtube_automation.json` — database dump
+- `SETUP.md` — step-by-step instructions for the new machine
+
+Options: `--all` (dump every database), `--no-env` (skip secrets), `--no-zip` (folder only).
+
+### Restore on the new machine
+
+```bash
+cd project/backend && npm install
+npm run data:status
+npm run data:import -- ../databases/mongo-ai_youtube_automation.json --drop
+```
+
+### Manual database copy
+
+```bash
+cd backend
+npm run data:status                     # list databases and document counts
+npm run data:export                     # -> backend/backup/mongo-<db>-<stamp>.json
+npm run data:import -- ../backup/<file>.json --drop
+```
+
+The dump keeps `password` hashes, session refresh tokens and YouTube OAuth
+tokens, so existing accounts stay signed-in and channels stay connected.
+
+> The dump and `backend/.env` contain secrets — keep the archive private and
+> delete it once the new machine is verified.
