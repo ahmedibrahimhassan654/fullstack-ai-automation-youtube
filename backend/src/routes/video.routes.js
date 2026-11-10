@@ -31,6 +31,7 @@ router.post('/:id/lesson/cancel', video.cancelLessonGeneration);
 router.post('/:id/lessons/:language/publish', video.publishLessonVideo);
 router.post('/:id/dub', video.dubVideo);
 router.post('/:id/dub/cancel', video.cancelDubbing);
+router.delete('/:id/dub', video.deleteDub);
 router.post('/:id/translate', video.translateVideo);
 router.get('/:id/publish-prefill', video.getPublishPrefill);
 router.get('/:id', video.getVideo);

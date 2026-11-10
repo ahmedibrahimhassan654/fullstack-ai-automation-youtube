@@ -788,11 +788,25 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
     await video.save();
     emitVideoProgress(video);
 
+    let lastReportedProgress = video.dubbing?.progress ?? 10;
     const dub = await generateDubbedVideo({
       video,
       language,
       voice: edgeVoice || elevenLabsVoiceId,
       elevenLabsVoiceId,
+      onProgress: async (value) => {
+        if (value - lastReportedProgress < 5) return;
+        lastReportedProgress = value;
+        const fresh = await Video.findById(video._id).select("dubbing.status").lean();
+        if (fresh?.dubbing?.status && fresh.dubbing.status !== "processing") {
+          const cancelError = new Error("Dubbing cancelled by user");
+          cancelError.code = "DUB_CANCELLED";
+          throw cancelError;
+        }
+        video.dubbing.progress = value;
+        await video.save();
+        emitVideoProgress(video);
+      },
     });
 
     video.dubbing = {
@@ -804,7 +818,13 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
       completedAt: new Date(),
     };
 
-    const existing = (video.dubs || []).filter((d) => d.language !== language);
+    const existing = (video.dubs || []).filter(
+      (d) =>
+        !(
+          d.language === language &&
+          String(d.voice || "") === String(dub.voice || "")
+        ),
+    );
     video.dubs = [...existing, dub];
     await video.save();
     emitVideoProgress(video);
@@ -944,10 +964,38 @@ export const runLessonGeneration = async (
       startedAt: video.lessonGeneration?.startedAt || new Date(),
       completedAt: new Date(),
     };
-    const existing = (video.lessonVideos || []).filter(
-      (d) => d.language !== language,
+    // Keep dub-publish records for the same language, and keep the YouTube
+    // linkage of a previous lesson render so republishing updates the existing
+    // YouTube video instead of creating a duplicate.
+    const previousPublish = (video.lessonVideos || []).find(
+      (item) => item.language === language && (item.source || "lesson") === "lesson",
     );
-    video.lessonVideos = [...existing, lesson];
+    const publishKeys = [
+      "youtubeVideoId",
+      "youtubeUrl",
+      "youtubePublishedAt",
+      "youtubeChannelId",
+      "youtubeChannelTitle",
+      "youtubePlaylistId",
+      "youtubePlaylistItemId",
+      "youtubeVisibility",
+      "youtubeCategoryId",
+      "youtubeTitle",
+      "youtubeDescription",
+      "youtubeTags",
+      "thumbnailUrl",
+    ];
+    const preservedPublish = previousPublish
+      ? Object.fromEntries(
+          publishKeys
+            .filter((key) => previousPublish[key] !== undefined && previousPublish[key] !== null && previousPublish[key] !== "")
+            .map((key) => [key, previousPublish[key]]),
+        )
+      : {};
+    const others = (video.lessonVideos || []).filter(
+      (item) => !(item.language === language && (item.source || "lesson") === "lesson"),
+    );
+    video.lessonVideos = [...others, { ...lesson, source: "lesson", ...preservedPublish }];
     await video.save();
     emitVideoProgress(video);
   } catch (error) {
@@ -1113,9 +1161,11 @@ export const streamLessonSubtitle = async (req, res) => {
     return res.status(403).end();
   }
 
-  const lesson = (video.lessonVideos || []).find(
-    (item) => item.language === req.params.language,
-  );
+  const lesson =
+    (video.lessonVideos || []).find(
+      (item) => item.language === req.params.language && (item.source || "lesson") === "lesson",
+    ) ||
+    (video.lessonVideos || []).find((item) => item.language === req.params.language);
   if (!lesson) return res.status(404).end();
 
   let vtt = "";
@@ -1213,11 +1263,90 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   }
 
   const language = String(req.params.language || "").trim();
-  const lesson = (video.lessonVideos || []).find((item) => item.language === language);
-  if (!lesson?.url) {
+  const requestedVoice = String(req.body?.voice || "").trim();
+
+  const languageDubs = (video.dubs || []).filter((item) => item.language === language && item.url);
+  const dub =
+    (requestedVoice
+      ? languageDubs.find((item) => String(item.voice || "") === requestedVoice)
+      : null) ||
+    languageDubs[0] ||
+    null;
+  const lessonEntry =
+    (video.lessonVideos || []).find(
+      (item) => item.language === language && (item.source || "lesson") === "lesson" && item.url,
+    ) || null;
+
+  const requestedSource = String(req.body?.source || "").trim();
+  const publishedRecord = (video.lessonVideos || []).find(
+    (item) => item.language === language && item.youtubeVideoId,
+  );
+  const source =
+    requestedSource === "dub" || requestedSource === "lesson"
+      ? requestedSource
+      : publishedRecord?.source === "dub" || publishedRecord?.source === "lesson"
+        ? publishedRecord.source
+        : dub
+          ? "dub"
+          : lessonEntry
+            ? "lesson"
+            : null;
+
+  if (!source) {
+    const err = new Error(
+      "Nothing to publish for this language yet. Dub the original video or generate a study-journey lesson first.",
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  if (source === "dub" && !dub) {
+    const err = new Error("No dubbed video found for this language. Dub the original video first.");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (source === "lesson" && !lessonEntry) {
     const err = new Error("Generated lesson video not found for this language");
     err.statusCode = 404;
     throw err;
+  }
+
+  const mediaUrl = source === "dub" ? dub.url : lessonEntry.url;
+  const mediaDuration = source === "dub" ? Number(dub.durationSeconds || 0) : Number(lessonEntry.durationSeconds || 0);
+  const translation = (video.translations || []).find((item) => item.language === language);
+
+  // Each (language, source) pair keeps its own publish record so publishing the
+  // dub does not overwrite the study-journey entry.
+  let lesson = (video.lessonVideos || []).find(
+    (item) =>
+      item.language === language &&
+      (item.source || "lesson") === source &&
+      (source !== "dub" || String(item.voice || "") === String(dub?.voice || "")),
+  );
+
+  if (!lesson) {
+    lesson = {
+      language,
+      source,
+      url: mediaUrl,
+      storagePath: source === "dub" ? dub.storagePath || null : lessonEntry.storagePath || null,
+      durationSeconds: mediaDuration,
+      voice: source === "dub" ? dub.voice || null : lessonEntry.voice || null,
+      script: translation?.transcript || "",
+      segments: translation?.segments || [],
+      subtitlesUrl: null,
+      createdAt: new Date(),
+    };
+    video.lessonVideos = [...(video.lessonVideos || []), lesson];
+  } else {
+    lesson.source = source;
+    lesson.url = mediaUrl;
+    lesson.durationSeconds = mediaDuration;
+    if (!lesson.segments?.length && translation?.segments?.length) {
+      lesson.segments = translation.segments;
+    }
+    if (!lesson.script && translation?.transcript) {
+      lesson.script = translation.transcript;
+    }
   }
 
   const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
@@ -1242,15 +1371,15 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 
   const thumbnailUrl = req.body?.thumbnailUrl
     ? String(req.body.thumbnailUrl).trim()
-    : (lesson.thumbnailUrl || "");
+    : (lesson.thumbnailUrl || video.thumbnailUrl || "");
 
   const isUpdate = Boolean(lesson.youtubeVideoId);
   let youtubeVideoId = lesson.youtubeVideoId;
 
   if (!isUpdate) {
-    const mediaRes = await fetch(lesson.url);
+    const mediaRes = await fetch(mediaUrl);
     if (!mediaRes.ok) {
-      const err = new Error("Failed to download generated lesson video for upload");
+      const err = new Error(`Failed to download the ${source} video for upload (${mediaRes.status})`);
       err.statusCode = 502;
       throw err;
     }
@@ -1333,10 +1462,11 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: isUpdate
-      ? `Updated lesson (${language}) on YouTube`
-      : `Published lesson (${language}) to YouTube`,
+      ? `Updated ${source === "dub" ? "dubbed video" : "lesson"} (${language}) on YouTube`
+      : `Published ${source === "dub" ? "dubbed video" : "lesson"} (${language}) to YouTube`,
     data: {
       mode: isUpdate ? "updated" : "published",
+      source,
       youtubeVideoId,
       youtubeUrl: lesson.youtubeUrl,
       channelTitle: lesson.youtubeChannelTitle,
@@ -1561,6 +1691,67 @@ export const cancelDubbing = asyncHandler(async (req, res) => {
   await video.save();
   emitVideoProgress(video);
   res.status(200).json({ success: true, message: "Dubbing cancelled", data: { video: await Video.findById(video._id).lean() } });
+});
+
+export const deleteDub = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (video.user.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const err = new Error("Not authorized to delete this dub");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.query.language || req.body?.language || "").trim();
+  const voice = String(req.query.voice || req.body?.voice || "").trim();
+  if (!language) {
+    const err = new Error("language is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const target = (video.dubs || []).find(
+    (d) =>
+      d.language === language &&
+      (voice ? String(d.voice || "") === voice : true),
+  );
+  if (!target) {
+    const err = new Error("Dub not found for this language/voice");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  // Remove the matching publish record so the dashboard does not keep a dead link.
+  video.lessonVideos = (video.lessonVideos || []).filter(
+    (item) =>
+      !(
+        item.language === language &&
+        (item.source || "lesson") === "dub" &&
+        String(item.voice || "") === String(target.voice || "")
+      ),
+  );
+  video.dubs = (video.dubs || []).filter((d) => d !== target && !(d.language === target.language && String(d.voice || "") === String(target.voice || "")));
+
+  await video.save();
+
+  if (target.storagePath) {
+    try {
+      await cloudinary.uploader.destroy(target.storagePath, { resource_type: "video" });
+    } catch (error) {
+      console.warn("[deleteDub] Cloudinary delete failed:", error?.message);
+    }
+  }
+
+  emitVideoProgress(video);
+  res.status(200).json({
+    success: true,
+    message: "Dubbed video deleted",
+    data: { video: await Video.findById(video._id).lean() },
+  });
 });
 
 export const cancelProcessing = asyncHandler(async (req, res) => {

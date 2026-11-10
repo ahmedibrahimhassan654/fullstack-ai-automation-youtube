@@ -33,6 +33,7 @@ type VideoRow = {
   dubs?: { language: string }[];
   lessonVideos?: {
     language: string;
+    source?: 'lesson' | 'dub';
     youtubeUrl?: string | null;
     youtubeVideoId?: string | null;
     youtubeChannelTitle?: string | null;
@@ -272,9 +273,9 @@ export default function DashboardPage() {
                               Translated: {v.translations.map((t) => t.language).join(', ')}
                             </div>
                           ) : null}
-                          {v.lessonVideos?.length ? (
+                          {v.lessonVideos?.filter((l) => (l.source ?? 'lesson') === 'lesson').length ? (
                             <div>
-                              Lessons: {v.lessonVideos.map((l) => l.language).join(', ')}
+                              Lesson renders: {v.lessonVideos.filter((l) => (l.source ?? 'lesson') === 'lesson').map((l) => l.language).join(', ')}
                             </div>
                           ) : null}
                           {v.dubs?.length ? (
@@ -288,10 +289,10 @@ export default function DashboardPage() {
                               <div key={i}>
                                 {l.youtubeUrl ? (
                                   <a href={l.youtubeUrl} target="_blank" rel="noreferrer" className="underline">
-                                    {l.language} → YouTube
+                                    {l.language} ({l.source === 'dub' ? 'dub' : 'lesson'}) → YouTube
                                   </a>
                                 ) : (
-                                  `${l.language} (published)`
+                                  `${l.language} (${l.source === 'dub' ? 'dub' : 'lesson'}) (published)`
                                 )}
                                 {l.youtubeChannelTitle ? ` • ${l.youtubeChannelTitle}` : ""}
                               </div>

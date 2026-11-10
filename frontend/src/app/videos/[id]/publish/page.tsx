@@ -96,6 +96,9 @@ function createCanvasThumbnailDataUrl(title: string, language: string): string {
 
 type LessonPublishInfo = {
   language?: string;
+  source?: "lesson" | "dub";
+  url?: string | null;
+  durationSeconds?: number | null;
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
   youtubePublishedAt?: string | null;
@@ -121,6 +124,7 @@ type VideoDetail = {
   transcriptLanguage?: string;
   translations?: { language: string; transcript?: string }[];
   lessonVideos?: LessonPublishInfo[];
+  dubs?: { language?: string; url?: string | null; durationSeconds?: number | null; voice?: string | null }[];
   aiMetadata?: {
     titles?: string[];
     descriptions?: string[];
@@ -135,7 +139,7 @@ type VideoDetail = {
   thumbnailUrl?: string | null;
 };
 
-function PublishForm({ id, language }: { id: string; language: string }) {
+function PublishForm({ id, language, voice: voiceParam }: { id: string; language: string; voice?: string }) {
   const router = useRouter();
   const toast = useToast();
   const [video, setVideo] = useState<VideoDetail | null>(null);
@@ -153,7 +157,21 @@ function PublishForm({ id, language }: { id: string; language: string }) {
   const [ytChannelTitle, setYtChannelTitle] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
-  const existingPublish = (video?.lessonVideos || []).find((l) => l.language === language);
+  const [source, setSource] = useState<"lesson" | "dub">("lesson");
+  const dubsForLanguage = (video?.dubs || []).filter((d) => d.language === language && d.url);
+  const dubForLanguage =
+    (voiceParam ? dubsForLanguage.find((d) => d.voice === voiceParam) : undefined) || dubsForLanguage[0];
+  const lessonForLanguage = (video?.lessonVideos || []).find(
+    (l) => l.language === language && (l.source ?? "lesson") === "lesson",
+  );
+  const existingPublish = (video?.lessonVideos || []).find(
+    (l) =>
+      l.language === language &&
+      (l.source ?? "lesson") === source &&
+      (source !== "dub" ||
+        !dubForLanguage ||
+        String(l.voice ?? "") === String(dubForLanguage.voice ?? "")),
+  );
 
   const load = async () => {
     const res = await api.get<{ video: VideoDetail; metadata?: VideoDetail["aiMetadata"]; language?: string }>(
@@ -219,7 +237,24 @@ function PublishForm({ id, language }: { id: string; language: string }) {
           .filter(Boolean)
           .join("\n\n");
 
-        const existingPublishLesson = (v.lessonVideos || []).find((item) => item.language === language);
+        const dubForLang = (v.dubs || []).find(
+          (d) => d.language === language && d.url && (!voiceParam || d.voice === voiceParam),
+        ) || (v.dubs || []).find((d) => d.language === language && d.url);
+        const publishedRecord = (v.lessonVideos || []).find(
+          (item) => item.language === language && item.youtubeVideoId,
+        );
+        const nextSource: "lesson" | "dub" = publishedRecord
+          ? ((publishedRecord.source as "lesson" | "dub") || "lesson")
+          : dubForLang
+            ? "dub"
+            : "lesson";
+        setSource(nextSource);
+        const existingPublishLesson = (v.lessonVideos || []).find(
+          (item) =>
+            item.language === language &&
+            (item.source ?? "lesson") === nextSource &&
+            (nextSource !== "dub" || String(item.voice ?? "") === String(dubForLang?.voice ?? "")),
+        );
         const preferredTitle = existingPublishLesson?.youtubeTitle || meta.titles?.[0] || `${v.title || "Lesson"} (${language})`;
         const lessonNumber = lessonNumberFrom(v.title) || lessonNumberFrom(v.originalFilename);
         const titledWithNumber =
@@ -275,9 +310,11 @@ function PublishForm({ id, language }: { id: string; language: string }) {
 
   const publish = async () => {
     setPublishing(true);
-    const res = await api.post<{ youtubeUrl?: string; youtubeVideoId?: string; mode?: string; channelTitle?: string; playlistId?: string }>(
+    const res = await api.post<{ youtubeUrl?: string; youtubeVideoId?: string; mode?: string; source?: string; channelTitle?: string; playlistId?: string }>(
       `/api/videos/${id}/lessons/${language}/publish`,
       {
+        source,
+        voice: source === "dub" ? dubForLanguage?.voice || undefined : undefined,
         title,
         description,
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
@@ -323,9 +360,43 @@ function PublishForm({ id, language }: { id: string; language: string }) {
                   Connect YouTube in Settings first.
                 </a>
               )}
+              <div className="space-y-2">
+                <Label htmlFor="publishSource">Video to publish</Label>
+                <select
+                  id="publishSource"
+                  value={source}
+                  onChange={(e) => setSource(e.target.value as "lesson" | "dub")}
+                  className="h-9 w-full rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  {dubForLanguage && (
+                    <option value="dub">
+                      Dubbed original — original footage + translated voice
+                      {dubForLanguage.durationSeconds ? ` (${dubForLanguage.durationSeconds}s)` : ""}
+                      {dubForLanguage.voice ? ` • ${dubForLanguage.voice}` : ""}
+                    </option>
+                  )}
+                  {lessonForLanguage && (
+                    <option value="lesson">
+                      Study-journey lesson — new AI narration
+                      {lessonForLanguage.durationSeconds ? ` (${lessonForLanguage.durationSeconds}s)` : ""}
+                    </option>
+                  )}
+                </select>
+                {!dubForLanguage && !lessonForLanguage && (
+                  <p className="text-sm text-destructive">
+                    Nothing to publish for this language yet. Dub the original video or generate a study-journey lesson first.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {source === "dub"
+                    ? "The dubbed video keeps the original footage and timing; only the audio is translated."
+                    : "The study-journey video is a new render with an AI-written narration and burned-in subtitles."}
+                </p>
+              </div>
               {existingPublish?.youtubeVideoId && (
                 <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-100">
                   <p className="font-semibold">This language is already published on YouTube.</p>
+                  <p>Source: {existingPublish.source === "dub" ? "Dubbed original video" : "Study-journey lesson video"}</p>
                   <p>Mode: update (publish again to change title/description/thumbnail/settings)</p>
                   {existingPublish.youtubeChannelTitle && <p>Channel: {existingPublish.youtubeChannelTitle}</p>}
                   {existingPublish.youtubePlaylistId && <p>Playlist ID: {existingPublish.youtubePlaylistId}</p>}
@@ -420,7 +491,7 @@ function PublishForm({ id, language }: { id: string; language: string }) {
                 <Input value={ytConnected ? ytChannelTitle || "Connected channel" : "Not connected"} readOnly />
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={publish} disabled={publishing || !ytConnected}>
+                <Button onClick={publish} disabled={publishing || !ytConnected || (!dubForLanguage && !lessonForLanguage)}>
                   {publishing ? "Publishing…" : existingPublish?.youtubeVideoId ? "Update on YouTube" : "Publish to YouTube"}
                 </Button>
                 {publishedUrl && (
@@ -442,7 +513,8 @@ function PublishPageClient() {
   const searchParams = useSearchParams();
   const id = String(params?.id || "");
   const language = searchParams.get("language") || "en";
-  return <PublishForm id={id} language={language} />;
+  const voice = searchParams.get("voice") || "";
+  return <PublishForm id={id} language={language} voice={voice} />;
 }
 
 export default function PublishPage() {

@@ -6,10 +6,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { synthesizeSpeech, VOICES } from './tts.service.js';
-import {
-  translateTranscriptSegments,
-  condenseTranslationForDuration,
-} from './aiMetadata.service.js';
+import { translateTranscriptSegments } from './aiMetadata.service.js';
 
 const TEMP_DIR = os.tmpdir();
 
@@ -29,9 +26,12 @@ const cleanup = (files) => {
   }
 };
 
-const runFfmpeg = (args) =>
+const runFfmpeg = (args, options = {}) =>
   new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegStatic, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(ffmpegStatic, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: options.cwd || undefined,
+    });
     let stderr = '';
     proc.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
@@ -42,6 +42,28 @@ const runFfmpeg = (args) =>
       else reject(new Error(`ffmpeg failed (${code}): ${stderr.slice(-800)}`));
     });
   });
+
+const formatSrtTime = (seconds) => {
+  const total = Math.max(0, Number(seconds) || 0);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = Math.floor(total % 60);
+  const millis = Math.round((total - Math.floor(total)) * 1000);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
+};
+
+const toSrt = (segments) =>
+  segments
+    .map((segment, index) => {
+      const start = formatSrtTime(segment.start);
+      const end = formatSrtTime(Math.max(segment.end, segment.start + 0.4));
+      return `${index + 1}\n${start} --> ${end}\n${segment.text}\n`;
+    })
+    .join('\n');
+
+// White text on a soft black box: readable on any footage.
+const SUBTITLE_STYLE =
+  "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H8C000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2";
 
 const uploadFile = (filePath, options) =>
   new Promise((resolve, reject) => {
@@ -118,44 +140,6 @@ const normalizeToWav = async (inputPath, outputPath) => {
   ]);
 };
 
-const stretchOrFitAudio = async (inputPath, outputPath, sourceDuration, targetDuration) => {
-  const safeTarget = Math.max(0.1, Number(targetDuration) || 0.1);
-  const safeSource = Math.max(0.05, Number(sourceDuration) || 0.05);
-
-  if (safeSource <= safeTarget + 0.03) {
-    await normalizeToWav(inputPath, outputPath);
-    return safeSource;
-  }
-
-  let factor = safeSource / safeTarget;
-  const filters = [];
-  while (factor > 2.0) {
-    filters.push('atempo=2.0');
-    factor /= 2.0;
-  }
-  const finalFactor = Math.min(100, Math.max(1.0, factor));
-  filters.push(`atempo=${finalFactor.toFixed(6)}`);
-
-  await runFfmpeg([
-    '-y',
-    '-i',
-    inputPath,
-    '-filter:a',
-    filters.join(','),
-    '-t',
-    safeTarget.toFixed(3),
-    '-acodec',
-    'pcm_s16le',
-    '-ar',
-    '24000',
-    '-ac',
-    '1',
-    outputPath,
-  ]);
-
-  return safeTarget;
-};
-
 const getTranslationSegments = async (video, language) => {
   const originalLanguage = video.originalLanguage || video.transcriptLanguage || 'en';
   if (String(language).toLowerCase() === String(originalLanguage).toLowerCase()) {
@@ -224,7 +208,87 @@ const normalizeSegmentTiming = (segments, totalDuration) => {
   return normalized;
 };
 
-export const generateDubbedVideo = async ({ video, language, voice = null, elevenLabsVoiceId = null }) => {
+const MAX_TEMPO = 1.6;
+
+/**
+ * Merge subtitle cues into whole sentences.
+ *
+ * Dubbing cue-by-cue forces every short cue to fit its own ~2s slot, which is
+ * what produced the 2x speed-ups and the mid-word cuts. Speaking whole
+ * sentences and letting them use the surrounding pauses sounds natural.
+ */
+export const mergeCuesIntoSentences = (segments, videoDuration) => {
+  const blocks = [];
+  let current = null;
+
+  for (const segment of segments) {
+    if (!current) {
+      current = { start: segment.start, end: segment.end, texts: [segment.text] };
+      continue;
+    }
+    const gap = segment.start - current.end;
+    const combined = `${current.texts.join(" ")} ${segment.text}`.replace(/\s+/g, " ");
+    const endsSentence = /[.!?؟۔…]["'”’)\]]?\s*$/.test(current.texts[current.texts.length - 1]);
+    if (gap <= 0.9 && combined.length <= 320 && !endsSentence) {
+      current.end = segment.end;
+      current.texts.push(segment.text);
+    } else {
+      blocks.push(current);
+      current = { start: segment.start, end: segment.end, texts: [segment.text] };
+    }
+  }
+  if (current) blocks.push(current);
+
+  return blocks
+    .map((block, index) => ({
+      start: block.start,
+      end: block.end,
+      nextStart:
+        index + 1 < blocks.length
+          ? blocks[index + 1].start
+          : Math.max(block.end, videoDuration || block.end),
+      text: block.texts.join(" ").replace(/\s+/g, " ").trim(),
+    }))
+    .filter((block) => block.text);
+};
+
+/**
+ * Converts the spoken clip so that it fits the available window.
+ * Never truncates audio (truncation was what cut words in the middle) -
+ * if it still does not fit after MAX_TEMPO it is allowed to overflow into the
+ * next pause, which keeps every word audible.
+ */
+const fitSpeechToWindow = async (inputPath, outputPath, sourceDuration, windowSeconds) => {
+  const safeWindow = Math.max(0.5, Number(windowSeconds) || 0.5);
+  const safeSource = Math.max(0.05, Number(sourceDuration) || 0.05);
+  const ratio = safeSource / safeWindow;
+
+  if (ratio <= 1.02) {
+    await normalizeToWav(inputPath, outputPath);
+    return safeSource;
+  }
+
+  const tempo = Math.min(MAX_TEMPO, ratio);
+  await runFfmpeg([
+    '-y',
+    '-i',
+    inputPath,
+    '-filter:a',
+    `atempo=${tempo.toFixed(4)}`,
+    '-acodec',
+    'pcm_s16le',
+    '-ar',
+    '24000',
+    '-ac',
+    '1',
+    outputPath,
+  ]);
+
+  const actual = await getAudioDurationSeconds(outputPath);
+  return actual || safeSource / tempo;
+};
+
+export const generateDubbedVideo = async ({ video, language, voice = null, elevenLabsVoiceId = null, onProgress = null }) => {
   if (!isCloudinaryConfigured()) {
     const err = new Error('Cloudinary is not configured on the server');
     err.statusCode = 500;
@@ -250,35 +314,32 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   }
 
   const selectedVoice = voice || VOICES[language] || VOICES.en;
+  // A chosen Edge speaker must be used verbatim, even if an ElevenLabs /
+  // Google voice is configured in the environment.
+  const useEdge = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(selectedVoice));
+  const ttsOptions = useEdge
+    ? { provider: 'edge' }
+    : { provider: 'elevenlabs', voiceId: elevenLabsVoiceId };
+
+  const blocks = mergeCuesIntoSentences(segments, videoDuration);
 
   const tempFiles = [];
   const clips = [];
+  const burnSegments = [];
   let cursor = 0;
 
-  for (let i = 0; i < segments.length; i += 1) {
-    const segment = segments[i];
-    const slotEnd =
-      videoDuration > 0
-        ? Math.min(segment.end, videoDuration)
-        : segment.end;
-    const slotDuration = Math.max(0.1, slotEnd - segment.start);
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
 
-    let text = segment.text;
-    const maxChars = Math.max(20, Math.floor(slotDuration * 13));
-    if (text.length > maxChars * 1.15) {
-      try {
-        text = await condenseTranslationForDuration({
-          text,
-          targetLanguage: language,
-          maxChars,
-        });
-      } catch {
-        // Keep original text if condensation fails.
-      }
+    if (videoDuration > 0 && block.start >= videoDuration) {
+      cursor = videoDuration;
+      break;
     }
-    text = String(text || '').trim() || segment.text;
 
-    const leadingGap = segment.start - cursor;
+    // If the previous sentence overflowed we simply continue from the cursor
+    // instead of cutting the audio short.
+    const startAt = Math.max(block.start, cursor);
+    const leadingGap = startAt - cursor;
     if (leadingGap > 0.02) {
       const silenceFile = path.join(
         TEMP_DIR,
@@ -291,24 +352,15 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
       }
     }
 
-    if (!text) {
-      const silenceFile = path.join(
-        TEMP_DIR,
-        `dub-empty-${video._id}-${i}-${Date.now()}.wav`,
-      );
-      tempFiles.push(silenceFile);
-      if (await createSilenceWav(slotDuration, silenceFile)) {
-        clips.push(silenceFile);
-        cursor += slotDuration;
-      }
-      continue;
-    }
+    const nextStart = Math.min(
+      block.nextStart > startAt ? block.nextStart : videoDuration || block.end,
+      videoDuration || Number.POSITIVE_INFINITY,
+    );
+    const window = Math.max(0.8, nextStart - startAt);
 
-    const tts = await synthesizeSpeech(text, selectedVoice, {
-      voiceId: elevenLabsVoiceId,
-    });
+    const tts = await synthesizeSpeech(block.text, selectedVoice, ttsOptions);
     if (!tts?.buffer?.length) {
-      throw new Error(`TTS returned no audio for segment ${i + 1}`);
+      throw new Error(`TTS returned no audio for sentence ${i + 1}`);
     }
 
     const rawTtsFile = path.join(
@@ -320,7 +372,7 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     let sourceDuration = await getAudioDurationSeconds(rawTtsFile);
     if (!sourceDuration) {
-      sourceDuration = estimateSpeechSeconds(text, language);
+      sourceDuration = estimateSpeechSeconds(block.text, language);
     }
 
     const fittedFile = path.join(
@@ -329,15 +381,34 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     );
     tempFiles.push(fittedFile);
 
-    const fittedDuration = await stretchOrFitAudio(
+    const fittedDuration = await fitSpeechToWindow(
       rawTtsFile,
       fittedFile,
       sourceDuration,
-      slotDuration,
+      window,
     );
 
     clips.push(fittedFile);
-    cursor += fittedDuration > 0 ? fittedDuration : slotDuration;
+    burnSegments.push({
+      start: Number(startAt.toFixed(3)),
+      end: Number(
+        Math.max(
+          startAt + 0.6,
+          videoDuration > 0 ? Math.min(startAt + fittedDuration, videoDuration) : startAt + fittedDuration,
+        ).toFixed(3),
+      ),
+      text: block.text,
+    });
+    cursor += fittedDuration > 0 ? fittedDuration : window;
+
+    if (onProgress) {
+      try {
+        await onProgress(Math.min(90, 10 + Math.round(((i + 1) / blocks.length) * 80)));
+      } catch (progressError) {
+        // A cancellation must stop the dub; other progress errors are harmless.
+        if (progressError?.code === 'DUB_CANCELLED') throw progressError;
+      }
+    }
   }
 
   if (videoDuration > cursor + 0.02) {
@@ -390,49 +461,59 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   );
   tempFiles.push(outputFile);
 
-  try {
-    const args = videoDuration > 0
-      ? [
-          '-y',
-          '-i',
-          video.publicUrl,
-          '-i',
-          mergedAudio,
-          '-map',
-          '0:v:0',
-          '-map',
-          '1:a:0',
-          '-c:v',
-          'copy',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '128k',
-          '-t',
-          String(videoDuration),
-          outputFile,
-        ]
-      : [
-          '-y',
-          '-i',
-          video.publicUrl,
-          '-i',
-          mergedAudio,
-          '-map',
-          '0:v:0',
-          '-map',
-          '1:a:0',
-          '-c:v',
-          'copy',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '128k',
-          '-shortest',
-          outputFile,
-        ];
+  // Burn the translated subtitles into the dub so the video is self-contained.
+  let subtitleFile = null;
+  if (burnSegments.length > 0) {
+    subtitleFile = path.join(
+      TEMP_DIR,
+      `dub-subs-${video._id}-${language}-${Date.now()}.srt`,
+    );
+    tempFiles.push(subtitleFile);
+    fs.writeFileSync(subtitleFile, toSrt(burnSegments), 'utf8');
+  }
 
-    await runFfmpeg(args);
+  const videoArgs = subtitleFile
+    ? [
+        '-vf',
+        // Only the file name is passed (ffmpeg runs inside TEMP_DIR), which
+        // avoids Windows drive-letter escaping problems in the filter string.
+        `subtitles=${path.basename(subtitleFile)}:force_style='${SUBTITLE_STYLE}'`,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '23',
+        '-pix_fmt',
+        'yuv420p',
+      ]
+    : ['-c:v', 'copy'];
+
+  try {
+    const args = [
+      '-y',
+      '-i',
+      video.publicUrl,
+      '-i',
+      mergedAudio,
+      '-map',
+      '0:v:0',
+      '-map',
+      '1:a:0',
+      ...videoArgs,
+      '-c:a',
+      'aac',
+      '-b:a',
+      '160k',
+      '-movflags',
+      '+faststart',
+      ...(videoDuration > 0
+        ? ['-t', String(videoDuration)]
+        : ['-shortest']),
+      outputFile,
+    ];
+
+    await runFfmpeg(args, { cwd: TEMP_DIR });
 
     const result = await uploadFile(outputFile, {
       resource_type: 'video',
@@ -448,6 +529,8 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
       storagePath: result.public_id,
       durationSeconds: Math.round(result.duration || videoDuration || 0),
       voice: selectedVoice,
+      subtitlesBurned: Boolean(subtitleFile),
+      segments: burnSegments,
     };
   } finally {
     cleanup([...tempFiles, mergedAudio, outputFile]);

@@ -98,7 +98,8 @@ const runFfmpegConcat = (inputFiles, outputFile) =>
 const synthesizeChunk = async (chunkText, voice, rate) => {
   // No debug output in production; keep synthesis quiet.
   const tts = new MsEdgeTTS({ connectionTimeoutMs: 30000, synthesisTimeoutMs: 120000 });
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
+  // 96 kbit/s mono is noticeably clearer than the old 48 kbit/s stream.
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
     sentenceBoundaryEnabled: true,
   });
@@ -378,7 +379,91 @@ const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
   };
 };
 
-const synthesizeChunkRobust = async (chunk, voice, rate) => {
+/**
+ * Split text into speech-sized chunks **without ever cutting a word**.
+ * Prefers sentence boundaries (works with Arabic / Hindi punctuation too),
+ * then falls back to the closest space before the limit.
+ */
+export const splitIntoSpeechChunks = (text, maxLen = 260) => {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  if (clean.length <= maxLen) return [clean];
+
+  // 1) break the text into sentences
+  const sentences = [];
+  let buffer = '';
+  for (const part of clean.split(/(?<=[.!?؟۔…])\s+/)) {
+    const candidate = buffer ? `${buffer} ${part}` : part;
+    if (candidate.length <= maxLen) {
+      buffer = candidate;
+    } else {
+      if (buffer) sentences.push(buffer.trim());
+      buffer = part;
+    }
+  }
+  if (buffer.trim()) sentences.push(buffer.trim());
+
+  // 2) split any sentence that is still too long, always on a space
+  const chunks = [];
+  for (const sentence of sentences) {
+    let rest = sentence;
+    while (rest.length > maxLen) {
+      let cut = rest.lastIndexOf(' ', maxLen);
+      if (cut < maxLen * 0.5) {
+        // no usable space: take the next space after the limit instead
+        const nextSpace = rest.indexOf(' ', maxLen);
+        cut = nextSpace > 0 ? nextSpace : maxLen;
+      }
+      chunks.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) chunks.push(rest);
+  }
+
+  return chunks.filter(Boolean);
+};
+
+const speakChunks = async (parts, voice, rate, depth = 0) => {
+  const buffers = [];
+  const segments = [];
+  const wordSegments = [];
+  let offset = 0;
+
+  for (const part of parts) {
+    const result = await synthesizeChunkRobust(part, voice, rate, depth);
+    buffers.push(result.buffer);
+    for (const seg of result.segments || []) {
+      segments.push({
+        ...seg,
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+      });
+    }
+    for (const seg of result.wordSegments || []) {
+      wordSegments.push({
+        ...seg,
+        start: Number((seg.start + offset).toFixed(3)),
+        end: Number((seg.end + offset).toFixed(3)),
+      });
+    }
+    const lastEnd =
+      (result.segments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      (result.wordSegments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      0;
+    offset += lastEnd;
+    // Small pause avoids Edge stream truncation on long runs.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+
+  return {
+    buffer: buffers.length === 1 ? buffers[0] : Buffer.concat(buffers),
+    segments,
+    wordSegments,
+    chunkEnd: offset,
+  };
+};
+
+const synthesizeChunkRobust = async (chunk, voice, rate, depth = 0) => {
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -391,47 +476,41 @@ const synthesizeChunkRobust = async (chunk, voice, rate) => {
     }
   }
 
-  const edgeFallbacks = {
-    'ar-EG-SalmaNeural': 'ar-EG-ShakirNeural',
-    'ar-EG-ShakirNeural': 'ar-SA-HamedNeural',
-    'ar-SA-ZariyahNeural': 'ar-AE-FatimaNeural',
-    'hi-IN-SwaraNeural': 'hi-IN-MadhurNeural',
-  };
-  if (edgeFallbacks[voice]) {
-    console.warn('[tts] switching Edge voice from', voice, 'to', edgeFallbacks[voice]);
-    return synthesizeChunkRobust(chunk, edgeFallbacks[voice], rate);
+  // IMPORTANT: never switch to a different speaker mid-video (that made the
+  // voice change gender/language halfway). Retry again with a shorter slice
+  // of the SAME text using the SAME voice.
+  const clean = stripMarkdown(chunk).trim();
+  if (clean.length > 120 && depth < 4) {
+    const parts = splitIntoSpeechChunks(clean, Math.max(70, Math.ceil(clean.length / 2)));
+    if (parts.length > 1) {
+      console.warn(
+        '[tts] retrying failed chunk with the same voice in',
+        parts.length,
+        'shorter pieces:',
+        voice,
+      );
+      return speakChunks(parts, voice, rate, depth + 1);
+    }
   }
 
-  const clean = stripMarkdown(chunk);
-  if (clean.length <= 240) throw lastError || new Error('TTS chunk failed');
-
-  const middle = Math.floor(clean.length / 2);
-  let splitAt = clean.lastIndexOf(' ', middle);
-  if (splitAt < clean.length * 0.25) splitAt = middle;
-  const first = clean.slice(0, splitAt).trim();
-  const second = clean.slice(splitAt).trim();
-  if (!first || !second) throw lastError || new Error('TTS chunk failed');
-
-  const left = await synthesizeChunkRobust(first, voice, rate);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const right = await synthesizeChunkRobust(second, voice, rate);
-  const offset =
-    (left.segments || []).reduce((max, s) => Math.max(max, Number(s.end) || 0), 0) ||
-    (left.wordSegments || []).reduce((max, s) => Math.max(max, Number(s.end) || 0), 0) ||
-    0;
-
-  return {
-    buffer: Buffer.concat([left.buffer, right.buffer]),
-    segments: [...(left.segments || []), ...(right.segments || []).map((s) => ({ ...s, start: Number((s.start + offset).toFixed(3)), end: Number((s.end + offset).toFixed(3)) }))],
-    wordSegments: [...(left.wordSegments || []), ...(right.wordSegments || []).map((s) => ({ ...s, start: Number((s.start + offset).toFixed(3)), end: Number((s.end + offset).toFixed(3)) }))],
-    chunkEnd: (right.chunkEnd || 0) + offset,
-  };
+  throw lastError || new Error('TTS chunk failed');
 };
 
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
     options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
-  if (elevenLabsVoiceId && env.elevenLabsApiKey) {
+
+  // When the caller selected a specific Edge speaker we must use exactly that
+  // speaker. Otherwise a leftover ElevenLabs/Google voice from .env would be
+  // used instead and the dub would not sound like the chosen voice.
+  const provider = options.provider;
+  const looksLikeEdgeVoice = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(voice || ''));
+  const forceEdge =
+    provider === 'edge' ||
+    options.forceEdge === true ||
+    (provider !== 'elevenlabs' && provider !== 'google' && looksLikeEdgeVoice);
+
+  if (!forceEdge && elevenLabsVoiceId && env.elevenLabsApiKey) {
     try {
       return await synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
     } catch (error) {
@@ -442,7 +521,7 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   }
 
   const googleVoice = String(options.googleVoice || env.googleTtsVoice || '').trim();
-  if (googleVoice && env.googleTtsApiKey) {
+  if (!forceEdge && googleVoice && env.googleTtsApiKey) {
     try {
       return await synthesizeWithGoogleCloud(text, googleVoice, options);
     } catch (error) {
@@ -453,7 +532,7 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   const rate = options.rate || '-3%';
   const report = options.onProgress;
   const clean = stripMarkdown(text);
-  const chunks = (clean.match(/.{1,320}/gs) || [clean]).map((c) => c.trim()).filter(Boolean);
+  const chunks = splitIntoSpeechChunks(clean, 260).filter(Boolean);
 
   if (chunks.length === 0) throw new Error('No speech could be generated');
 
@@ -480,9 +559,6 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
         end: Number((seg.end + offset).toFixed(3)),
         text: seg.text,
       });
-    }
-    if (result.chunkEnd && result.chunkEnd > 0) {
-      offset += 0; // already included in segments; keep offset from last segment below
     }
     if (allSegments.length > 0) {
       offset = allSegments[allSegments.length - 1].end;

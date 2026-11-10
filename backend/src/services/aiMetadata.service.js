@@ -384,6 +384,7 @@ const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = f
 
     const system =
       'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
+      'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
       (String(targetLanguage).toLowerCase().startsWith('ar')
         ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
         : '') +
@@ -814,12 +815,12 @@ export const translatePublishMetadata = async ({ metadata, targetLanguage, origi
             `You are a professional translator and copywriter. Translate every value of the provided JSON into ${targetLanguage}. ` +
             'Keep the exact same JSON structure and array lengths. ' +
             'Make the title and description natural, fluent, and easy to read. ' +
-            'Use polite, engaging language and preserve technical terms appropriately. ' +
+            'Never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers: keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) inside the translated sentence. ' +
             'Return ONLY valid JSON with keys: title, description, summary, chapters, keyPoints, openQuestions, tags.',
         },
         {
           role: 'user',
-          content: `Source JSON:\\n${JSON.stringify(source)}`,
+          content: `Source JSON:\n${JSON.stringify(source)}`,
         },
       ],
       {

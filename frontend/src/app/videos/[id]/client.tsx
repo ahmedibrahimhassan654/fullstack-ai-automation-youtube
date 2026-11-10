@@ -37,9 +37,9 @@ type Translation = {
   qualityStatus?: "passed" | "failed" | "unknown";
   translationAttempts?: number;
 };
-type Dub = { language: string; url: string; voice?: string; durationSeconds?: number; createdAt?: string };
+type Dub = { language: string; url: string; voice?: string; durationSeconds?: number; subtitlesBurned?: boolean; createdAt?: string };
 type DubbingState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
-type LessonVideo = { language: string; url: string; voice?: string; durationSeconds?: number; script?: string; createdAt?: string };
+type LessonVideo = { language: string; source?: "lesson" | "dub"; url: string; voice?: string; durationSeconds?: number; script?: string; createdAt?: string };
 type LessonGenerationState = { language?: string | null; status?: "idle" | "processing" | "completed" | "failed"; progress?: number; error?: string | null } | null;
 type AiMetadata = {
   titles?: string[];
@@ -117,14 +117,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState("");
-  const [lessonLanguage, setLessonLanguage] = useState("");
-  const [generatingLesson, setGeneratingLesson] = useState(false);
+  const [dubLanguage, setDubLanguage] = useState("");
   const [generatingDub, setGeneratingDub] = useState(false);
-  const [lessonVoiceId, setLessonVoiceId] = useState("");
   const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
-  const [lessonEdgeVoice, setLessonEdgeVoice] = useState("");
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
-  const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
+  const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -138,7 +135,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditCategory(v.youtubeCategoryId || "27");
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
-      setLessonLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
+      setDubLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -163,14 +160,9 @@ export default function VideoDetailClient({ id }: { id: string }) {
   }, []);
 
   useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    if (opts.length && !opts.includes(lessonEdgeVoice)) setLessonEdgeVoice(opts[0]);
-  }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
-
-  useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const opts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
     if (opts.length && !opts.includes(dubEdgeVoice)) setDubEdgeVoice(opts[0]);
-  }, [lessonLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+  }, [dubLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
     if (!video) return;
@@ -310,6 +302,16 @@ export default function VideoDetailClient({ id }: { id: string }) {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
+
+  // Every generated dub is grouped under its language so multiple voices per
+  // language stay organised.
+  const dubGroups = Object.values(
+    (video?.dubs || []).reduce<Record<string, Dub[]>>((acc, dub) => {
+      if (!acc[dub.language]) acc[dub.language] = [];
+      acc[dub.language].push(dub);
+      return acc;
+    }, {}),
+  );
 
   return (
     <AuthGuard>
@@ -545,6 +547,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   <CardTitle>Dubbed original video</CardTitle>
                   <CardDescription>
                     Replace the original video's audio with a synchronized dubbed track while keeping the original footage and timing.
+                    This is the video you publish to YouTube for the target language.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -552,8 +555,8 @@ export default function VideoDetailClient({ id }: { id: string }) {
                     <Label htmlFor="dubLanguage">Dub language</Label>
                     <select
                       id="dubLanguage"
-                      value={lessonLanguage}
-                      onChange={(e) => setLessonLanguage(e.target.value)}
+                      value={dubLanguage}
+                      onChange={(e) => setDubLanguage(e.target.value)}
                       className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     >
                       {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
@@ -572,7 +575,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         onChange={(e) => setDubEdgeVoice(e.target.value)}
                         className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
-                        {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
+                        {(edgeVoiceOptionsByLang[dubLanguage] || []).map((v) => (
                           <option key={v} value={v}>{v}</option>
                         ))}
                       </select>
@@ -580,7 +583,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
                     <Button
                       onClick={async () => {
                         setGeneratingDub(true);
-                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: lessonLanguage, voice: dubEdgeVoice });
+                        const res = await api.post<{ video: VideoDetail }>(`/api/videos/${video._id}/dub`, { language: dubLanguage, voice: dubEdgeVoice });
                         if (res.success) {
                           toast.success(res.message || "Dubbing started.");
                           if (res.data?.video) setVideo(res.data.video);
@@ -605,6 +608,28 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         "Dub original video"
                       )}
                     </Button>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const res = await api.post<{ video: VideoDetail }>(
+                          `/api/videos/${video._id}/translate`,
+                          { language: dubLanguage },
+                        );
+                        if (res.success) {
+                          toast.success(
+                            res.message || "Translated transcript updated.",
+                          );
+                          if (res.data?.video) setVideo(res.data.video);
+                        } else {
+                          toast.error(
+                            res.message || "Failed to update translated transcript.",
+                          );
+                        }
+                      }}
+                      disabled={video.dubbing?.status === "processing"}
+                    >
+                      Refresh translation ({dubLanguage})
+                    </Button>
                   </div>
                   {video.dubbing?.status === "processing" && (
                     <Progress value={video.dubbing.progress || 0} className="h-2" />
@@ -619,22 +644,119 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   {video.dubbing?.status === "failed" && video.dubbing.error && (
                     <p className="text-sm text-destructive">Last dubbing error: {video.dubbing.error}</p>
                   )}
-                  {video.dubs?.length ? (
+                  {dubGroups.length ? (
                     <div className="space-y-3">
-                      {video.dubs.map((dub, index) => (
-                        <div key={`${dub.language}-${index}`} className="rounded-md border p-3 space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">
-                              {LANGUAGES.find((l) => l.code === dub.language)?.label || dub.language} ({dub.language})
-                              {dub.durationSeconds ? ` • ${dub.durationSeconds}s` : ""}
-                            </p>
-                            <a href={dub.url} target="_blank" rel="noreferrer" className="text-sm underline">
-                              Open dubbed file
-                            </a>
-                          </div>
-                          <video src={dub.url} controls className="w-full rounded-md border" />
-                        </div>
-                      ))}
+                      {dubGroups.map((group) => {
+                        const langCode = group[0].language;
+                        const langLabel =
+                          LANGUAGES.find((l) => l.code === langCode)?.label || langCode;
+                        return (
+                          <details key={langCode} className="rounded-md border bg-card">
+                            <summary className="cursor-pointer list-none p-3 font-medium">
+                              {langLabel} ({langCode}) — {group.length}{" "}
+                              {group.length === 1 ? "dub" : "dubs"}
+                            </summary>
+                            <div className="space-y-3 border-t p-3">
+                              {group.map((dub) => {
+                                const dubKey = `${dub.language}::${dub.voice || ""}`;
+                                return (
+                                  <div
+                                    key={dubKey}
+                                    className="space-y-2 rounded-md border p-3"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <p className="text-sm font-medium">
+                                          {dub.voice || "Voice not recorded"}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                          {langLabel} ({langCode})
+                                          {dub.durationSeconds
+                                            ? ` • ${dub.durationSeconds}s`
+                                            : ""}
+                                          {dub.subtitlesBurned
+                                            ? " • subtitles burned in"
+                                            : ""}
+                                        </p>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-3">
+                                        <a
+                                          href={dub.url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-sm underline"
+                                        >
+                                          Open file
+                                        </a>
+                                        <a
+                                          href={`/videos/${id}/publish?language=${encodeURIComponent(
+                                            dub.language,
+                                          )}&voice=${encodeURIComponent(dub.voice || "")}`}
+                                          className="text-sm font-medium underline"
+                                        >
+                                          Prepare to publish on YouTube
+                                        </a>
+                                        <Button
+                                          variant="destructive"
+                                          size="sm"
+                                          disabled={deletingDubKey === dubKey}
+                                          onClick={async () => {
+                                            if (
+                                              !window.confirm(
+                                                `Delete the ${langLabel} dub with voice ${
+                                                  dub.voice || ""
+                                                }?`,
+                                              )
+                                            )
+                                              return;
+                                            setDeletingDubKey(dubKey);
+                                            const res = await api.delete<{
+                                              video: VideoDetail;
+                                            }>(
+                                              `/api/videos/${video._id}/dub?language=${encodeURIComponent(
+                                                dub.language,
+                                              )}&voice=${encodeURIComponent(
+                                                dub.voice || "",
+                                              )}`,
+                                            );
+                                            if (res.success) {
+                                              toast.success(
+                                                res.message || "Dub deleted.",
+                                              );
+                                              if (res.data?.video)
+                                                setVideo(res.data.video);
+                                              else await load();
+                                            } else {
+                                              toast.error(
+                                                res.message || "Failed to delete dub.",
+                                              );
+                                            }
+                                            setDeletingDubKey(null);
+                                          }}
+                                        >
+                                          {deletingDubKey === dubKey ? (
+                                            <>
+                                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                              Deleting…
+                                            </>
+                                          ) : (
+                                            "Delete"
+                                          )}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                    <video
+                                      src={dub.url}
+                                      controls
+                                      className="w-full rounded-md border"
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </CardContent>
@@ -642,9 +764,10 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Generated study-journey (montage) video</CardTitle>
+                  <CardTitle>Study-journey lesson video (optional, separate product)</CardTitle>
                   <CardDescription>
-                    Build a new lesson video from the AI metadata and translated transcript.
+                    A brand-new lesson render: AI writes a fresh script, narrates it and burns in translated subtitles over background footage.
+                    This is not a re-render of the dubbed video — use it only if you want a second, lesson-style version.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -776,9 +899,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
                     <p className="text-sm text-destructive">Last lesson error: {video.lessonGeneration.error}</p>
                   )}
 
-                  {video.lessonVideos?.length ? (
+                  {(video.lessonVideos || []).filter((lesson) => (lesson.source ?? "lesson") === "lesson").length ? (
                     <div className="space-y-4">
-                      {video.lessonVideos.map((lesson, index) => (
+                      {(video.lessonVideos || [])
+                        .filter((lesson) => (lesson.source ?? "lesson") === "lesson")
+                        .map((lesson, index) => (
                         <details key={`${lesson.language}-${index}`} className="group rounded-md border bg-card">
                           <summary className="cursor-pointer list-none p-4 font-medium">
                             {LANGUAGES.find((l) => l.code === lesson.language)?.label || lesson.language} ({lesson.language}) lesson video

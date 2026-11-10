@@ -84,6 +84,7 @@ const dubSchema = new mongoose.Schema(
     storagePath: { type: String, default: null },
     durationSeconds: { type: Number, default: 0 },
     voice: { type: String, default: null },
+    subtitlesBurned: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -92,6 +93,8 @@ const dubSchema = new mongoose.Schema(
 const lessonVideoSchema = new mongoose.Schema(
   {
     language: { type: String, required: true },
+    // 'lesson' = AI study-journey render, 'dub' = original footage + translated voice
+    source: { type: String, enum: ['lesson', 'dub'], default: 'lesson' },
     url: { type: String, required: true },
     storagePath: { type: String, default: null },
     durationSeconds: { type: Number, default: 0 },

@@ -88,6 +88,7 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
     const res = await api.post<{ youtubeUrl: string; youtubeVideoId: string }>(
       `/api/videos/${videoId}/lessons/${lesson.language}/publish`,
       {
+        source: "lesson",
         playlistId: selectedPlaylist || undefined,
         title: `${lesson.language.toUpperCase()} lesson: ${lesson.script?.slice(0, 60) || ""}`.trim(),
       },
