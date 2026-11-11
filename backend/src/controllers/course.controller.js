@@ -84,6 +84,10 @@ const withSummary = (course) => ({
     video: entry.video,
     order: entry.order,
     addedAt: entry.addedAt,
+    language: entry.language,
+    youtubeVideoId: entry.youtubeVideoId,
+    youtubeUrl: entry.youtubeUrl,
+    publishedAt: entry.publishedAt,
   })),
 });
 
@@ -105,6 +109,10 @@ export const listCourses = asyncHandler(async (req, res) => {
         videos: (course.videos || []).map((entry) => ({
           order: entry.order,
           addedAt: entry.addedAt,
+          language: entry.language,
+          youtubeVideoId: entry.youtubeVideoId,
+          youtubeUrl: entry.youtubeUrl,
+          publishedAt: entry.publishedAt,
           video: entry.video
             ? {
                 _id: entry.video._id,
@@ -226,6 +234,10 @@ export const getCourse = asyncHandler(async (req, res) => {
         videos: (course.videos || []).map((entry) => ({
           order: entry.order,
           addedAt: entry.addedAt,
+          language: entry.language,
+          youtubeVideoId: entry.youtubeVideoId,
+          youtubeUrl: entry.youtubeUrl,
+          publishedAt: entry.publishedAt,
           video: entry.video
             ? {
                 _id: entry.video._id,
