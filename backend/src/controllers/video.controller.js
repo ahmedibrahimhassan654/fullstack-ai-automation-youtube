@@ -760,6 +760,27 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
           segments: video.transcriptSegments,
           targetLanguage: language,
           originalLanguage,
+          // Translating is the slowest part of a dub, so it reports progress
+          // too. Without this the bar sits at 5% and looks frozen.
+          onProgress: async (ratio) => {
+            try {
+              const fresh = await Video.findById(videoId).select("dubbing").lean();
+              if (!fresh) return;
+              fresh.dubbing = {
+                ...(fresh.dubbing || {}),
+                status: "processing",
+                progress: Math.min(32, 8 + Math.round(ratio * 24)),
+                error: null,
+              };
+              await Video.updateOne(
+                { _id: videoId },
+                { $set: { dubbing: fresh.dubbing } },
+              );
+              emitVideoProgress(fresh);
+            } catch {
+              // progress updates must never break the dub
+            }
+          },
         });
 
         const untranslated = findUntranslatedSegments({
@@ -1534,6 +1555,53 @@ export const replyYouTubeComment = asyncHandler(async (req, res) => {
   const result = await replyToYouTubeComment(accessToken, req.params.commentId, text);
   res.status(200).json({ success: true, data: { comment: result } });
 });
+
+export const markInterruptedJobsAsFailed = async () => {
+  try {
+    // Jobs that were running when the server stopped can never finish: the
+    // process that owned them is gone. Mark them as failed so the viewer is
+    // not stuck on "Dubbing 5%" forever and can retry.
+    const interrupted = await Video.find({
+      $or: [
+        { "dubbing.status": "processing" },
+        { "lessonGeneration.status": "processing" },
+      ],
+    })
+      .select("_id dubbing lessonGeneration")
+      .lean();
+
+    for (const item of interrupted) {
+      const updates = {};
+      if (item.dubbing?.status === "processing") {
+        updates.dubbing = {
+          ...item.dubbing,
+          status: "failed",
+          error:
+            "Dubbing was interrupted by a server restart. Please start it again.",
+          completedAt: new Date(),
+        };
+      }
+      if (item.lessonGeneration?.status === "processing") {
+        updates.lessonGeneration = {
+          ...item.lessonGeneration,
+          status: "failed",
+          error:
+            "The lesson render was interrupted by a server restart. Please start it again.",
+          completedAt: new Date(),
+        };
+      }
+      if (Object.keys(updates).length > 0) {
+        await Video.updateOne({ _id: item._id }, { $set: updates });
+        console.log(`[startup] marked interrupted job as failed: ${item._id}`);
+      }
+    }
+  } catch (error) {
+    console.error(
+      "[startup] failed to clear interrupted jobs:",
+      error?.message || error,
+    );
+  }
+};
 
 export const resumeStuckVideoPipelines = async () => {
   try {

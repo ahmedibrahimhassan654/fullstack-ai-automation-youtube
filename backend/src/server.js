@@ -2,7 +2,10 @@ import { connectDB } from "./config/db.js";
 import { validateEnv } from "./config/env.js";
 import app from "./app.js";
 import { env } from "./config/env.js";
-import { resumeStuckVideoPipelines } from "./controllers/video.controller.js";
+import {
+  markInterruptedJobsAsFailed,
+  resumeStuckVideoPipelines,
+} from "./controllers/video.controller.js";
 
 validateEnv();
 
@@ -14,6 +17,14 @@ const start = async () => {
 
     process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
     process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
+
+    // A job that was running when the server stopped can never finish, so it
+    // is marked as failed instead of staying "processing" forever.
+    setImmediate(() => {
+      markInterruptedJobsAsFailed().catch((err) =>
+        console.error("[server] markInterruptedJobsAsFailed failed:", err?.message || err),
+      );
+    });
 
     // Auto-resume can make long AI jobs block the dev server; keep it opt-in.
     if (process.env.ENABLE_STARTUP_RESUME === "1") {
