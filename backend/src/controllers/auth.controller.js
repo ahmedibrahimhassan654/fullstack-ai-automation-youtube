@@ -381,7 +381,14 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
       );
       account.language = language;
     }
-    user.youtube = account;
+    // Copy the tokens explicitly: the active connection needs them, and a
+    // subdocument assignment must never drop them.
+    user.youtube = {
+      ...(account.toObject?.() ?? account),
+      accessToken: account.accessToken ?? null,
+      refreshToken: account.refreshToken ?? null,
+      tokenExpiresAt: account.tokenExpiresAt ?? null,
+    };
     await user.save();
     return res.status(200).json({
       success: true,
@@ -454,6 +461,89 @@ export const youtubeSetChannelLanguage = asyncHandler(async (req, res) => {
 
   await user.save();
   res.status(200).json({ success: true, data: { channelId, language } });
+});
+
+// ---------- YouTube OAuth: disconnect a single channel ----------
+export const youtubeDisconnectChannel = asyncHandler(async (req, res) => {
+  const channelId = String(req.body?.channelId || '').trim();
+  if (!channelId) {
+    const err = new Error('channelId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const user = await User.findById(req.user._id).select(
+    '+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken',
+  );
+  if (!user) {
+    const err = new Error('User not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  let found = false;
+
+  // The active connection keeps its tokens, unless the account runs out of
+  // channels - then the connection is cleared as well.
+  const yt = user.youtube || {};
+  if ((yt.channels || []).some((channel) => channel.channelId === channelId)) {
+    found = true;
+    const remaining = (yt.channels || []).filter((channel) => channel.channelId !== channelId);
+    if (remaining.length > 0) {
+      yt.channels = remaining;
+      if (yt.channelId === channelId) {
+        yt.channelId = remaining[0].channelId;
+        yt.channelTitle = remaining[0].channelTitle;
+        yt.language = remaining[0].language || null;
+      }
+    } else {
+      yt.channelId = null;
+      yt.channelTitle = null;
+      yt.language = null;
+      yt.accessToken = null;
+      yt.refreshToken = null;
+      yt.tokenExpiresAt = null;
+      yt.connectedAt = null;
+      yt.channels = [];
+    }
+    user.youtube = yt;
+  }
+
+  // Drop the channel from every account, and drop the accounts that run out
+  // of channels completely.
+  const accounts = [];
+  for (const account of user.youtubeAccounts || []) {
+    const next = account.toObject?.() ?? account;
+    const channels = next.channels || [];
+    if (!channels.some((channel) => channel.channelId === channelId)) {
+      accounts.push(next);
+      continue;
+    }
+    found = true;
+    const remaining = channels.filter((channel) => channel.channelId !== channelId);
+    if (remaining.length === 0) continue;
+    next.channels = remaining;
+    if (next.channelId === channelId) {
+      next.channelId = remaining[0].channelId;
+      next.channelTitle = remaining[0].channelTitle;
+      next.language = remaining[0].language || null;
+    }
+    accounts.push(next);
+  }
+  user.youtubeAccounts = accounts;
+
+  if (!found) {
+    const err = new Error('Channel not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  await user.save();
+  res.status(200).json({
+    success: true,
+    message: 'Channel disconnected',
+    data: { channelId },
+  });
 });
 
 // ---------- YouTube OAuth: disconnect ----------

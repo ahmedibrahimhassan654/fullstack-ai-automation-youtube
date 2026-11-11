@@ -19,6 +19,7 @@ router.get('/youtube/callback', authController.youtubeCallback);
 router.get('/youtube/status', protect, authController.youtubeStatus);
 router.post('/youtube/channel', protect, authController.youtubeSelectChannel);
 router.post('/youtube/channel-language', protect, authController.youtubeSetChannelLanguage);
+router.post('/youtube/channel-disconnect', protect, authController.youtubeDisconnectChannel);
 router.post('/youtube/disconnect', protect, authController.youtubeDisconnect);
 
 export default router;

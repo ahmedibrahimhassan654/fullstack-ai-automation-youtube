@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
+import { Loader2, Unplug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const LANGUAGES = [
@@ -59,6 +60,7 @@ export default function SettingsPage() {
     user?.preferences?.defaultLanguage || "ar",
   );
   const [savingLanguageFor, setSavingLanguageFor] = useState<string | null>(null);
+  const [disconnectingChannel, setDisconnectingChannel] = useState<string | null>(null);
 
   const loadStatus = async () => {
     const res = await api.get<YtStatus>("/api/auth/youtube/status");
@@ -131,6 +133,30 @@ export default function SettingsPage() {
     }
     await loadStatus();
     await refreshUser();
+  };
+
+  /** Removes a single channel, keeping the other ones connected. */
+  const disconnectChannel = async (channel: YtChannel) => {
+    const title = channel.channelTitle || channel.channelId;
+    if (
+      !window.confirm(
+        `Disconnect "${title}"? It will no longer be available for publishing.`,
+      )
+    )
+      return;
+
+    setDisconnectingChannel(channel.channelId);
+    const res = await api.post('/api/auth/youtube/channel-disconnect', {
+      channelId: channel.channelId,
+    });
+    if (res.success) {
+      toast.success(res.message || "Channel disconnected.");
+      await loadStatus();
+      await refreshUser();
+    } else {
+      toast.error(res.message || "Failed to disconnect the channel.");
+    }
+    setDisconnectingChannel(null);
   };
 
   const selectChannel = async (channelId: string) => {
@@ -261,6 +287,21 @@ export default function SettingsPage() {
                                     Make default
                                   </Button>
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={disconnectingChannel === channel.channelId}
+                                  title="Disconnect this channel"
+                                  aria-label={`Disconnect ${channel.channelTitle || channel.channelId}`}
+                                  onClick={() => disconnectChannel(channel)}
+                                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  {disconnectingChannel === channel.channelId ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                  ) : (
+                                    <Unplug className="size-4" />
+                                  )}
+                                </Button>
                               </div>
                             </div>
                           );

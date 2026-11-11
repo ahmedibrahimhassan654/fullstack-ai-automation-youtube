@@ -5,6 +5,24 @@ const API_URL = 'https://www.googleapis.com/youtube/v3';
 
 export const getValidYouTubeAccessToken = async (user) => {
   const yt = user.youtube || {};
+
+  // The tokens belong to the Google account, not to a single channel. If the
+  // active connection lost them, fall back to the account that owns the
+  // active channel so publishing keeps working.
+  if (!yt.accessToken && !yt.refreshToken) {
+    const owner = (user.youtubeAccounts || []).find((account) =>
+      (account.channels || []).some(
+        (channel) => channel.channelId === yt.channelId,
+      ),
+    );
+    if (owner?.accessToken || owner?.refreshToken) {
+      yt.accessToken = owner.accessToken;
+      yt.refreshToken = owner.refreshToken;
+      yt.tokenExpiresAt = owner.tokenExpiresAt;
+      user.youtube = yt;
+    }
+  }
+
   if (!yt.accessToken && !yt.refreshToken) {
     const err = new Error('YouTube is not connected');
     err.statusCode = 400;
