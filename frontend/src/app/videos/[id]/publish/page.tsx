@@ -249,6 +249,16 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [source, setSource] = useState<"lesson" | "dub">("lesson");
   const [courseImageUrl, setCourseImageUrl] = useState("");
   const [courseTitle, setCourseTitle] = useState("");
+  const selectedChannel = channels.find((c) => c.id === channelId) || null;
+  const selectedChannelLanguage = (selectedChannel?.language || "")
+    .toLowerCase()
+    .split("-")[0];
+  // A video published in one language belongs on the channel of that
+  // language, so a mismatch is worth pointing out.
+  const channelLanguageMismatch =
+    Boolean(selectedChannel) &&
+    Boolean(selectedChannelLanguage) &&
+    selectedChannelLanguage !== language.toLowerCase().split("-")[0];
   const dubsForLanguage = (video?.dubs || []).filter((d) => d.language === language && d.url);
   const dubForLanguage =
     (voiceParam ? dubsForLanguage.find((d) => d.voice === voiceParam) : undefined) || dubsForLanguage[0];
@@ -414,13 +424,18 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
 
     useEffect(() => {
       load();
-      api.get<{ playlists: { id: string; title: string }[] }>("/api/videos/youtube/playlists").then((r) => {
-        if (r.success && r.data?.playlists) setPlaylists(r.data.playlists);
-      });
       api.get<{ channels: { id: string; title: string; language?: string | null }[] }>("/api/videos/youtube/channels").then((r) => {
         if (r.success && r.data?.channels) {
-          setChannels(r.data.channels);
-          setChannelId((current) => current || r.data?.channels?.[0]?.id || "");
+          const list = r.data.channels;
+          setChannels(list);
+          setChannelId((current) => {
+            if (current && list.some((c) => c.id === current)) return current;
+            // The video is published in one language, so the channel that
+            // speaks that language is the right default.
+            const wanted = language.toLowerCase().split("-")[0];
+            const match = list.find((c) => (c.language || "").toLowerCase().split("-")[0] === wanted);
+            return match?.id || list[0]?.id || "";
+          });
         }
       });
       api.get<{ connected?: boolean; channelTitle?: string | null }>("/api/auth/youtube/status").then((r) => {
@@ -430,6 +445,23 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         }
       });
   }, [id, language, toast]);
+
+  // The playlists belong to a channel, and every channel can sit on another
+  // Google account, so they have to be loaded for the selected channel.
+  useEffect(() => {
+    if (!channelId) return;
+    let cancelled = false;
+    api
+      .get<{ playlists: { id: string; title: string }[] }>(
+        `/api/videos/youtube/playlists?channelId=${encodeURIComponent(channelId)}`,
+      )
+      .then((r) => {
+        if (!cancelled && r.success && r.data?.playlists) setPlaylists(r.data.playlists);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId]);
 
   const publish = async () => {
     setPublishing(true);
@@ -585,7 +617,13 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                 <Label>YouTube channel</Label>
                 <select
                   value={channelId}
-                  onChange={(e) => setChannelId(e.target.value)}
+                  onChange={(e) => {
+                    setChannelId(e.target.value);
+                    // The playlist belongs to the channel, so the old one
+                    // cannot stay selected.
+                    setPlaylistId("");
+                    setPlaylists([]);
+                  }}
                   className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                 >
                   {channels.map((c) => (
@@ -595,6 +633,12 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                     </option>
                   ))}
                 </select>
+                {channelLanguageMismatch && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    This video is in {language}, but the selected channel publishes in{" "}
+                    {selectedChannel?.language}. Pick the channel of {language}.
+                  </p>
+                )}
                 {existingPublish?.youtubeChannelTitle && (
                   <p className="text-xs text-muted-foreground">
                     Last published channel: {existingPublish.youtubeChannelTitle}
@@ -636,7 +680,16 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
               </div>
               <div className="space-y-2">
                 <Label>Destination channel</Label>
-                <Input value={ytConnected ? ytChannelTitle || "Connected channel" : "Not connected"} readOnly />
+                <Input
+                  value={
+                    !ytConnected
+                      ? "Not connected"
+                      : selectedChannel
+                        ? `${selectedChannel.title}${selectedChannel.language ? ` — ${selectedChannel.language}` : ""}`
+                        : ytChannelTitle || "Connected channel"
+                  }
+                  readOnly
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Button onClick={publish} disabled={publishing || !ytConnected || (!dubForLanguage && !lessonForLanguage)}>

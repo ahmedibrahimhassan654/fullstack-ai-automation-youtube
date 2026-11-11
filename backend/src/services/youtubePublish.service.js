@@ -105,11 +105,14 @@ export const youtubeFetch = async (accessToken, url, options = {}) => {
   return data;
 };
 
-export const listYouTubePlaylists = async (accessToken) => {
-  const data = await youtubeFetch(
-    accessToken,
-    `${API_URL}/playlists?part=snippet&mine=true&maxResults=50`,
-  );
+export const listYouTubePlaylists = async (accessToken, channelId = null) => {
+  // The API refuses `mine` together with `channelId` ("Incompatible
+  // parameters specified in the request"), so a channel-scoped request has
+  // to use `channelId` on its own.
+  const query = channelId
+    ? `part=snippet&channelId=${encodeURIComponent(channelId)}&maxResults=50`
+    : `part=snippet&mine=true&maxResults=50`;
+  const data = await youtubeFetch(accessToken, `${API_URL}/playlists?${query}`);
   return (data.items || []).map((item) => ({
     id: item.id,
     title: item.snippet?.title || 'Untitled playlist',

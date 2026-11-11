@@ -1,5 +1,9 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 const YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3";
+// Every connected account keeps its own tokens, because the channel a video
+// is published to can live on another Google account than the default one.
+const YOUTUBE_TOKEN_FIELDS =
+  "+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken";
 import Video from "../models/Video.js";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
@@ -1339,9 +1343,12 @@ export const listElevenLabsVoices = asyncHandler(async (req, res) => {
 });
 
 export const listYouTubePlaylists = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
-  const accessToken = await getValidYouTubeAccessToken(user);
-  const playlists = await fetchYouTubePlaylists(accessToken);
+  const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
+  // The playlists belong to a channel, and every channel can sit on another
+  // Google account, so the request has to say which channel it asks for.
+  const channelId = String(req.query.channelId || "").trim();
+  const accessToken = await getValidYouTubeAccessToken(user, channelId || null);
+  const playlists = await fetchYouTubePlaylists(accessToken, channelId || null);
   res.status(200).json({ success: true, data: { playlists } });
 });
 
@@ -1445,8 +1452,12 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     }
   }
 
-  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
-  const accessToken = await getValidYouTubeAccessToken(user);
+  const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
+  const channelId = req.body?.channelId ? String(req.body.channelId).trim() : (lesson.youtubeChannelId || null);
+  // The token belongs to a Google account, not to a channel. The upload has
+  // to run with the account that owns the target channel, otherwise a video
+  // picked for another language lands on the default channel instead.
+  const accessToken = await getValidYouTubeAccessToken(user, channelId || null);
 
   const title = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
   const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
@@ -1456,7 +1467,6 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
   const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
   const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || null);
-  const channelId = req.body?.channelId ? String(req.body.channelId).trim() : (lesson.youtubeChannelId || null);
 
   const channelRes = await youtubeFetch(accessToken, `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`);
   const channels = channelRes.items || [];
@@ -1572,9 +1582,17 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 });
 
 export const listYouTubeComments = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
-  const accessToken = await getValidYouTubeAccessToken(user);
-  const comments = await fetchYouTubeComments(accessToken, req.params.youtubeVideoId);
+  const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
+  const youtubeVideoId = String(req.params.youtubeVideoId || "").trim();
+  // The comments belong to the channel that published the video, and that
+  // channel can sit on another Google account.
+  const owner = await Video.findOne({ "lessonVideos.youtubeVideoId": youtubeVideoId })
+    .select("lessonVideos")
+    .lean();
+  const channelId =
+    owner?.lessonVideos?.find((lesson) => lesson.youtubeVideoId === youtubeVideoId)?.youtubeChannelId || null;
+  const accessToken = await getValidYouTubeAccessToken(user, channelId);
+  const comments = await fetchYouTubeComments(accessToken, youtubeVideoId);
   res.status(200).json({ success: true, data: { comments } });
 });
 
@@ -1585,8 +1603,10 @@ export const replyYouTubeComment = asyncHandler(async (req, res) => {
     err.statusCode = 400;
     throw err;
   }
-  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
-  const accessToken = await getValidYouTubeAccessToken(user);
+  const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
+  // Only the channel that owns the video may reply to its comments.
+  const channelId = String(req.body?.channelId || "").trim() || null;
+  const accessToken = await getValidYouTubeAccessToken(user, channelId);
   const result = await replyToYouTubeComment(accessToken, req.params.commentId, text);
   res.status(200).json({ success: true, data: { comment: result } });
 });
@@ -1798,24 +1818,60 @@ export const listEdgeVoices = asyncHandler(async (req, res) => {
 });
 
 export const listYouTubeChannels = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).select("+youtube.accessToken +youtube.refreshToken");
-  const accessToken = await getValidYouTubeAccessToken(user);
-  const channelsRes = await youtubeFetch(
-    accessToken,
-    `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`,
-  );
-  // Remember the language the user picked for each channel so the publish
-  // form can show it next to the channel name.
-  const known = new Map();
-  for (const channel of user.youtube?.channels || []) {
-    known.set(channel.channelId, channel.language || null);
+  const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
+
+  // Every connected Google account, because each account manages its own
+  // channels and its own playlists. The active connection is listed first so
+  // it keeps its place when nothing else matches.
+  const accounts = [];
+  const seenAccounts = new Set();
+  for (const account of [user.youtube, ...(user.youtubeAccounts || [])]) {
+    if (!account || (!account.accessToken && !account.refreshToken)) continue;
+    const key = String(account.channelId || account.refreshToken || "");
+    if (!key || seenAccounts.has(key)) continue;
+    seenAccounts.add(key);
+    accounts.push(account);
   }
-  const channels = (channelsRes.items || []).map((item) => ({
-    id: item.id,
-    title: item.snippet?.title || item.id,
-    thumbnailUrl: item.snippet?.thumbnails?.default?.url || null,
-    language: known.get(item.id) || null,
-  }));
+
+  // The language the user assigned to each channel.
+  const languages = new Map();
+  for (const account of [user.youtube, ...(user.youtubeAccounts || [])]) {
+    for (const channel of account?.channels || []) {
+      if (channel.channelId && channel.language) {
+        languages.set(channel.channelId, channel.language);
+      }
+    }
+  }
+
+  const channels = [];
+  const seenChannels = new Set();
+  for (const account of accounts) {
+    const primaryChannelId = account.channelId || account.channels?.[0]?.channelId || null;
+    const accessToken = await getValidYouTubeAccessToken(user, primaryChannelId);
+    try {
+      const channelsRes = await youtubeFetch(
+        accessToken,
+        `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`,
+      );
+      for (const item of channelsRes.items || []) {
+        if (!item.id || seenChannels.has(item.id)) continue;
+        seenChannels.add(item.id);
+        channels.push({
+          id: item.id,
+          title: item.snippet?.title || item.id,
+          thumbnailUrl: item.snippet?.thumbnails?.default?.url || null,
+          language: languages.get(item.id) || null,
+        });
+      }
+    } catch (error) {
+      // One broken connection must not hide the channels of the other ones.
+      console.warn(
+        "[youtube] could not list the channels of an account:",
+        error?.message || error,
+      );
+    }
+  }
+
   res.status(200).json({ success: true, message: "YouTube channels", data: { channels } });
 });
 

@@ -37,6 +37,7 @@ type LessonVideo = {
   subtitlesUrl?: string | null;
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
+  youtubeChannelId?: string | null;
 };
 
 export default function LessonVideoCard({ videoId, lesson }: { videoId: string; lesson: LessonVideo }) {
@@ -45,6 +46,8 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState("");
+  const [channels, setChannels] = useState<{ id: string; title: string; language?: string | null }[]>([]);
+  const [channelId, setChannelId] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [comments, setComments] = useState<any[]>([]);
   const [loadingComments, setLoadingComments] = useState(false);
@@ -75,13 +78,43 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
   };
 
   useEffect(() => {
-    api.get<{ playlists: { id: string; title: string }[] }>("/api/videos/youtube/playlists").then((r) => {
-      if (r.success && r.data?.playlists) setPlaylists(r.data.playlists);
+    api.get<{ channels: { id: string; title: string; language?: string | null }[] }>("/api/videos/youtube/channels").then((r) => {
+      if (!r.success || !r.data?.channels) return;
+      const list = r.data.channels;
+      setChannels(list);
+      setChannelId((current) => {
+        if (current && list.some((c) => c.id === current)) return current;
+        if (lesson.youtubeChannelId && list.some((c) => c.id === lesson.youtubeChannelId)) {
+          return lesson.youtubeChannelId;
+        }
+        // The lesson is in one language, so the channel of that language is
+        // the right default.
+        const wanted = lesson.language.toLowerCase().split("-")[0];
+        const match = list.find((c) => (c.language || "").toLowerCase().split("-")[0] === wanted);
+        return match?.id || list[0]?.id || "";
+      });
     });
     api.get<{ connected?: boolean }>("/api/auth/youtube/status").then((r) => {
       if (r.success) setYtConnected(Boolean(r.data?.connected));
     });
-  }, []);
+  }, [lesson.language, lesson.youtubeChannelId]);
+
+  // The playlists belong to a channel, and every channel can sit on another
+  // Google account, so they have to be loaded for the selected channel.
+  useEffect(() => {
+    if (!channelId) return;
+    let cancelled = false;
+    api
+      .get<{ playlists: { id: string; title: string }[] }>(
+        `/api/videos/youtube/playlists?channelId=${encodeURIComponent(channelId)}`,
+      )
+      .then((r) => {
+        if (!cancelled && r.success && r.data?.playlists) setPlaylists(r.data.playlists);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId]);
 
   const publishToYouTube = async () => {
     setPublishing(true);
@@ -89,6 +122,7 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
       `/api/videos/${videoId}/lessons/${lesson.language}/publish`,
       {
         source: "lesson",
+        channelId: channelId || undefined,
         playlistId: selectedPlaylist || undefined,
         title: `${lesson.language.toUpperCase()} lesson: ${lesson.script?.slice(0, 60) || ""}`.trim(),
       },
@@ -113,7 +147,10 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
 
   const sendReply = async (commentId: string) => {
     setReplyingId(commentId);
-    const res = await api.post(`/api/videos/youtube/comments/${commentId}/reply`, { text: replyText });
+    const res = await api.post(`/api/videos/youtube/comments/${commentId}/reply`, {
+      text: replyText,
+      channelId: channelId || lesson.youtubeChannelId || undefined,
+    });
     if (res.success) {
       setReplyText("");
       await loadComments();
@@ -158,6 +195,24 @@ export default function LessonVideoCard({ videoId, lesson }: { videoId: string; 
         <div className="flex flex-wrap items-center gap-2">
           {ytConnected ? (
             <>
+              <select
+                value={channelId}
+                onChange={(e) => {
+                  setChannelId(e.target.value);
+                  // The playlist belongs to the channel, so the old one
+                  // cannot stay selected.
+                  setSelectedPlaylist("");
+                  setPlaylists([]);
+                }}
+                className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              >
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                    {c.language ? ` — ${c.language}` : ""}
+                  </option>
+                ))}
+              </select>
               <select
                 value={selectedPlaylist}
                 onChange={(e) => setSelectedPlaylist(e.target.value)}
