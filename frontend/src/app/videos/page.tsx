@@ -195,21 +195,21 @@ export default function DashboardPage() {
                 <div className="-mx-4 overflow-x-auto sm:-mx-6">
                   <Table>
                     <TableHeader>
-                      <TableRow>
-                        <TableHead>Title</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Stage</TableHead>
-                        <TableHead>Progress</TableHead>
-                        <TableHead>Languages</TableHead>
-                        <TableHead>YouTube (lesson links)</TableHead>
-                        <TableHead>Actions</TableHead>
+                      <TableRow className="border-b">
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Title</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Stage</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Progress</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Languages</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">YouTube (lesson links)</TableHead>
+                        <TableHead className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                     {videos.map((v) => (
-                      <TableRow key={v._id}>
-                        <TableCell className="font-medium">{v.title}</TableCell>
-                        <TableCell>
+                      <TableRow key={v._id} className="hover:bg-muted/40">
+                        <TableCell className="px-4 py-3 align-middle font-medium">{v.title}</TableCell>
+                        <TableCell className="px-4 py-3 align-middle">
                           <Badge
                             variant={
                               v.status === 'completed'
@@ -222,17 +222,17 @@ export default function DashboardPage() {
                             {v.status}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
+                        <TableCell className="px-4 py-3 text-xs text-muted-foreground align-middle">
                           {STAGE_LABEL[v.currentStage || ''] || v.currentStage || '—'}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="px-4 py-3 align-middle">
                           {v.status === 'processing' ? (
                             <Progress value={v.progress || 0} className="h-2 w-24" />
                           ) : (
                             '—'
                           )}
                         </TableCell>
-                        <TableCell className="text-xs space-y-1">
+                        <TableCell className="px-4 py-3 text-xs text-muted-foreground align-middle space-y-1">
                           <div>
                             Original: {v.transcriptLanguage || v.originalLanguage || '—'}
                           </div>
@@ -253,7 +253,7 @@ export default function DashboardPage() {
                             <div>Dubs: {v.dubs.map((d) => d.language).join(', ')}</div>
                           ) : null}
                         </TableCell>
-                        <TableCell className="text-xs space-y-1">
+                        <TableCell className="px-4 py-3 text-xs text-muted-foreground align-middle space-y-1">
                           {(v.lessonVideos || [])
                             .filter((l) => l.youtubeUrl || l.youtubeVideoId)
                             .map((l, i) => (
@@ -270,7 +270,8 @@ export default function DashboardPage() {
                             ))}
                           {!(v.lessonVideos || []).some((l) => l.youtubeUrl || l.youtubeVideoId) && "—"}
                         </TableCell>
-                        <TableCell className="space-x-2">
+                        <TableCell className="px-4 py-3 align-middle">
+                          <div className="flex flex-wrap items-center gap-2">
                           <a href={`/videos/${v._id}`} className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
                             Details
                           </a>
@@ -308,6 +309,7 @@ export default function DashboardPage() {
                               !
                             </span>
                           )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
