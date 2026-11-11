@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
+import { AppShell } from "@/components/app-shell";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
 import { Loader2 } from "lucide-react";
@@ -329,17 +330,12 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-6xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">Video details</h1>
-            <a href="/dashboard" className="text-sm underline">
-              Back
-            </a>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl p-4 space-y-6">
+      <AppShell
+        title="Video details"
+        description={video?.title || undefined}
+        contentClassName="max-w-6xl"
+      >
+        <div className="space-y-6">
           {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {!loading && !video && <p className="text-sm text-destructive">Video not found.</p>}
 
@@ -964,8 +960,8 @@ export default function VideoDetailClient({ id }: { id: string }) {
               )}
             </>
           )}
-        </main>
-      </div>
+        </div>
+      </AppShell>
     </AuthGuard>
   );
 }

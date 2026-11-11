@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
+import { AppShell } from "@/components/app-shell";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,17 +109,8 @@ export default function NewVideoPage() {
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-3xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">Upload Video</h1>
-            <a href="/dashboard" className="text-sm underline">
-              Back
-            </a>
-          </div>
-        </header>
-        <main className="mx-auto max-w-3xl p-4">
-          <Card>
+      <AppShell title="Upload Video" description="Add a new source video to process">
+        <Card>
             <CardHeader>
               <CardTitle>Manual video upload</CardTitle>
               <CardDescription>
@@ -254,8 +246,7 @@ export default function NewVideoPage() {
               </form>
             </CardContent>
           </Card>
-        </main>
-      </div>
+        </AppShell>
     </AuthGuard>
   );
 }

@@ -5,7 +5,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useToast } from '@/components/toast-provider';
 import { AuthGuard } from '@/components/auth-guard';
-import { useRouter } from 'next/navigation';
+import { AppShell } from '@/components/app-shell';
 import { api, API_BASE } from '@/lib/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -55,9 +55,8 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export default function DashboardPage() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const toast = useToast();
-  const router = useRouter();
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const load = async () => {
@@ -130,51 +129,29 @@ export default function DashboardPage() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-      toast.success("Logged out successfully.");
-      router.push("/login");
-    } catch (err) {
-      toast.error("Logout failed. Please try again.");
-    }
-  };
-
   const processingVideos = videos.filter((v) => v.status === 'processing');
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-6xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">AI YouTube Automation</h1>
-            <nav className="flex items-center gap-4">
-              <Link href="/settings" className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
-                Settings
-              </Link>
-              {user?.role === 'admin' && (
-                <Link href="/admin" className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
-                  Admin
-                </Link>
-              )}
-              <Button variant="outline" size="sm" onClick={handleLogout}>
-                Log out
-              </Button>
-            </nav>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl p-4 space-y-6">
-          <div className="flex items-center justify-between">
+      <AppShell
+        title="Dashboard"
+        description="Your videos and processing status"
+        actions={
+          <>
+            <Badge variant="secondary" className="hidden capitalize sm:inline-flex">
+              {user?.subscription?.plan || 'free'}
+            </Badge>
+            <Link href="/videos/new" className={cn(buttonVariants())}>
+              New upload
+            </Link>
+          </>
+        }
+      >
+        <div className="space-y-6">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="text-2xl font-bold">Welcome, {user?.name}</h2>
               <p className="text-muted-foreground">Your videos and processing status</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">{user?.subscription?.plan || 'free'}</Badge>
-              <Link href="/videos/new" className={cn(buttonVariants())}>
-                New upload
-              </Link>
             </div>
           </div>
 
@@ -222,19 +199,20 @@ export default function DashboardPage() {
               ) : videos.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No videos yet. Upload your first video.</p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Title</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Stage</TableHead>
-                      <TableHead>Progress</TableHead>
-                      <TableHead>Languages</TableHead>
+                <div className="-mx-4 overflow-x-auto sm:-mx-6">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Title</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Stage</TableHead>
+                        <TableHead>Progress</TableHead>
+                        <TableHead>Languages</TableHead>
                         <TableHead>YouTube (lesson links)</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                     {videos.map((v) => (
                       <TableRow key={v._id}>
                         <TableCell className="font-medium">{v.title}</TableCell>
@@ -342,11 +320,12 @@ export default function DashboardPage() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               )}
             </CardContent>
           </Card>
-        </main>
-      </div>
+        </div>
+      </AppShell>
     </AuthGuard>
   );
 }

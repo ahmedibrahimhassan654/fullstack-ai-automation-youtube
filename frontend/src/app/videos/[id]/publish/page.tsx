@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AuthGuard } from "@/components/auth-guard";
+import { AppShell } from "@/components/app-shell";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -338,17 +339,17 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-3xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">Prepare YouTube Publish</h1>
-            <button onClick={() => router.push(`/videos/${id}`)} className="text-sm underline">
-              Back
-            </button>
-          </div>
-        </header>
-        <main className="mx-auto max-w-3xl p-4">
-          <Card>
+      <AppShell
+        title="Prepare YouTube Publish"
+        description="Review the title, description and thumbnail before publishing"
+        contentClassName="max-w-3xl"
+        actions={
+          <Button variant="outline" size="sm" onClick={() => router.push(`/videos/${id}`)}>
+            Back to video
+          </Button>
+        }
+      >
+        <Card>
             <CardHeader>
               <CardTitle>Review before publishing</CardTitle>
               <CardDescription>
@@ -503,8 +504,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
               </div>
             </CardContent>
           </Card>
-        </main>
-      </div>
+      </AppShell>
     </AuthGuard>
   );
 }

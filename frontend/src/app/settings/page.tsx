@@ -2,12 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { AuthGuard } from '@/components/auth-guard';
+import { AppShell } from '@/components/app-shell';
 import { useAuth } from '@/lib/auth-context';
 import { useToast } from '@/components/toast-provider';
-import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import Link from 'next/link';
-import { Button, buttonVariants } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -23,9 +22,8 @@ type YtStatus = {
 };
 
 export default function SettingsPage() {
-  const { user, refreshUser, logout } = useAuth();
+  const { user, refreshUser } = useAuth();
   const toast = useToast();
-  const router = useRouter();
   const [status, setStatus] = useState<YtStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectingChannel, setSelectingChannel] = useState(false);
@@ -86,31 +84,8 @@ export default function SettingsPage() {
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-3xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">Settings</h1>
-            <Link href="/dashboard" className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}>
-              Back
-            </Link>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={async () => {
-                try {
-                  await logout();
-                  toast.success("Logged out successfully.");
-                  router.push("/login");
-                } catch {
-                  toast.error("Logout failed. Please try again.");
-                }
-              }}
-            >
-              Log out
-            </Button>
-          </div>
-        </header>
-        <main className="mx-auto max-w-3xl p-4 space-y-6">
+      <AppShell title="Settings" description="YouTube channel and account">
+        <div className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle>YouTube Channel</CardTitle>
@@ -186,8 +161,8 @@ export default function SettingsPage() {
               <p><span className="font-medium">Plan:</span> {user?.subscription?.plan}</p>
             </CardContent>
           </Card>
-        </main>
-      </div>
+        </div>
+      </AppShell>
     </AuthGuard>
   );
 }

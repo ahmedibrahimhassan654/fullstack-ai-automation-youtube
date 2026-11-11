@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { AdminGuard } from '@/components/auth-guard';
+import { AppShell } from '@/components/app-shell';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -83,15 +84,8 @@ export default function AdminPage() {
 
   return (
     <AdminGuard>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-6xl items-center justify-between p-4">
-            <h1 className="text-lg font-semibold">Admin Dashboard</h1>
-            <a href="/dashboard" className="text-sm underline">Back to app</a>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl p-4 space-y-6">
+      <AppShell title="Admin Dashboard" description="Platform overview and user management">
+        <div className="space-y-6">
           {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
           {stats && (
@@ -218,8 +212,8 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
           </Tabs>
-        </main>
-      </div>
+        </div>
+      </AppShell>
     </AdminGuard>
   );
 }
