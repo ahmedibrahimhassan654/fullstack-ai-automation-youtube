@@ -3,39 +3,54 @@ import { env } from '../config/env.js';
 const UPLOAD_URL = 'https://www.googleapis.com/upload/youtube/v3/videos';
 const API_URL = 'https://www.googleapis.com/youtube/v3';
 
-export const getValidYouTubeAccessToken = async (user) => {
+export const getValidYouTubeAccessToken = async (user, channelId = null) => {
   const yt = user.youtube || {};
 
-  // The tokens belong to the Google account, not to a single channel. If the
-  // active connection lost them, fall back to the account that owns the
-  // active channel so publishing keeps working.
-  if (!yt.accessToken && !yt.refreshToken) {
-    const owner = (user.youtubeAccounts || []).find((account) =>
+  // The tokens belong to a Google account, not to a channel. When a channel
+  // is given, use the account that owns it, so a course bound to another
+  // channel is published to that channel.
+  const owner = channelId
+    ? (user.youtubeAccounts || []).find(
+        (account) =>
+          account.channelId === channelId ||
+          (account.channels || []).some(
+            (channel) => channel.channelId === channelId,
+          ),
+      ) || null
+    : null;
+
+  let accessToken = owner ? owner.accessToken : yt.accessToken;
+  let refreshToken = owner ? owner.refreshToken : yt.refreshToken;
+  let tokenExpiresAt = owner ? owner.tokenExpiresAt : yt.tokenExpiresAt;
+
+  // The active connection may have lost its tokens while the account still
+  // has them.
+  if (!accessToken && !refreshToken) {
+    const fallback = (user.youtubeAccounts || []).find((account) =>
       (account.channels || []).some(
         (channel) => channel.channelId === yt.channelId,
       ),
     );
-    if (owner?.accessToken || owner?.refreshToken) {
-      yt.accessToken = owner.accessToken;
-      yt.refreshToken = owner.refreshToken;
-      yt.tokenExpiresAt = owner.tokenExpiresAt;
-      user.youtube = yt;
+    if (fallback?.accessToken || fallback?.refreshToken) {
+      accessToken = fallback.accessToken;
+      refreshToken = fallback.refreshToken;
+      tokenExpiresAt = fallback.tokenExpiresAt;
     }
   }
 
-  if (!yt.accessToken && !yt.refreshToken) {
+  if (!accessToken && !refreshToken) {
     const err = new Error('YouTube is not connected');
     err.statusCode = 400;
     throw err;
   }
 
-  const expiresAt = yt.tokenExpiresAt ? new Date(yt.tokenExpiresAt).getTime() : 0;
-  if (yt.accessToken && expiresAt && expiresAt > Date.now() + 60_000) {
-    return yt.accessToken;
+  const expiresAt = tokenExpiresAt ? new Date(tokenExpiresAt).getTime() : 0;
+  if (accessToken && expiresAt && expiresAt > Date.now() + 60_000) {
+    return accessToken;
   }
 
-  if (!yt.refreshToken) {
-    if (yt.accessToken) return yt.accessToken;
+  if (!refreshToken) {
+    if (accessToken) return accessToken;
     const err = new Error('YouTube is not connected');
     err.statusCode = 400;
     throw err;
@@ -44,7 +59,7 @@ export const getValidYouTubeAccessToken = async (user) => {
   const body = new URLSearchParams({
     client_id: env.youtubeClientId,
     client_secret: env.youtubeClientSecret,
-    refresh_token: yt.refreshToken,
+    refresh_token: refreshToken,
     grant_type: 'refresh_token',
   });
 
@@ -60,9 +75,15 @@ export const getValidYouTubeAccessToken = async (user) => {
     throw err;
   }
 
-  user.youtube = user.youtube || {};
-  user.youtube.accessToken = data.access_token;
-  user.youtube.tokenExpiresAt = new Date(Date.now() + (data.expires_in || 3600) * 1000);
+  const newExpiry = new Date(Date.now() + (data.expires_in || 3600) * 1000);
+  if (owner) {
+    owner.accessToken = data.access_token;
+    owner.tokenExpiresAt = newExpiry;
+  } else {
+    user.youtube = user.youtube || {};
+    user.youtube.accessToken = data.access_token;
+    user.youtube.tokenExpiresAt = newExpiry;
+  }
   await user.save();
   return data.access_token;
 };
@@ -93,6 +114,30 @@ export const listYouTubePlaylists = async (accessToken) => {
     id: item.id,
     title: item.snippet?.title || 'Untitled playlist',
   }));
+};
+
+/** Creates a playlist on the channel the access token belongs to. */
+export const createYouTubePlaylist = async (
+  accessToken,
+  { title, description = '', visibility = 'private' } = {},
+) => {
+  const data = await youtubeFetch(accessToken, `${API_URL}/playlists?part=snippet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      snippet: {
+        title: String(title || 'Untitled playlist'),
+        description: String(description || ''),
+        privacyStatus: visibility,
+      },
+    }),
+  });
+
+  return {
+    id: data.id,
+    title: data.snippet?.title || title,
+    url: `https://www.youtube.com/playlist?list=${data.id}`,
+  };
 };
 
 export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) => {

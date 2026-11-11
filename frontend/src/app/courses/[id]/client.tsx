@@ -7,10 +7,14 @@ import {
   ArrowLeft,
   BookOpen,
   ExternalLink,
+  Languages,
+  ListVideo,
   Loader2,
   PlayCircle,
   Plus,
+  Radio,
   Trash2,
+  Tv,
 } from "lucide-react";
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
@@ -27,16 +31,23 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { LANGUAGES, languageLabel } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 
 type CourseVideo = {
   order: number;
+  language?: string | null;
+  youtubeVideoId?: string | null;
+  youtubeUrl?: string | null;
+  publishedAt?: string | null;
   video: {
     _id: string;
     title: string;
     status: string;
     durationSeconds?: number;
+    dubs?: { language: string; url?: string }[];
+    lessonVideos?: { language: string; source?: string; url?: string }[];
   } | null;
 };
 
@@ -45,9 +56,21 @@ type Course = {
   title: string;
   description?: string;
   language?: string;
-  createdAt?: string;
+  channelId?: string | null;
+  channelTitle?: string | null;
+  channelLanguage?: string | null;
+  playlistId?: string | null;
+  playlistTitle?: string | null;
   status?: string;
+  createdAt?: string;
   videos: CourseVideo[];
+  publishing?: {
+    status: string;
+    progress: number;
+    publishedCount: number;
+    total: number;
+    error?: string | null;
+  };
 };
 
 type VideoRow = { _id: string; title: string; status: string };
@@ -66,6 +89,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [language, setLanguage] = useState("en");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [dubbing, setDubbing] = useState(false);
 
   const load = useCallback(async () => {
     const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
@@ -90,6 +114,28 @@ export default function CourseDetailClient({ id }: { id: string }) {
       });
   }, [load]);
 
+  // Follow the publish run while it is working.
+  useEffect(() => {
+    if (course?.publishing?.status !== "processing") return;
+    const timer = setInterval(load, 2500);
+    return () => clearInterval(timer);
+  }, [course?.publishing?.status, load]);
+
+  const hasVersion = (entry: CourseVideo, lang: string) =>
+    Boolean(
+      entry.video?.dubs?.some((dub) => dub.language === lang && dub.url) ||
+        entry.video?.lessonVideos?.some(
+          (lesson) =>
+            lesson.language === lang &&
+            (lesson.source || "lesson") === "lesson" &&
+            lesson.url,
+        ),
+    );
+
+  const missing = (course?.videos || []).filter(
+    (entry) => entry.video && !hasVersion(entry, language),
+  );
+
   const saveDetails = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
@@ -105,6 +151,39 @@ export default function CourseDetailClient({ id }: { id: string }) {
       toast.error(res.message || "Failed to update the course.");
     }
     setSaving(false);
+  };
+
+  /** Dubs every lesson that has no version in the course language yet. */
+  const generateMissingDubs = async () => {
+    if (!missing.length) {
+      toast.success("Every lesson already has a version in this language.");
+      return;
+    }
+    setDubbing(true);
+    let done = 0;
+    for (const entry of missing) {
+      const res = await api.post(`/api/videos/${entry.video?._id}/dub`, {
+        language,
+      });
+      if (res.success) done += 1;
+    }
+    toast.success(
+      done === missing.length
+        ? `Started ${done} dub${done === 1 ? "" : "s"}. They appear on the lesson once ready.`
+        : `Started ${done} of ${missing.length} dubs.`,
+    );
+    setDubbing(false);
+    await load();
+  };
+
+  const publishCourse = async () => {
+    const res = await api.post(`/api/courses/${id}/publish`);
+    if (res.success) {
+      toast.success(res.message || "Publishing started.");
+      await load();
+    } else {
+      toast.error(res.message || "Failed to publish the course.");
+    }
   };
 
   const addVideo = async (videoId: string) => {
@@ -160,6 +239,8 @@ export default function CourseDetailClient({ id }: { id: string }) {
     (course?.videos || []).map((entry) => entry.video?._id).filter(Boolean) as string[],
   );
   const available = allVideos.filter((video) => !inCourse.has(video._id));
+  const publishing = course?.publishing;
+  const isPublishing = publishing?.status === "processing";
 
   return (
     <AuthGuard>
@@ -190,6 +271,95 @@ export default function CourseDetailClient({ id }: { id: string }) {
             </Card>
           ) : (
             <>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Where it is published</CardTitle>
+                  <CardDescription>
+                    The channel and playlist that hold this course.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border p-3">
+                      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        <Tv className="size-3.5" />
+                        Channel
+                      </p>
+                      <p className="mt-1 truncate text-sm font-medium">
+                        {course.channelTitle || "Not connected"}
+                      </p>
+                      {course.channelTitle && (
+                        <p className="text-xs text-muted-foreground">
+                          Publishes in {languageLabel(course.channelLanguage)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        <ListVideo className="size-3.5" />
+                        Playlist
+                      </p>
+                      <p className="mt-1 truncate text-sm font-medium">
+                        {course.playlistTitle || "Created when publishing"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        One playlist per course
+                      </p>
+                    </div>
+                  </div>
+
+                  {publishing?.status === "failed" && publishing.error && (
+                    <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+                      Last publish failed: {publishing.error}
+                    </p>
+                  )}
+
+                  {isPublishing && (
+                    <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
+                      <p className="flex items-center gap-2 text-sm font-medium">
+                        <Radio className="size-4 animate-pulse text-primary" />
+                        Publishing {publishing.publishedCount} of{" "}
+                        {publishing.total} lessons…
+                      </p>
+                      <Progress value={publishing.progress} />
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      onClick={generateMissingDubs}
+                      disabled={dubbing || isPublishing || missing.length === 0}
+                    >
+                      {dubbing ? (
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                      ) : (
+                        <Languages className="mr-2 size-4" />
+                      )}
+                      {missing.length === 0
+                        ? `All lessons ready in ${language}`
+                        : `Generate ${missing.length} ${language} dub${missing.length === 1 ? "" : "s"}`}
+                    </Button>
+                    <Button
+                      onClick={publishCourse}
+                      disabled={isPublishing || course.videos.length === 0}
+                    >
+                      {isPublishing ? (
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                      ) : (
+                        <Tv className="mr-2 size-4" />
+                      )}
+                      Publish course to YouTube
+                    </Button>
+                    <Badge
+                      variant={course.status === "published" ? "default" : "secondary"}
+                      className="ml-auto"
+                    >
+                      {course.status === "published" ? "Published" : "Draft"}
+                    </Badge>
+                  </div>
+                </CardContent>
+              </Card>
+
               <Card>
                 <CardHeader>
                   <CardTitle>Course details</CardTitle>
@@ -255,60 +425,82 @@ export default function CourseDetailClient({ id }: { id: string }) {
                     </p>
                   ) : (
                     <ol className="space-y-2">
-                      {course.videos.map((entry, index) => (
-                        <li
-                          key={entry.video?._id || index}
-                          className="flex items-center gap-3 rounded-lg border p-3"
-                        >
-                          <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold">
-                            {index + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <Link
-                              href={`/videos/${entry.video?._id}`}
-                              className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
+                      {course.videos.map((entry, index) => {
+                        const ready = hasVersion(entry, language);
+                        return (
+                          <li
+                            key={entry.video?._id || index}
+                            className="flex items-center gap-3 rounded-lg border p-3"
+                          >
+                            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold">
+                              {index + 1}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <Link
+                                href={`/videos/${entry.video?._id}`}
+                                className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
+                              >
+                                <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
+                                <span className="truncate">
+                                  {entry.video?.title || "Removed video"}
+                                </span>
+                              </Link>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-xs text-muted-foreground">
+                                  {entry.video?.status}
+                                </span>
+                                {entry.youtubeUrl ? (
+                                  <a
+                                    href={entry.youtubeUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                                  >
+                                    <ExternalLink className="size-3" />
+                                    Published
+                                  </a>
+                                ) : ready ? (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    {language} ready
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="secondary" className="text-[10px]">
+                                    needs {language} dub
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              onClick={() => move(index, -1)}
+                              disabled={index === 0 || isPublishing}
+                              aria-label="Move lesson up"
                             >
-                              <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
-                              <span className="truncate">
-                                {entry.video?.title || "Removed video"}
-                              </span>
-                            </Link>
-                            <p className="text-xs text-muted-foreground">
-                              {entry.video?.status}
-                              {entry.video?.durationSeconds
-                                ? ` • ${Math.round(entry.video.durationSeconds)}s`
-                                : ""}
-                            </p>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            onClick={() => move(index, -1)}
-                            disabled={index === 0}
-                            aria-label="Move lesson up"
-                          >
-                            ↑
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            onClick={() => move(index, 1)}
-                            disabled={index === course.videos.length - 1}
-                            aria-label="Move lesson down"
-                          >
-                            ↓
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            onClick={() => removeVideo(entry.video?._id || "")}
-                            aria-label="Remove lesson"
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </li>
-                      ))}
+                              ↑
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              onClick={() => move(index, 1)}
+                              disabled={index === course.videos.length - 1 || isPublishing}
+                              aria-label="Move lesson down"
+                            >
+                              ↓
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              onClick={() => removeVideo(entry.video?._id || "")}
+                              disabled={isPublishing}
+                              aria-label="Remove lesson"
+                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </li>
+                        );
+                      })}
                     </ol>
                   )}
 
@@ -342,46 +534,27 @@ export default function CourseDetailClient({ id }: { id: string }) {
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>Publishing</CardTitle>
-                  <CardDescription>
-                    Publish the lessons to YouTube as a playlist.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-wrap items-center gap-3">
-                  <Badge variant={course.status === "published" ? "default" : "secondary"}>
-                    {course.status === "published" ? "Published" : "Draft"}
-                  </Badge>
-                  {course.videos.length > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      {course.videos.length} lesson
-                      {course.videos.length === 1 ? "" : "s"} ready to publish.
-                    </span>
-                  )}
-                  <div className="ml-auto flex items-center gap-2">
-                    <Link
-                      href="/courses/new"
-                      className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
-                    >
-                      <ArrowLeft className="mr-1 size-4" />
-                      All courses
-                    </Link>
-                    <Button variant="destructive" size="sm" onClick={deleteCourse}>
-                      <Trash2 className="mr-1 size-4" />
-                      Delete course
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <div className="flex justify-center">
+              <div className="flex flex-wrap justify-between gap-2">
                 <Link
                   href="/videos"
                   className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
                 >
-                  <BookOpen className="mr-1 size-4" />
+                  <ArrowLeft className="mr-1 size-4" />
                   Back to videos
+                </Link>
+                <Button variant="destructive" size="sm" onClick={deleteCourse}>
+                  <Trash2 className="mr-1 size-4" />
+                  Delete course
+                </Button>
+              </div>
+
+              <div className="flex justify-center">
+                <Link
+                  href="/courses/new"
+                  className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
+                >
+                  <BookOpen className="mr-1 size-4" />
+                  All courses
                 </Link>
               </div>
             </>

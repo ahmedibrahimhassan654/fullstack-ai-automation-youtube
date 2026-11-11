@@ -11,6 +11,13 @@ const courseVideoSchema = new mongoose.Schema(
     },
     order: { type: Number, default: 0 },
     addedAt: { type: Date, default: Date.now },
+    // The language of the lesson inside this course.
+    language: { type: String, default: null },
+    // The YouTube video the lesson was published as.
+    youtubeVideoId: { type: String, default: null },
+    youtubeUrl: { type: String, default: null },
+    youtubePlaylistItemId: { type: String, default: null },
+    publishedAt: { type: Date, default: null },
   },
   { _id: false }
 );
@@ -27,6 +34,15 @@ const courseSchema = new mongoose.Schema(
     // The language the course is taught in. It decides the default language
     // of the videos inside it.
     language: { type: String, default: 'en' },
+    // The YouTube channel the course is published to. The channel carries a
+    // language, so the course language follows it.
+    channelId: { type: String, default: null },
+    channelTitle: { type: String, default: null },
+    // The language the channel publishes in, remembered with the course.
+    channelLanguage: { type: String, default: null },
+    // The playlist on that channel holding the lessons.
+    playlistId: { type: String, default: null },
+    playlistTitle: { type: String, default: null },
     thumbnailUrl: { type: String, default: null },
     owner: {
       type: mongoose.Schema.Types.ObjectId,
@@ -40,6 +56,20 @@ const courseSchema = new mongoose.Schema(
       type: String,
       enum: COURSE_STATUSES,
       default: 'draft',
+    },
+    // Progress of the publish run.
+    publishing: {
+      status: {
+        type: String,
+        enum: ['idle', 'processing', 'completed', 'failed'],
+        default: 'idle',
+      },
+      progress: { type: Number, default: 0 },
+      publishedCount: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+      error: { type: String, default: null },
+      startedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null },
     },
     // The YouTube playlist the course was published as.
     youtubePlaylistId: { type: String, default: null },
