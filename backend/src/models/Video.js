@@ -119,6 +119,18 @@ const lessonVideoSchema = new mongoose.Schema(
     youtubeTitle: { type: String, default: null },
     youtubeDescription: { type: String, default: null },
     youtubeTags: { type: [String], default: [] },
+    // YouTube Automation Form checklist fields for this language.
+    youtubeMadeForKids: { type: Boolean, default: false },
+    youtubeSelfDeclaredAiContent: { type: Boolean, default: false },
+    youtubePaidPromotion: { type: Boolean, default: false },
+    youtubeAllowEmbedding: { type: Boolean, default: true },
+    youtubePublishToSubs: { type: Boolean, default: true },
+    youtubeShortsRemixing: { type: String, enum: ['allow', 'disallow'], default: 'allow' },
+    youtubeAutomaticChapters: { type: Boolean, default: true },
+    youtubeVideoLanguage: { type: String, default: null },
+    youtubeTitleDescriptionLanguage: { type: String, default: null },
+    youtubeRecordingDate: { type: String, default: null },
+    youtubeLocation: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

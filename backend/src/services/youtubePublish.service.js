@@ -160,9 +160,12 @@ export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) =>
           description: metadata.description,
           tags: metadata.tags || [],
           categoryId: metadata.categoryId || '27',
+          defaultAudioLanguage: metadata.videoLanguage || undefined,
+          defaultCaptionLanguage: metadata.videoLanguage || undefined,
         },
         status: {
           privacyStatus: metadata.visibility || 'private',
+          selfDeclaredMadeForKids: metadata.madeForKids ?? false,
         },
       }),
     },
@@ -261,9 +264,12 @@ export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) 
       description: metadata.description,
       tags: metadata.tags || [],
       categoryId: metadata.categoryId || '27',
+      defaultAudioLanguage: metadata.videoLanguage || undefined,
+      defaultCaptionLanguage: metadata.videoLanguage || undefined,
     },
     status: {
       privacyStatus: metadata.visibility || 'private',
+      selfDeclaredMadeForKids: metadata.madeForKids ?? false,
     },
   };
   return youtubeFetch(

@@ -1467,6 +1467,18 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
   const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
   const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || null);
+  // The YouTube Automation Form checklist fields for this language.
+  const madeForKids = req.body?.madeForKids === undefined ? Boolean(lesson.youtubeMadeForKids) : Boolean(req.body.madeForKids);
+  const selfDeclaredAiContent = req.body?.selfDeclaredAiContent === undefined ? Boolean(lesson.youtubeSelfDeclaredAiContent) : Boolean(req.body.selfDeclaredAiContent);
+  const paidPromotion = req.body?.paidPromotion === undefined ? Boolean(lesson.youtubePaidPromotion) : Boolean(req.body.paidPromotion);
+  const allowEmbedding = req.body?.allowEmbedding === undefined ? Boolean(lesson.youtubeAllowEmbedding) : Boolean(req.body.allowEmbedding);
+  const publishToSubs = req.body?.publishToSubs === undefined ? Boolean(lesson.youtubePublishToSubs) : Boolean(req.body.publishToSubs);
+  const shortsRemixing = req.body?.shortsRemixing === "disallow" ? "disallow" : String(req.body?.shortsRemixing || lesson.youtubeShortsRemixing || "allow");
+  const automaticChapters = req.body?.automaticChapters === undefined ? Boolean(lesson.youtubeAutomaticChapters) : Boolean(req.body.automaticChapters);
+  const videoLanguage = String(req.body?.videoLanguage || lesson.youtubeVideoLanguage || language || "en");
+  const titleDescriptionLanguage = String(req.body?.titleDescriptionLanguage || lesson.youtubeTitleDescriptionLanguage || language || "en");
+  const recordingDate = req.body?.recordingDate ? String(req.body.recordingDate) : (lesson.youtubeRecordingDate ? String(lesson.youtubeRecordingDate) : null);
+  const location = String(req.body?.location || lesson.youtubeLocation || "");
 
   const channelRes = await youtubeFetch(accessToken, `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`);
   const channels = channelRes.items || [];
@@ -1498,6 +1510,8 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
         tags,
         categoryId,
         visibility,
+        madeForKids,
+        videoLanguage,
         mimeType: "video/mp4",
       },
       mediaBuffer,
@@ -1510,6 +1524,8 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       tags,
       categoryId,
       visibility,
+      madeForKids,
+      videoLanguage,
     });
   }
 
@@ -1561,6 +1577,17 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   lesson.youtubeTitle = title;
   lesson.youtubeDescription = description;
   lesson.youtubeTags = tags;
+  lesson.youtubeMadeForKids = madeForKids;
+  lesson.youtubeSelfDeclaredAiContent = selfDeclaredAiContent;
+  lesson.youtubePaidPromotion = paidPromotion;
+  lesson.youtubeAllowEmbedding = allowEmbedding;
+  lesson.youtubePublishToSubs = publishToSubs;
+  lesson.youtubeShortsRemixing = shortsRemixing;
+  lesson.youtubeAutomaticChapters = automaticChapters;
+  lesson.youtubeVideoLanguage = videoLanguage;
+  lesson.youtubeTitleDescriptionLanguage = titleDescriptionLanguage;
+  lesson.youtubeRecordingDate = recordingDate;
+  lesson.youtubeLocation = location;
   lesson.youtubeChannelId = channel?.id || lesson.youtubeChannelId;
   lesson.youtubeChannelTitle = channel?.snippet?.title || lesson.youtubeChannelTitle;
   await video.save();

@@ -95,11 +95,83 @@ async function drawThumbnailBackground(
   return false;
 }
 
-async function createCanvasThumbnailDataUrl(
-  title: string,
-  language: string,
-  courseImageUrl?: string | null,
-): Promise<string> {
+/** The languages the Automation Form lets the video be declared in. */
+const VIDEO_LANGUAGE_OPTIONS = [
+  { value: "es", label: "Spanish" },
+  { value: "en", label: "English" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "ru", label: "Russian" },
+  { value: "ar", label: "Arabic" },
+  { value: "hi", label: "Hindi" },
+  { value: "zh", label: "Chinese" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "tr", label: "Turkish" },
+  { value: "nl", label: "Dutch" },
+  { value: "pl", label: "Polish" },
+];
+
+type ThumbnailOptions = {
+  title: string;
+  language: string;
+  courseImageUrl?: string | null;
+  lessonNumber?: number | null;
+};
+
+/** The word "Lesson" in the language the lesson is published in. */
+const LESSON_WORD: Record<string, string> = {
+  en: "Lesson",
+  es: "Lección",
+  fr: "Leçon",
+  de: "Lektion",
+  it: "Lezione",
+  pt: "Lição",
+  ru: "Урок",
+  ar: "الدرس",
+  hi: "पाठ",
+  tr: "Ders",
+  nl: "Les",
+  pl: "Lekcja",
+};
+
+/** The badge that shows the number of the lesson, written in its language. */
+function lessonBadgeText(language: string, number: number) {
+  const code = String(language || "en").toLowerCase().split("-")[0];
+  // These languages put the number inside the word.
+  if (code === "zh") return `第${number}课`;
+  if (code === "ja") return `第${number}節`;
+  if (code === "ko") return `${number}강`;
+  const word = LESSON_WORD[code] || LESSON_WORD.en;
+  return `${word} ${number}`;
+}
+
+/** Draws a rounded rectangle, with a fallback for older browsers. */
+function fillRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(x, y, width, height, radius);
+  } else {
+    ctx.rect(x, y, width, height);
+  }
+  ctx.fill();
+}
+
+async function createCanvasThumbnailDataUrl({
+  title,
+  language,
+  courseImageUrl,
+  lessonNumber,
+}: ThumbnailOptions): Promise<string> {
   const canvas = document.createElement("canvas");
   canvas.width = 1280;
   canvas.height = 720;
@@ -133,27 +205,42 @@ async function createCanvasThumbnailDataUrl(
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#ffffff";
 
-  const safeTitle = (title || "Lesson").slice(0, 90);
-  const FONT = (size: number) =>
-    `bold ${size}px 'Segoe UI', 'Tahoma', sans-serif`;
+  const safeTitle = (title || "Lesson").slice(0, 140);
+  const FONT = (size: number) => `bold ${size}px 'Segoe UI', 'Tahoma', sans-serif`;
 
-  // Shrink the title until the widest line fits, so it never runs off the
-  // edges of the thumbnail.
+  // The title takes two lines at most. A third line would push the badge
+  // out of the panel, so a longer title is shrunk and then cut.
+  const MAX_LINES = 2;
   let fontSize = 74;
-  ctx.font = FONT(fontSize);
-  let lines = wrapCanvasText(ctx, safeTitle, 1080).slice(0, 3);
-  while (
-    lines.some((line) => ctx.measureText(line).width > 1080) &&
-    fontSize > 38
-  ) {
-    fontSize -= 4;
+  let lines: string[] = [];
+  let cut = false;
+  for (;;) {
     ctx.font = FONT(fontSize);
-    lines = wrapCanvasText(ctx, safeTitle, 1080).slice(0, 3);
+    const wrapped = wrapCanvasText(ctx, safeTitle, 1080);
+    const tooWide = wrapped.some((line) => ctx.measureText(line).width > 1080);
+    if (wrapped.length <= MAX_LINES && !tooWide) {
+      lines = wrapped;
+      break;
+    }
+    if (fontSize <= 38) {
+      lines = wrapped.slice(0, MAX_LINES);
+      cut = wrapped.length > MAX_LINES || tooWide;
+      break;
+    }
+    fontSize -= 4;
+  }
+  if (cut && lines.length) {
+    let last = lines[lines.length - 1].replace(/[\s.\-]+$/, "");
+    while (last.length > 4 && ctx.measureText(`${last}…`).width > 1080) {
+      last = last.slice(0, -2).trimEnd();
+    }
+    lines[lines.length - 1] = `${last}…`;
   }
   ctx.font = FONT(fontSize);
 
   const lineHeight = Math.round(fontSize * 1.16);
-  const startY = 500 - ((lines.length - 1) * lineHeight) / 2;
+  const titleCenter = 588;
+  const startY = titleCenter - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((line, index) => {
     ctx.fillStyle = "rgba(0,0,0,0.65)";
     ctx.fillText(line, canvas.width / 2 + 4, startY + index * lineHeight + 4);
@@ -170,14 +257,34 @@ async function createCanvasThumbnailDataUrl(
     8,
   );
 
-  // Small subtitle badge.
-  ctx.font = "bold 30px 'Segoe UI', 'Tahoma', sans-serif";
-  ctx.fillStyle = "#ff8a00";
-  ctx.fillText(
-    isArabic ? "دورة تعليمية" : hasImage ? "Course lesson" : "Course lesson",
-    canvas.width / 2,
-    405,
-  );
+  // The lesson number, written in the language of the lesson. Without a
+  // number the badge falls back to the course label.
+  const badgeCenter = 481;
+  if (lessonNumber) {
+    const badgeText = lessonBadgeText(language, lessonNumber);
+    ctx.font = "bold 34px 'Segoe UI', 'Tahoma', sans-serif";
+    const badgeWidth = ctx.measureText(badgeText).width + 60;
+    const badgeHeight = 58;
+    ctx.fillStyle = "#ff8a00";
+    fillRoundedRect(
+      ctx,
+      (canvas.width - badgeWidth) / 2,
+      badgeCenter - badgeHeight / 2,
+      badgeWidth,
+      badgeHeight,
+      badgeHeight / 2,
+    );
+    ctx.fillStyle = "#1b1206";
+    ctx.fillText(badgeText, canvas.width / 2, badgeCenter + 2);
+  } else {
+    ctx.font = "bold 30px 'Segoe UI', 'Tahoma', sans-serif";
+    ctx.fillStyle = "#ff8a00";
+    ctx.fillText(
+      isArabic ? "دورة تعليمية" : hasImage ? "Course lesson" : "Course lesson",
+      canvas.width / 2,
+      badgeCenter,
+    );
+  }
 
   return canvas.toDataURL("image/png");
 }
@@ -200,6 +307,17 @@ type LessonPublishInfo = {
   youtubeDescription?: string | null;
   youtubeTags?: string[] | null;
   thumbnailUrl?: string | null;
+  youtubeMadeForKids?: boolean | null;
+  youtubeSelfDeclaredAiContent?: boolean | null;
+  youtubePaidPromotion?: boolean | null;
+  youtubeAllowEmbedding?: boolean | null;
+  youtubePublishToSubs?: boolean | null;
+  youtubeShortsRemixing?: string | null;
+  youtubeAutomaticChapters?: boolean | null;
+  youtubeVideoLanguage?: string | null;
+  youtubeTitleDescriptionLanguage?: string | null;
+  youtubeRecordingDate?: string | Date | null;
+  youtubeLocation?: string | null;
 };
 function lessonNumberFrom(value?: string | null) {
   const match = String(value || "").trim().match(/^(\d+)/);
@@ -249,6 +367,21 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [source, setSource] = useState<"lesson" | "dub">("lesson");
   const [courseImageUrl, setCourseImageUrl] = useState("");
   const [courseTitle, setCourseTitle] = useState("");
+  const [lessonNumber, setLessonNumber] = useState<number | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  // The YouTube Automation Form checklist fields. They decide how the video
+  // sits on the channel, so they are part of the publish payload.
+  const [madeForKids, setMadeForKids] = useState(false);
+  const [selfDeclaredAiContent, setSelfDeclaredAiContent] = useState(false);
+  const [paidPromotion, setPaidPromotion] = useState(false);
+  const [allowEmbedding, setAllowEmbedding] = useState(true);
+  const [publishToSubs, setPublishToSubs] = useState(true);
+  const [shortsRemixing, setShortsRemixing] = useState<"allow" | "disallow">("allow");
+  const [automaticChapters, setAutomaticChapters] = useState(true);
+  const [videoLanguage, setVideoLanguage] = useState("es");
+  const [titleDescriptionLanguage, setTitleDescriptionLanguage] = useState("Spanish");
+  const [recordingDate, setRecordingDate] = useState("");
+  const [location, setLocation] = useState("");
   const selectedChannel = channels.find((c) => c.id === channelId) || null;
   const selectedChannelLanguage = (selectedChannel?.language || "")
     .toLowerCase()
@@ -282,13 +415,14 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
     // The course this video belongs to. Its image becomes the background of
     // the generated YouTube thumbnail.
     let courseImage = "";
+    let courseLessonNumber: number | null = null;
     try {
       const courseRes = await api.get<{
         items: {
           _id: string;
           title: string;
           thumbnailUrl?: string | null;
-          videos?: { video: { _id: string } | null }[];
+          videos?: { video: { _id: string } | null; order?: number | null }[];
         }[];
       }>("/api/courses");
       if (courseRes.success) {
@@ -300,6 +434,17 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           if (course.thumbnailUrl) {
             courseImage = course.thumbnailUrl;
             setCourseImageUrl(course.thumbnailUrl);
+          }
+          // The number of the lesson is its position in the course.
+          const ordered = [...(course.videos || [])].sort(
+            (a, b) => (a.order ?? 0) - (b.order ?? 0),
+          );
+          const position = ordered.findIndex(
+            (entry) => entry.video?._id === id,
+          );
+          if (position >= 0) {
+            courseLessonNumber = position + 1;
+            setLessonNumber(courseLessonNumber);
           }
         }
       }
@@ -386,10 +531,14 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
             (nextSource !== "dub" || String(item.voice ?? "") === String(dubForLang?.voice ?? "")),
         );
         const preferredTitle = existingPublishLesson?.youtubeTitle || meta.titles?.[0] || `${v.title || "Lesson"} (${language})`;
-        const lessonNumber = lessonNumberFrom(v.title) || lessonNumberFrom(v.originalFilename);
+        const titleNumber = lessonNumberFrom(v.title) || lessonNumberFrom(v.originalFilename);
+        // The position inside the course wins, because it is the real order
+        // of the lessons. The number in the file name is only a fallback.
+        const lessonNumberValue =
+          courseLessonNumber ?? (titleNumber ? Number(titleNumber) : null);
         const titledWithNumber =
-          lessonNumber && !String(preferredTitle).trim().match(/^\d+/)
-            ? `${lessonNumber}. ${preferredTitle}`
+          lessonNumberValue && !String(preferredTitle).trim().match(/^\d+/)
+            ? `${lessonNumberValue}. ${preferredTitle}`
             : preferredTitle;
         setTitle(titledWithNumber);
         setDescription(existingPublishLesson?.youtubeDescription || composedDescription);
@@ -398,10 +547,33 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
         setPlaylistId(existingPublishLesson?.youtubePlaylistId || "");
         setThumbnailUrl(existingPublishLesson?.thumbnailUrl || v.thumbnailUrl || "");
+        setMadeForKids(Boolean(existingPublishLesson?.youtubeMadeForKids ?? false));
+        setSelfDeclaredAiContent(Boolean(existingPublishLesson?.youtubeSelfDeclaredAiContent ?? false));
+        setPaidPromotion(Boolean(existingPublishLesson?.youtubePaidPromotion ?? false));
+        setAllowEmbedding(existingPublishLesson?.youtubeAllowEmbedding ?? true);
+        setPublishToSubs(existingPublishLesson?.youtubePublishToSubs ?? true);
+        setShortsRemixing(existingPublishLesson?.youtubeShortsRemixing === "disallow" ? "disallow" : "allow");
+        setAutomaticChapters(existingPublishLesson?.youtubeAutomaticChapters ?? true);
+        setVideoLanguage(existingPublishLesson?.youtubeVideoLanguage || language);
+        setTitleDescriptionLanguage(
+          existingPublishLesson?.youtubeTitleDescriptionLanguage ||
+            (language.toLowerCase().startsWith("es") ? "Spanish" : language.toUpperCase()),
+        );
+        setRecordingDate(
+          existingPublishLesson?.youtubeRecordingDate
+            ? String(existingPublishLesson.youtubeRecordingDate).slice(0, 10)
+            : new Date().toISOString().slice(0, 10),
+        );
+        setLocation(existingPublishLesson?.youtubeLocation || "");
         if (existingPublishLesson?.youtubeChannelId) setChannelId(existingPublishLesson.youtubeChannelId);
         if (!v.thumbnailUrl && !existingPublishLesson?.thumbnailUrl) {
           const titleText = meta.titles?.[0] || v.title || "Lesson";
-          createCanvasThumbnailDataUrl(titleText, language, courseImage).then(
+          createCanvasThumbnailDataUrl({
+            title: titleText,
+            language,
+            courseImageUrl: courseImage,
+            lessonNumber: lessonNumberValue,
+          }).then(
             (dataUrl) => {
               if (!dataUrl) return;
               api
@@ -463,6 +635,48 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
     };
   }, [channelId]);
 
+  /**
+   * Rebuilds the thumbnail by hand: the course image as the background, the
+   * title of the form on two lines at most, and the number of the lesson in
+   * the language of the lesson.
+   */
+  const regenerateThumbnail = async () => {
+    setRegenerating(true);
+    try {
+      // The number has its own badge, so it must not be repeated in the
+      // title written on the image.
+      const titleForImage = String(title || "")
+        .trim()
+        .replace(/^\d+\s*[.\-–:)]\s*/, "");
+      const dataUrl = await createCanvasThumbnailDataUrl({
+        title: titleForImage,
+        language,
+        courseImageUrl: courseImageUrl,
+        lessonNumber,
+      });
+      if (!dataUrl) {
+        toast.error("The thumbnail could not be drawn.");
+        return;
+      }
+      const res = await api.post<{ thumbnailUrl: string }>(
+        `/api/videos/${id}/thumbnail`,
+        { thumbnailDataUrl: dataUrl },
+      );
+      if (res.success && res.data?.thumbnailUrl) {
+        setThumbnailUrl(res.data.thumbnailUrl);
+        toast.success("Thumbnail regenerated.");
+      } else {
+        toast.error(res.message || "The thumbnail could not be saved.");
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The thumbnail could not be saved.",
+      );
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   const publish = async () => {
     setPublishing(true);
     const res = await api.post<{ youtubeUrl?: string; youtubeVideoId?: string; mode?: string; source?: string; channelTitle?: string; playlistId?: string }>(
@@ -478,6 +692,17 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         playlistId: playlistId || undefined,
         channelId: channelId || undefined,
         thumbnailUrl: thumbnailUrl.trim() || undefined,
+        madeForKids,
+        selfDeclaredAiContent,
+        paidPromotion,
+        allowEmbedding,
+        publishToSubs,
+        shortsRemixing,
+        automaticChapters,
+        videoLanguage,
+        titleDescriptionLanguage,
+        recordingDate,
+        location,
       },
     );
     setPublishing(false);
@@ -603,6 +828,21 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                 <Input value={tags} onChange={(e) => setTags(e.target.value)} />
               </div>
               <div className="space-y-2">
+                <Label>Audience &amp; playlists</Label>
+                <label className="flex items-center gap-2 rounded-md border p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={madeForKids}
+                    onChange={(e) => setMadeForKids(e.target.checked)}
+                    className="h-4 w-4 accent-amber-500"
+                  />
+                  <span>Made For Kids</span>
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  The lesson is for a general education audience, so it stays off.
+                </p>
+              </div>
+              <div className="space-y-2">
                 <Label>Thumbnail URL</Label>
                 <Input value={thumbnailUrl} onChange={(e) => setThumbnailUrl(e.target.value)} />
                 {thumbnailUrl && (
@@ -612,6 +852,22 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                     className="mt-2 w-full max-w-md rounded-md border"
                   />
                 )}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={regenerateThumbnail}
+                    disabled={regenerating}
+                  >
+                    {regenerating ? "Regenerating…" : "Regenerate thumbnail"}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {lessonNumber
+                      ? `${lessonBadgeText(language, lessonNumber)} — the course image with the lesson title.`
+                      : "The course image with the lesson title."}
+                  </span>
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>YouTube channel</Label>
@@ -690,6 +946,116 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                   }
                   readOnly
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>Language &amp; metadata</Label>
+                <div className="space-y-3 rounded-md border p-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="videoLanguage" className="text-xs">Video language</Label>
+                    <select
+                      id="videoLanguage"
+                      value={videoLanguage}
+                      onChange={(e) => setVideoLanguage(e.target.value)}
+                      className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {VIDEO_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="titleDescriptionLanguage" className="text-xs">Title &amp; description language</Label>
+                    <Input
+                      id="titleDescriptionLanguage"
+                      value={titleDescriptionLanguage}
+                      onChange={(e) => setTitleDescriptionLanguage(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label htmlFor="recordingDate" className="text-xs">Recording date</Label>
+                      <Input
+                        id="recordingDate"
+                        type="date"
+                        value={recordingDate}
+                        onChange={(e) => setRecordingDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="location" className="text-xs">Location</Label>
+                      <Input
+                        id="location"
+                        value={location}
+                        onChange={(e) => setLocation(e.target.value)}
+                        placeholder="Optional"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Advanced settings</Label>
+                <div className="space-y-3 rounded-md border p-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selfDeclaredAiContent}
+                      onChange={(e) => setSelfDeclaredAiContent(e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span>Self-declared AI content</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={paidPromotion}
+                      onChange={(e) => setPaidPromotion(e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span>Paid promotion</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={allowEmbedding}
+                      onChange={(e) => setAllowEmbedding(e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span>Allow embedding</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={publishToSubs}
+                      onChange={(e) => setPublishToSubs(e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span>Publish to subscriptions feed</span>
+                  </label>
+                  <div className="space-y-1">
+                    <Label htmlFor="shortsRemixing" className="text-xs">Shorts remixing</Label>
+                    <select
+                      id="shortsRemixing"
+                      value={shortsRemixing}
+                      onChange={(e) => setShortsRemixing(e.target.value as "allow" | "disallow")}
+                      className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      <option value="allow">Allow Video and Audio Remixing</option>
+                      <option value="disallow">Don&apos;t allow</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={automaticChapters}
+                      onChange={(e) => setAutomaticChapters(e.target.checked)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span>Automatic chapters</span>
+                  </label>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <Button onClick={publish} disabled={publishing || !ytConnected || (!dubForLanguage && !lessonForLanguage)}>
