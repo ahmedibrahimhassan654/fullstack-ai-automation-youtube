@@ -16,7 +16,12 @@ function wrapCanvasText(
   text: string,
   maxWidth: number,
 ): string[] {
-  const words = String(text || "").trim().split(/\\s+/);
+  // The split must be on real whitespace: a title that is never split into
+  // words can not be wrapped, and it ran off both edges of the thumbnail.
+  const words = String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
   const lines: string[] = [];
   let current = "";
   for (const word of words) {
@@ -32,13 +37,54 @@ function wrapCanvasText(
   return lines.length ? lines : [""];
 }
 
-function createCanvasThumbnailDataUrl(title: string, language: string): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1280;
-  canvas.height = 720;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  const isArabic = language.toLowerCase().startsWith("ar");
+/** Loads an image so it can be drawn on the canvas. */
+function loadImage(url: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
+/**
+ * Draws the course image as the background of the thumbnail, falling back to
+ * the plain gradient when there is no image.
+ */
+async function drawThumbnailBackground(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  courseImageUrl?: string | null,
+) {
+  if (courseImageUrl) {
+    const image = await loadImage(courseImageUrl);
+    if (image) {
+      // Cover fit: fill the canvas and crop the overflow.
+      const scale = Math.max(
+        canvas.width / image.width,
+        canvas.height / image.height,
+      );
+      const width = image.width * scale;
+      const height = image.height * scale;
+      ctx.drawImage(
+        image,
+        (canvas.width - width) / 2,
+        (canvas.height - height) / 2,
+        width,
+        height,
+      );
+
+      // Darken it so the title stays readable on top of the picture.
+      const shade = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      shade.addColorStop(0, "rgba(4, 10, 28, 0.45)");
+      shade.addColorStop(0.5, "rgba(4, 10, 28, 0.35)");
+      shade.addColorStop(1, "rgba(4, 10, 28, 0.75)");
+      ctx.fillStyle = shade;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return true;
+    }
+  }
 
   const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
   gradient.addColorStop(0, "#081229");
@@ -46,6 +92,22 @@ function createCanvasThumbnailDataUrl(title: string, language: string): string {
   gradient.addColorStop(1, "#1f4f99");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return false;
+}
+
+async function createCanvasThumbnailDataUrl(
+  title: string,
+  language: string,
+  courseImageUrl?: string | null,
+): Promise<string> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const isArabic = language.toLowerCase().startsWith("ar");
+
+  const hasImage = await drawThumbnailBackground(canvas, ctx, courseImageUrl);
 
   // Accent glow and subtle shapes.
   ctx.globalAlpha = 0.18;
@@ -70,11 +132,27 @@ function createCanvasThumbnailDataUrl(title: string, language: string): string {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 74px 'Segoe UI', 'Tahoma', sans-serif";
 
   const safeTitle = (title || "Lesson").slice(0, 90);
-  const lines = wrapCanvasText(ctx, safeTitle, 1080).slice(0, 3);
-  const lineHeight = 86;
+  const FONT = (size: number) =>
+    `bold ${size}px 'Segoe UI', 'Tahoma', sans-serif`;
+
+  // Shrink the title until the widest line fits, so it never runs off the
+  // edges of the thumbnail.
+  let fontSize = 74;
+  ctx.font = FONT(fontSize);
+  let lines = wrapCanvasText(ctx, safeTitle, 1080).slice(0, 3);
+  while (
+    lines.some((line) => ctx.measureText(line).width > 1080) &&
+    fontSize > 38
+  ) {
+    fontSize -= 4;
+    ctx.font = FONT(fontSize);
+    lines = wrapCanvasText(ctx, safeTitle, 1080).slice(0, 3);
+  }
+  ctx.font = FONT(fontSize);
+
+  const lineHeight = Math.round(fontSize * 1.16);
   const startY = 500 - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((line, index) => {
     ctx.fillStyle = "rgba(0,0,0,0.65)";
@@ -85,12 +163,21 @@ function createCanvasThumbnailDataUrl(title: string, language: string): string {
 
   // Accent underline.
   ctx.fillStyle = "#ff8a00";
-  ctx.fillRect(canvas.width / 2 - 180, startY + lines.length * lineHeight - 18, 360, 8);
+  ctx.fillRect(
+    canvas.width / 2 - 180,
+    startY + lines.length * lineHeight - 18,
+    360,
+    8,
+  );
 
   // Small subtitle badge.
   ctx.font = "bold 30px 'Segoe UI', 'Tahoma', sans-serif";
   ctx.fillStyle = "#ff8a00";
-  ctx.fillText(isArabic ? "دورة تعليمية" : "Course lesson", canvas.width / 2, 405);
+  ctx.fillText(
+    isArabic ? "دورة تعليمية" : hasImage ? "Course lesson" : "Course lesson",
+    canvas.width / 2,
+    405,
+  );
 
   return canvas.toDataURL("image/png");
 }
@@ -160,6 +247,8 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [publishing, setPublishing] = useState(false);
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
   const [source, setSource] = useState<"lesson" | "dub">("lesson");
+  const [courseImageUrl, setCourseImageUrl] = useState("");
+  const [courseTitle, setCourseTitle] = useState("");
   const dubsForLanguage = (video?.dubs || []).filter((d) => d.language === language && d.url);
   const dubForLanguage =
     (voiceParam ? dubsForLanguage.find((d) => d.voice === voiceParam) : undefined) || dubsForLanguage[0];
@@ -179,6 +268,35 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
     const res = await api.get<{ video: VideoDetail; metadata?: VideoDetail["aiMetadata"]; language?: string }>(
       `/api/videos/${id}/publish-prefill?language=${encodeURIComponent(language)}`,
     );
+
+    // The course this video belongs to. Its image becomes the background of
+    // the generated YouTube thumbnail.
+    let courseImage = "";
+    try {
+      const courseRes = await api.get<{
+        items: {
+          _id: string;
+          title: string;
+          thumbnailUrl?: string | null;
+          videos?: { video: { _id: string } | null }[];
+        }[];
+      }>("/api/courses");
+      if (courseRes.success) {
+        const course = (courseRes.data?.items || []).find((item) =>
+          (item.videos || []).some((entry) => entry.video?._id === id),
+        );
+        if (course) {
+          setCourseTitle(course.title);
+          if (course.thumbnailUrl) {
+            courseImage = course.thumbnailUrl;
+            setCourseImageUrl(course.thumbnailUrl);
+          }
+        }
+      }
+    } catch {
+      // The course lookup must never stop the publish form.
+    }
+
     if (res.success && res.data?.video) {
         const v = res.data.video;
         setVideo(v);
@@ -273,16 +391,19 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         if (existingPublishLesson?.youtubeChannelId) setChannelId(existingPublishLesson.youtubeChannelId);
         if (!v.thumbnailUrl && !existingPublishLesson?.thumbnailUrl) {
           const titleText = meta.titles?.[0] || v.title || "Lesson";
-          const dataUrl = createCanvasThumbnailDataUrl(titleText, language);
-          if (dataUrl) {
-            api
-              .post<{ thumbnailUrl: string }>(`/api/videos/${id}/thumbnail`, {
-                thumbnailDataUrl: dataUrl,
-              })
-              .then((r) => {
-                if (r.success && r.data?.thumbnailUrl) setThumbnailUrl(r.data.thumbnailUrl);
-              });
-          }
+          createCanvasThumbnailDataUrl(titleText, language, courseImage).then(
+            (dataUrl) => {
+              if (!dataUrl) return;
+              api
+                .post<{ thumbnailUrl: string }>(`/api/videos/${id}/thumbnail`, {
+                  thumbnailDataUrl: dataUrl,
+                })
+                .then((r) => {
+                  if (r.success && r.data?.thumbnailUrl)
+                    setThumbnailUrl(r.data.thumbnailUrl);
+                });
+            },
+          );
         }
         setCategoryId(v.youtubeCategoryId || "27");
 
@@ -413,6 +534,30 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                 <Label>Title</Label>
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
               </div>
+              {courseTitle && (
+                <div className="flex items-start gap-3 rounded-lg border bg-muted/40 p-3">
+                  {courseImageUrl ? (
+                    <img
+                      src={courseImageUrl}
+                      alt=""
+                      className="h-16 w-28 shrink-0 rounded-md object-cover"
+                    />
+                  ) : (
+                    <span className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground">
+                      No image
+                    </span>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{courseTitle}</p>
+                    <p className="text-xs text-muted-foreground">
+                      This video is a lesson of this course.
+                      {courseImageUrl
+                        ? " Its image is the background of the thumbnail."
+                        : " Add an image to the course to use it as the thumbnail background."}
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Description</Label>
                 <textarea

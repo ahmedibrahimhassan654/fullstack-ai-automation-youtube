@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   BookOpen,
   ExternalLink,
+  ImageIcon,
   Languages,
   ListVideo,
   Loader2,
@@ -61,6 +62,7 @@ type Course = {
   channelLanguage?: string | null;
   playlistId?: string | null;
   playlistTitle?: string | null;
+  thumbnailUrl?: string | null;
   status?: string;
   createdAt?: string;
   videos: CourseVideo[];
@@ -93,7 +95,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
+  const [imageUploading, setImageUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
@@ -188,6 +192,39 @@ export default function CourseDetailClient({ id }: { id: string }) {
     } else {
       toast.error(res.message || "Failed to publish the course.");
     }
+  };
+
+  /** Uploads the image of the course. It becomes the background of the
+   *  YouTube thumbnail of every lesson published from the course. */
+  const uploadImage = async (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Pick an image file.");
+      return;
+    }
+
+    setImageUploading(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || "");
+      const res = await api.post<{ thumbnailUrl: string }>(
+        `/api/courses/${id}/thumbnail`,
+        { thumbnailDataUrl: dataUrl },
+      );
+      if (res.success) {
+        toast.success("Course image updated.");
+        await load();
+      } else {
+        toast.error(res.message || "Failed to upload the image.");
+      }
+      setImageUploading(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    };
+    reader.onerror = () => {
+      setImageUploading(false);
+      toast.error("Could not read the image.");
+    };
+    reader.readAsDataURL(file);
   };
 
   const addVideo = async (videoId: string) => {
@@ -425,6 +462,40 @@ export default function CourseDetailClient({ id }: { id: string }) {
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={saveDetails} className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="courseImage">Course image</Label>
+                      <div className="flex items-start gap-3">
+                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted">
+                          {course.thumbnailUrl ? (
+                            <img
+                              src={course.thumbnailUrl}
+                              alt="Course image"
+                              className="size-full object-cover"
+                            />
+                          ) : (
+                            <ImageIcon className="size-6 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <input
+                            ref={imageInputRef}
+                            id="courseImage"
+                            type="file"
+                            accept="image/*"
+                            disabled={imageUploading}
+                            onChange={(e) => uploadImage(e.target.files?.[0])}
+                            className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {imageUploading
+                              ? "Uploading…"
+                              : course.thumbnailUrl
+                                ? "This image is the background of the YouTube thumbnail of every lesson of the course."
+                                : "No image yet. Upload one to use it as the background of the YouTube thumbnails."}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="detailTitle">Title</Label>
                       <Input
