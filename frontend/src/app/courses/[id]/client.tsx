@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -90,6 +90,10 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dubbing, setDubbing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [newLessonLanguage, setNewLessonLanguage] = useState("en");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
@@ -194,6 +198,58 @@ export default function CourseDetailClient({ id }: { id: string }) {
     } else {
       toast.error(res.message || "Failed to add the video.");
     }
+  };
+
+  /**
+   * Uploads a brand new video and makes it a lesson of this course. The
+   * course language is the target, so the lesson is dubbed into it.
+   */
+  const uploadLesson = async (file?: File | null) => {
+    if (!file) return;
+
+    setUploading(true);
+    setUploadProgress(0);
+    toast.success("Upload started…");
+
+    const formData = new FormData();
+    formData.append("video", file);
+    formData.append("title", file.name.replace(/\.[^.]+$/, ""));
+    formData.append("description", "");
+    formData.append("originalLanguage", newLessonLanguage);
+    formData.append("targetLanguages", JSON.stringify([language]));
+
+    const res = await api.upload<{ video: { _id: string } }>(
+      "/api/videos/upload",
+      formData,
+      setUploadProgress,
+    );
+
+    if (!res.success || !res.data?.video?._id) {
+      toast.error(res.message || "The upload failed.");
+      setUploading(false);
+      return;
+    }
+
+    const videoId = res.data.video._id;
+
+    // Transcribe it, then make it a lesson of this course.
+    try {
+      await api.post(`/api/videos/${videoId}/process`);
+    } catch {
+      // Processing can also be started later from the video page.
+    }
+
+    const added = await api.post(`/api/courses/${id}/videos`, { videoIds: [videoId] });
+    if (added.success) {
+      toast.success("Lesson uploaded and added to the course.");
+    } else {
+      toast.error(added.message || "The video was uploaded but not added.");
+    }
+
+    setUploading(false);
+    setUploadProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    await load();
   };
 
   const removeVideo = async (videoId: string) => {
@@ -507,7 +563,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
                   {available.length > 0 && (
                     <div className="space-y-2 rounded-lg border border-dashed p-3">
                       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Add a lesson
+                        Add an existing lesson
                       </p>
                       <div className="space-y-1">
                         {available.map((video) => (
@@ -531,6 +587,57 @@ export default function CourseDetailClient({ id }: { id: string }) {
                       </div>
                     </div>
                   )}
+
+                  {/* Upload a brand new video straight into the course */}
+                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Upload a new lesson
+                    </p>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="newLessonLanguage">
+                          Spoken language of the new video
+                        </Label>
+                        <select
+                          id="newLessonLanguage"
+                          value={newLessonLanguage}
+                          onChange={(e) => setNewLessonLanguage(e.target.value)}
+                          className={fieldClass}
+                        >
+                          {LANGUAGES.map((option) => (
+                            <option key={option.code} value={option.code}>
+                              {option.label} ({option.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <Label htmlFor="newLessonFile">Video file</Label>
+                        <input
+                          ref={fileInputRef}
+                          id="newLessonFile"
+                          type="file"
+                          accept="video/*"
+                          disabled={uploading}
+                          onChange={(e) => uploadLesson(e.target.files?.[0])}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                        />
+                      </div>
+                    </div>
+                    {uploading && (
+                      <div className="space-y-1">
+                        <Progress value={uploadProgress} />
+                        <p className="text-xs text-muted-foreground">
+                          Uploading… {uploadProgress}%
+                        </p>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      The video is uploaded, transcribed and added as the last
+                      lesson. Use the dub button above to dub it into{" "}
+                      {language}.
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
 
