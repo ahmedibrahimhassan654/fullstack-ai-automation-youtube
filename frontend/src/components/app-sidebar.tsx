@@ -5,18 +5,28 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   ChevronsLeft,
   ChevronsRight,
+  ChevronsUpDown,
+  Check,
   LayoutDashboard,
   LogOut,
   Settings,
   ShieldCheck,
   Sparkles,
   UploadCloud,
+  Users,
+  Video,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 export const SIDEBAR_COLLAPSED_KEY = "aiv-sidebar-collapsed";
@@ -36,7 +46,6 @@ type NavItem = {
   icon: LucideIcon;
   /** Decides whether the item is the active one for the current path. */
   isActive: (pathname: string) => boolean;
-  adminOnly?: boolean;
 };
 
 type NavSection = {
@@ -44,47 +53,94 @@ type NavSection = {
   items: NavItem[];
 };
 
-const NAV_SECTIONS: NavSection[] = [
-  {
-    title: "Workspace",
-    items: [
+/** The sidebar shows one menu at a time: the app menu or the admin menu. */
+type MenuScope = "app" | "admin";
+
+const SCOPES: Record<
+  MenuScope,
+  { label: string; icon: LucideIcon; href: string; sections: NavSection[] }
+> = {
+  app: {
+    label: "App",
+    icon: LayoutDashboard,
+    href: "/dashboard",
+    sections: [
       {
-        title: "Dashboard",
-        href: "/dashboard",
-        icon: LayoutDashboard,
-        // The dashboard holds the video list, so it stays selected while a
-        // single video is open. The upload page has its own entry.
-        isActive: (pathname) =>
-          pathname === "/dashboard" ||
-          (pathname.startsWith("/videos/") && pathname !== "/videos/new"),
+        title: "Workspace",
+        items: [
+          {
+            title: "Dashboard",
+            href: "/dashboard",
+            icon: LayoutDashboard,
+            // The dashboard holds the video list, so it stays selected while a
+            // single video is open. The upload page has its own entry.
+            isActive: (pathname) =>
+              pathname === "/dashboard" ||
+              (pathname.startsWith("/videos/") && pathname !== "/videos/new"),
+          },
+          {
+            title: "Upload Video",
+            href: "/videos/new",
+            icon: UploadCloud,
+            isActive: (pathname) => pathname === "/videos/new",
+          },
+        ],
       },
       {
-        title: "Upload Video",
-        href: "/videos/new",
-        icon: UploadCloud,
-        isActive: (pathname) => pathname === "/videos/new",
+        title: "Account",
+        items: [
+          {
+            title: "Settings",
+            href: "/settings",
+            icon: Settings,
+            isActive: (pathname) => pathname === "/settings",
+          },
+        ],
       },
     ],
   },
-  {
-    title: "Account",
-    items: [
+  admin: {
+    label: "Admin",
+    icon: ShieldCheck,
+    href: "/admin",
+    sections: [
       {
-        title: "Settings",
-        href: "/settings",
-        icon: Settings,
-        isActive: (pathname) => pathname === "/settings",
+        title: "Administration",
+        items: [
+          {
+            title: "Overview",
+            href: "/admin",
+            icon: LayoutDashboard,
+            isActive: (pathname) => pathname === "/admin" || pathname === "/admin/",
+          },
+          {
+            title: "Users",
+            href: "/admin/users",
+            icon: Users,
+            isActive: (pathname) => pathname.startsWith("/admin/users"),
+          },
+          {
+            title: "Videos",
+            href: "/admin/videos",
+            icon: Video,
+            isActive: (pathname) => pathname.startsWith("/admin/videos"),
+          },
+        ],
       },
       {
-        title: "Admin",
-        href: "/admin",
-        icon: ShieldCheck,
-        isActive: (pathname) => pathname === "/admin",
-        adminOnly: true,
+        title: "Personal",
+        items: [
+          {
+            title: "Settings",
+            href: "/settings",
+            icon: Settings,
+            isActive: (pathname) => pathname === "/settings",
+          },
+        ],
       },
     ],
   },
-];
+};
 
 const initialsOf = (name?: string | null) =>
   (name || "U")
@@ -104,6 +160,17 @@ export function AppSidebar({
   const router = useRouter();
   const toast = useToast();
   const { user, logout } = useAuth();
+
+  const isAdmin = user?.role === "admin";
+  // The scope follows the route, so landing in /admin swaps the menu.
+  const scope: MenuScope = pathname.startsWith("/admin") ? "admin" : "app";
+  const menu = SCOPES[scope];
+
+  const switchScope = (next: MenuScope) => {
+    if (next === scope) return;
+    router.push(SCOPES[next].href);
+    onNavigate?.();
+  };
 
   const handleLogout = async () => {
     try {
@@ -132,7 +199,7 @@ export function AppSidebar({
         )}
       >
         <Link
-          href="/dashboard"
+          href={menu.href}
           onClick={onNavigate}
           className={cn(
             "flex items-center gap-2.5 overflow-hidden rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
@@ -184,12 +251,59 @@ export function AppSidebar({
         )}
       </div>
 
+      {/* Scope switcher: app menu <-> admin menu */}
+      {isAdmin && (
+        <div className="shrink-0 border-b border-sidebar-border p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-lg border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-2 text-left text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+                collapsed && "justify-center px-0",
+              )}
+              aria-label="Switch menu"
+            >
+              {(() => {
+                const ScopeIcon = menu.icon;
+                return (
+                  <>
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-accent-foreground">
+                      <ScopeIcon className="size-3.5" />
+                    </span>
+                    {!collapsed && (
+                      <>
+                        <span className="flex-1 truncate">{menu.label}</span>
+                        <ChevronsUpDown className="size-3.5 shrink-0 text-sidebar-foreground/50" />
+                      </>
+                    )}
+                  </>
+                );
+              })()}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              {(Object.keys(SCOPES) as MenuScope[]).map((key) => {
+                const item = SCOPES[key];
+                const ScopeIcon = item.icon;
+                return (
+                  <DropdownMenuItem
+                    key={key}
+                    onClick={() => switchScope(key)}
+                    className="gap-2.5"
+                  >
+                    <ScopeIcon className="size-4 text-muted-foreground" />
+                    <span className="flex-1">{item.label}</span>
+                    {scope === key && <Check className="size-4" />}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
+
       {/* Navigation */}
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-        {NAV_SECTIONS.map((section) => {
-          const items = section.items.filter(
-            (item) => !item.adminOnly || user?.role === "admin",
-          );
+        {menu.sections.map((section) => {
+          const items = section.items;
           if (items.length === 0) return null;
 
           return (
