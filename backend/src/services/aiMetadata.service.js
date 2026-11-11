@@ -44,8 +44,10 @@ const callOllamaCompletionOnce = async (messages, extra = {}) => {
       messages,
       temperature: extra.temperature ?? 0.2,
       max_tokens: extra.maxTokens ?? 2048,
+      ...(extra.responseFormat ? { response_format: extra.responseFormat } : {}),
     }),
-    signal: AbortSignal.timeout(300000),
+    // A local model is slower than the hosted ones, so it gets more time.
+    signal: AbortSignal.timeout(900000),
   });
 
   const data = await response.json().catch(() => ({}));
@@ -201,23 +203,100 @@ const retryDelayMs = (error, attempt) => {
 
 const disabledProviders = new Set();
 
-const availableProviders = () => {
+// A provider that just refused with a rate limit is skipped for a while
+// instead of being retried on every single call. Without this, one exhausted
+// daily quota delayed every batch by minutes.
+const providerCooldown = new Map();
+
+const isProviderCoolingDown = (provider) => {
+  const until = providerCooldown.get(provider);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    providerCooldown.delete(provider);
+    return false;
+  }
+  return true;
+};
+
+const coolDownProvider = (provider, error) => {
+  const message = String(error?.message || '');
+  const match = message.match(/try again in ([0-9.]+)\s*(ms|s|m|h)/i);
+  let waitMs = 10 * 60 * 1000;
+  if (match) {
+    const value = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    const factor = unit === 'ms' ? 1 : unit === 's' ? 1000 : unit === 'm' ? 60000 : 3600000;
+    waitMs = value * factor;
+  }
+  // Never skip a provider for less than a minute, and never for more than a
+  // quarter of an hour.
+  const capped = Math.min(Math.max(waitMs, 60 * 1000), 15 * 60 * 1000);
+  providerCooldown.set(provider, Date.now() + capped);
+  console.warn(
+    `[ai] ${provider} is rate limited, skipping it for ${Math.round(capped / 1000)}s`,
+  );
+};
+
+let ollamaAvailable = null;
+let ollamaCheckedAt = 0;
+
+/**
+ * Checks whether a local Ollama server is running.
+ *
+ * The answer is cached for a few minutes so the check does not slow down
+ * every single call.
+ */
+const isOllamaRunning = async () => {
+  const now = Date.now();
+  if (ollamaAvailable !== null && now - ollamaCheckedAt < 5 * 60 * 1000) {
+    return ollamaAvailable;
+  }
+  ollamaCheckedAt = now;
+  try {
+    const res = await fetch(
+      `${String(env.ollamaBaseUrl || '').replace(/\/$/, '')}/api/tags`,
+      { signal: AbortSignal.timeout(1500) },
+    );
+    ollamaAvailable = res.ok;
+  } catch {
+    ollamaAvailable = false;
+  }
+  return ollamaAvailable;
+};
+
+const availableProviders = async () => {
   const list = [];
   const preferred = resolveProvider();
-  if (env.groqApiKey && !disabledProviders.has('groq')) list.push('groq');
+  if (env.groqApiKey && !disabledProviders.has('groq') && !isProviderCoolingDown('groq')) {
+    list.push('groq');
+  }
   // Gemini is a real fallback whenever the key exists - it gives the
   // translation a second engine when Groq hits its rate limit.
-  if (env.geminiApiKey && !disabledProviders.has('gemini')) list.push('gemini');
-  if (env.deepseekApiKey && !disabledProviders.has('deepseek')) list.push('deepseek');
-  // Ollama is opt-in (AI_PROVIDER=ollama). Including it by default only added
-  // a failing round trip to every rate limited call.
-  if (preferred === 'ollama' && !disabledProviders.has('ollama')) list.push('ollama');
+  if (
+    env.geminiApiKey &&
+    !disabledProviders.has('gemini') &&
+    !isProviderCoolingDown('gemini')
+  ) {
+    list.push('gemini');
+  }
+  if (
+    env.deepseekApiKey &&
+    !disabledProviders.has('deepseek') &&
+    !isProviderCoolingDown('deepseek')
+  ) {
+    list.push('deepseek');
+  }
+  // A local Ollama server is the last resort: it is slower than the hosted
+  // providers but it has no quota at all, so a dub can always finish.
+  if (!disabledProviders.has('ollama') && (await isOllamaRunning())) {
+    list.push('ollama');
+  }
   return list;
 };
 
 const callChatCompletion = async (messages, extra = {}) => {
   const preferred = extra?.provider || resolveProvider();
-  const all = availableProviders();
+  const all = await availableProviders();
   const candidates = [
     ...(disabledProviders.has(preferred) ? [] : [preferred]),
     ...all.filter((p) => p !== preferred),
@@ -226,10 +305,11 @@ const callChatCompletion = async (messages, extra = {}) => {
 
   for (const provider of candidates) {
     if (disabledProviders.has(provider)) continue;
+    if (provider !== preferred && isProviderCoolingDown(provider)) continue;
     // A rate limited provider needs more patience than a hard failure: the
     // provider tells us how long to wait, and waiting is what makes the
     // translation succeed instead of falling back to the source language.
-    let attempts = provider === preferred ? 4 : 2;
+    let attempts = provider === preferred ? 3 : 2;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await callChatCompletionOnce(messages, {
@@ -250,7 +330,13 @@ const callChatCompletion = async (messages, extra = {}) => {
           status === 429 ||
           status >= 500 ||
           /over capacity|rate limit|timeout|temporarily unavailable/i.test(message);
-        if (!retryable || attempt === attempts - 1) break;
+        if (!retryable) break;
+        if (attempt === attempts - 1) break;
+        // The last attempt of the preferred provider sets the cooldown, so the
+        // next call goes straight to a provider that still has quota.
+        if (provider === preferred && attempts > 1 && attempt === attempts - 2) {
+          coolDownProvider(provider, error);
+        }
         await new Promise((resolve) =>
           setTimeout(resolve, retryDelayMs(error, attempt)),
         );
@@ -696,15 +782,82 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
   const spoken = new Map();
   if (input.length === 0) return spoken;
 
+  // The way a technical name is written for speech depends on the script of
+  // the target language: an Arabic dub says "كالي لينكس", a Spanish dub keeps
+  // "Kali Linux" because that is how it is pronounced there.
+  const target = languageBase(targetLanguage);
+  const usesLatinScript = !TARGET_SCRIPT_PATTERNS[target];
+
+  const languageName =
+    {
+      ar: 'Arabic',
+      es: 'Spanish',
+      fr: 'French',
+      de: 'German',
+      it: 'Italian',
+      pt: 'Portuguese',
+      ru: 'Russian',
+      hi: 'Hindi',
+      zh: 'Chinese',
+      ja: 'Japanese',
+      ko: 'Korean',
+      tr: 'Turkish',
+      nl: 'Dutch',
+      pl: 'Polish',
+      en: 'English',
+    }[target] || targetLanguage;
+
+  const numberExamples = {
+    ar: '"64" becomes "أربعة وستون", "23.1" becomes "ثلاثة وعشرون فاصلة واحد"',
+    es: '"64" becomes "sesenta y cuatro", "23.1" becomes "veintitrés coma uno"',
+    fr: '"64" becomes "soixante-quatre", "23.1" becomes "vingt-trois virgule un"',
+    de: '"64" becomes "vierundsechzig", "23.1" becomes "dreiundzwanzig Komma eins"',
+    it: '"64" becomes "sessantaquattro", "23.1" becomes "ventitré virgola uno"',
+    pt: '"64" becomes "sessenta e quatro", "23.1" becomes "vinte e três vírgula um"',
+    ru: '"64" becomes "шестьдесят четыре", "23.1" becomes "двадцать три запятая один"',
+    tr: '"64" becomes "altmış dört", "23.1" becomes "yirmi üç virgül bir"',
+    nl: '"64" becomes "vierenzestig", "23.1" becomes "drieëntwintig komma een"',
+    pl: '"64" becomes "sześćdziesiąt cztery", "23.1" becomes "dwadzieścia trzy przecinek jeden"',
+    en: '"64" becomes "sixty-four", "23.1" becomes "twenty-three point one"',
+  }[target] || '"64" and "23.1" written as words';
+
+  const numberRule = usesLatinScript
+    ? 'Keep every number EXACTLY as it appears in the input, do not convert it and do not change its value: the ' +
+      languageName +
+      ' voice reads the digits the way a native speaker says them. '
+    : 'Write every number as ' +
+      languageName +
+      ' words (' +
+      numberExamples +
+      '), without changing its value. ';
+
+  const termRule = usesLatinScript
+    ? 'Keep every technical name, product name, command and code identifier exactly as it is written, because that is already how they are pronounced in ' +
+      languageName +
+      '. '
+    : 'Write every technical name, product name, command and code identifier the way a ' +
+      languageName +
+      ' speaker pronounces it, using ' +
+      languageName +
+      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ';
+
   const system =
-    'You prepare Arabic subtitles for narration. For each Arabic sentence given to you, return the SAME sentence rewritten for SPEAKING ALOUD in Arabic. ' +
-    'Write every technical name, product name, command or code identifier the way an Arabic speaker pronounces it, using Arabic letters only ' +
-    '(for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس", "npm install" becomes "إن بي إم إنستال", ' +
-    '"Debian" becomes "ديبيان", "VirtualBox" becomes "فيرتشوال بوكس", "RAM" becomes "رام", "GB" becomes "جي بي", "bit" becomes "بت"). ' +
-    'Keep every number EXACTLY as it appears in the input, do not convert it and do not change its value. ' +
-    'Keep the meaning and the tone identical, and use natural, professional Modern Standard Arabic with correct grammar and correct number agreement. ' +
+    'You prepare ' +
+    languageName +
+    ' subtitles for narration. For each ' +
+    languageName +
+    ' sentence given to you, return the SAME sentence rewritten for SPEAKING ALOUD in ' +
+    languageName +
+    '. ' +
+    termRule +
+    numberRule +
+    'Keep the meaning and the tone identical, and use natural, professional ' +
+    languageName +
+    ' with correct grammar and correct number agreement. ' +
     (strict
-      ? 'IMPORTANT: the result must contain no Latin letters at all. Every Latin word must be written in Arabic letters. '
+      ? 'IMPORTANT: the result must contain no Latin letters at all. Every Latin word must be written in ' +
+        languageName +
+        ' letters. '
       : '') +
     'Return ONLY valid JSON: {"segments":["spoken sentence 1","spoken sentence 2"]}. ' +
     'Return exactly ' +
@@ -728,7 +881,7 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
         {
           fast: true,
           temperature: 0.1,
-          maxTokens: 2500,
+          maxTokens: 5000,
           responseFormat: { type: 'json_object' },
         },
       );
@@ -767,13 +920,13 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
     content = highQuality
       ? await callQualityChat(messages, {
           temperature: 0.15,
-          maxTokens: 3500,
+          maxTokens: 8000,
           responseFormat: { type: 'json_object' },
         })
       : await callQualityChat(messages, {
           fast: true,
           temperature: 0.1,
-          maxTokens: 3500,
+          maxTokens: 8000,
           responseFormat: { type: 'json_object' },
         });
   } catch (e) {
@@ -1140,6 +1293,9 @@ export const translateTranscriptSegments = async ({
   // technical name or a number are rewritten, which keeps this pass cheap.
   // It runs after the retries so it works from the final wording.
   const withSpoken = Boolean(TARGET_SCRIPT_PATTERNS[languageBase(targetLanguage)]);
+  // Only Arabic has a deterministic number speller here. The other scripts
+  // are spelled out by the model, in their own language.
+  const isArabicTarget = languageBase(targetLanguage) === 'ar';
   if (withSpoken) {
     const needsSpoken = currentSegments
       .map((segment, index) => ({ ...segment, index }))
@@ -1196,7 +1352,7 @@ export const translateTranscriptSegments = async ({
   // simply reuse the subtitle text with the numbers spelled out.
   currentSegments.forEach((segment) => {
     const spoken = String(segment.spokenText || segment.text || '').trim();
-    segment.spokenText = withSpoken ? spellOutNumbersInArabic(spoken) : spoken;
+    segment.spokenText = isArabicTarget ? spellOutNumbersInArabic(spoken) : spoken;
   });
 
   // 5. Final evaluation for missing scores.
@@ -1236,7 +1392,7 @@ export const translateTranscriptSegments = async ({
       start: s.start,
       end: s.end,
       text: currentSegments[index].text,
-      spokenText: withSpoken ? spellOutNumbersInArabic(spokenText) : spokenText,
+      spokenText: isArabicTarget ? spellOutNumbersInArabic(spokenText) : spokenText,
       sourceText: s.text,
       originalLanguage: originalLanguage || 'en',
       targetLanguage,

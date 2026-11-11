@@ -98,7 +98,43 @@ const LANGUAGES = [
   { code: "zh", label: "Chinese" },
   { code: "ja", label: "Japanese" },
   { code: "ko", label: "Korean" },
+  { code: "tr", label: "Turkish" },
+  { code: "nl", label: "Dutch" },
+  { code: "pl", label: "Polish" },
 ];
+
+/**
+ * The languages offered for a dub or a lesson.
+ *
+ * Every supported language is offered, not only the ones the video was
+ * uploaded with: a video can be dubbed into a language that was never a
+ * target. The languages of the video come first so they are easy to pick.
+ */
+const languageOptions = (video: {
+  targetLanguages?: string[];
+  transcriptLanguage?: string | null;
+  originalLanguage?: string | null;
+  dubs?: { language: string }[];
+  lessonVideos?: { language: string }[];
+}) => {
+  const known = new Set(LANGUAGES.map((language) => language.code));
+  const preferred: string[] = [];
+
+  const push = (code?: string | null) => {
+    const value = String(code || "").trim().toLowerCase();
+    if (!value || !known.has(value) || preferred.includes(value)) return;
+    preferred.push(value);
+  };
+
+  for (const dub of video.dubs || []) push(dub.language);
+  for (const lesson of video.lessonVideos || []) push(lesson.language);
+  for (const target of video.targetLanguages || []) push(target);
+  push(video.transcriptLanguage);
+  push(video.originalLanguage);
+
+  const all = [...preferred, ...LANGUAGES.map((language) => language.code)];
+  return all.filter((code, index) => all.indexOf(code) === index);
+};
 
 export default function VideoDetailClient({ id }: { id: string }) {
   const router = useRouter();
@@ -584,13 +620,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
                       onChange={(e) => setDubLanguage(e.target.value)}
                       className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     >
-                      {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
-                        .filter((value, index, array) => value && array.indexOf(value) === index)
-                        .map((code) => (
-                          <option key={code} value={code}>
-                            {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
-                          </option>
-                        ))}
+                      {languageOptions(video).map((code) => (
+                        <option key={code} value={code}>
+                          {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
+                        </option>
+                      ))}
                     </select>
                     <div className="flex items-center gap-2">
                       <Label htmlFor="dubEdgeVoice">Dub voice</Label>
@@ -804,13 +838,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
                       onChange={(e) => setLessonLanguage(e.target.value)}
                       className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                     >
-                      {[...(video.targetLanguages || []), video.transcriptLanguage || video.originalLanguage || "en"]
-                        .filter((value, index, array) => value && array.indexOf(value) === index)
-                        .map((code) => (
-                          <option key={code} value={code}>
-                            {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
-                          </option>
-                        ))}
+                      {languageOptions(video).map((code) => (
+                        <option key={code} value={code}>
+                          {LANGUAGES.find((l) => l.code === code)?.label || code} ({code})
+                        </option>
+                      ))}
                     </select>
                     <div className="flex flex-wrap items-center gap-2">
                       <Label htmlFor="lessonEdgeVoice">Free Edge voice</Label>

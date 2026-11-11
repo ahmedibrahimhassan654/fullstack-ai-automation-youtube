@@ -80,6 +80,36 @@ const uploadBuffer = (buffer, options) =>
     stream.end(buffer);
   });
 
+const LANGUAGE_NAMES = {
+  english: "en",
+  spanish: "es",
+  french: "fr",
+  german: "de",
+  italian: "it",
+  portuguese: "pt",
+  russian: "ru",
+  arabic: "ar",
+  hindi: "hi",
+  chinese: "zh",
+  japanese: "ja",
+  korean: "ko",
+  turkish: "tr",
+  dutch: "nl",
+  polish: "pl",
+};
+
+/**
+ * Turns a language name or code into the two letter code used everywhere.
+ * Whisper reports "English", the app stores "en".
+ */
+const normalizeLanguageCode = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "en";
+  const code = raw.split(/[-_]/)[0];
+  if (LANGUAGE_NAMES[code]) return LANGUAGE_NAMES[code];
+  return LANGUAGE_NAMES[raw] || code || "en";
+};
+
 const normalizeLanguages = (value) => {
   if (!value) return [];
   if (Array.isArray(value))
@@ -465,7 +495,12 @@ export const runPipeline = async (videoId) => {
       });
 
       video.transcript = result.text || "";
-      video.transcriptLanguage = result.language || video.originalLanguage || "en";
+      // Whisper returns the language name ("English"), but every language
+      // used in the app is a code ("en"). Storing the name broke every
+      // comparison against the language of a translation.
+      video.transcriptLanguage = normalizeLanguageCode(
+        result.language || video.originalLanguage || "en",
+      );
       video.transcriptSegments = (result.segments || [])
         .map((s) => ({
           start: Number(s.start) || 0,
@@ -791,7 +826,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
         });
         if (untranslated.length > 0) {
           const err = new Error(
-            `Translation to ${language} is incomplete: ${untranslated.length} of ${segments.length} segments could not be translated. The AI provider is most likely rate limited - please try again.`,
+            `Translation to ${language} is incomplete: ${untranslated.length} of ${segments.length} segments could not be translated. The AI provider is rate limited (the Groq daily token limit is the usual cause) - try again later, add credit to the provider, or use a different provider.`,
           );
           err.statusCode = 502;
           throw err;
