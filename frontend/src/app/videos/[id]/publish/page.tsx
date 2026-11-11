@@ -153,7 +153,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [categoryId, setCategoryId] = useState("27");
   const [playlistId, setPlaylistId] = useState("");
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
-  const [channels, setChannels] = useState<{ id: string; title: string }[]>([]);
+  const [channels, setChannels] = useState<{ id: string; title: string; language?: string | null }[]>([]);
   const [channelId, setChannelId] = useState("");
   const [ytConnected, setYtConnected] = useState(false);
   const [ytChannelTitle, setYtChannelTitle] = useState("");
@@ -296,7 +296,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
       api.get<{ playlists: { id: string; title: string }[] }>("/api/videos/youtube/playlists").then((r) => {
         if (r.success && r.data?.playlists) setPlaylists(r.data.playlists);
       });
-      api.get<{ channels: { id: string; title: string }[] }>("/api/videos/youtube/channels").then((r) => {
+      api.get<{ channels: { id: string; title: string; language?: string | null }[] }>("/api/videos/youtube/channels").then((r) => {
         if (r.success && r.data?.channels) {
           setChannels(r.data.channels);
           setChannelId((current) => current || r.data?.channels?.[0]?.id || "");
@@ -446,6 +446,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                   {channels.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.title}
+                      {c.language ? ` — ${c.language}` : ""}
                     </option>
                   ))}
                 </select>

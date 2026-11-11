@@ -4,6 +4,9 @@ const youtubeSchema = new mongoose.Schema(
   {
     channelId: { type: String, default: null },
     channelTitle: { type: String, default: null },
+    // The language this channel publishes in. It drives the default target
+    // language for dubbing and lesson renders.
+    language: { type: String, default: null },
     accessToken: { type: String, default: null, select: false },
     refreshToken: { type: String, default: null, select: false },
     tokenExpiresAt: { type: Date, default: null },
@@ -13,6 +16,7 @@ const youtubeSchema = new mongoose.Schema(
         {
           channelId: { type: String, required: true },
           channelTitle: { type: String, default: null },
+          language: { type: String, default: null },
         },
       ],
       default: [],

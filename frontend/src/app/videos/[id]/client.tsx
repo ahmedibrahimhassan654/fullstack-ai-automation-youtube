@@ -132,6 +132,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [lessonVoiceId, setLessonVoiceId] = useState("");
   const [elevenVoices, setElevenVoices] = useState<{ voice_id: string; name: string }[]>([]);
 
+  // The language of the connected YouTube channel. It is read at component
+  // level because the auth context resolves after the first render, so the
+  // effect below re-runs once it is known.
+  const channelLanguage = user?.youtube?.language || "";
+
   const load = async () => {
     setLoading(true);
     const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
@@ -144,8 +149,15 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setEditCategory(v.youtubeCategoryId || "27");
       setEditTags(v.aiMetadata?.tags?.join(", ") || "");
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
-      setDubLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
-      setLessonLanguage(v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en");
+      // The channel language wins: the user explicitly declared which
+      // language that channel publishes in. Without one, fall back to the
+      // video's own target languages.
+      setDubLanguage(
+        channelLanguage || v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en",
+      );
+      setLessonLanguage(
+        channelLanguage || v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en",
+      );
     } else {
       toast.error(res.message || "Failed to load video.");
     }
@@ -154,8 +166,11 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
   useEffect(() => {
     if (id) load();
+    // The channel language is a dependency because the auth context resolves
+    // after the first render - without it the default language would be
+    // picked before the channel is known.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, channelLanguage]);
 
   useEffect(() => {
     api.get<{ voices: { voice_id: string; name: string }[] }>("/api/videos/voices").then((res) => {

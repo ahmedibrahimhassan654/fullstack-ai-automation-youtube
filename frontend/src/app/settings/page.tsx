@@ -12,12 +12,40 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
+const LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+  { code: "zh", label: "Chinese" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "tr", label: "Turkish" },
+  { code: "nl", label: "Dutch" },
+  { code: "pl", label: "Polish" },
+];
+
+const languageLabel = (code?: string | null) =>
+  LANGUAGES.find((l) => l.code === code)?.label || code || "Not set";
+
+type YtChannel = {
+  channelId: string;
+  channelTitle?: string | null;
+  language?: string | null;
+};
+
 type YtStatus = {
   connected: boolean;
   channelId?: string | null;
   channelTitle?: string | null;
-  channels?: { channelId: string; channelTitle?: string | null }[];
-  accounts?: { channelId: string; channelTitle?: string | null }[];
+  language?: string | null;
+  channels?: YtChannel[];
+  accounts?: (YtChannel & { channels?: YtChannel[] })[];
   connectedAt?: string | null;
 };
 
@@ -27,22 +55,71 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<YtStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectingChannel, setSelectingChannel] = useState(false);
+  const [newChannelLanguage, setNewChannelLanguage] = useState(
+    user?.preferences?.defaultLanguage || "ar",
+  );
+  const [savingLanguageFor, setSavingLanguageFor] = useState<string | null>(null);
+
+  const loadStatus = async () => {
+    const res = await api.get<YtStatus>("/api/auth/youtube/status");
+    if (res.success && res.data) setStatus(res.data as YtStatus);
+  };
 
   useEffect(() => {
     (async () => {
-      const res = await api.get<YtStatus>('/api/auth/youtube/status');
-      if (res.success && res.data) setStatus(res.data as YtStatus);
+      await loadStatus();
       setLoading(false);
     })();
   }, []);
 
-  const connect = async () => {
-    const res = await api.get<{ url: string }>('/api/auth/youtube/connect');
+  // Every channel the user can publish to, across all connected accounts.
+  const allChannels: YtChannel[] = (() => {
+    const seen = new Map<string, YtChannel>();
+    for (const account of status?.accounts || []) {
+      for (const channel of account.channels || []) {
+        if (!seen.has(channel.channelId)) seen.set(channel.channelId, channel);
+      }
+      if (account.channelId && !seen.has(account.channelId)) {
+        seen.set(account.channelId, {
+          channelId: account.channelId,
+          channelTitle: account.channelTitle,
+          language: account.language ?? null,
+        });
+      }
+    }
+    for (const channel of status?.channels || []) {
+      if (!seen.has(channel.channelId)) seen.set(channel.channelId, channel);
+    }
+    return [...seen.values()];
+  })();
+
+  /** Starts the Google flow to add another channel, tagged with a language. */
+  const addChannel = async () => {
+    const res = await api.post<{ url: string }>("/api/auth/youtube/connect", {
+      language: newChannelLanguage,
+    });
     if (res.success && res.data?.url) {
       window.location.href = res.data.url;
     } else {
-      toast.error(res.message || 'Failed to start YouTube connection.');
+      toast.error(res.message || "Failed to start YouTube connection.");
     }
+  };
+
+  /** Changes the language of a channel without making it the default one. */
+  const setChannelLanguage = async (channelId: string, language: string) => {
+    setSavingLanguageFor(channelId);
+    const res = await api.post("/api/auth/youtube/channel-language", {
+      channelId,
+      language,
+    });
+    if (res.success) {
+      toast.success(res.message || "Channel language updated.");
+      await loadStatus();
+      await refreshUser();
+    } else {
+      toast.error(res.message || "Failed to update the channel language.");
+    }
+    setSavingLanguageFor(null);
   };
 
   const disconnect = async () => {
@@ -52,8 +129,7 @@ export default function SettingsPage() {
     } else {
       toast.error(res.message || 'Failed to disconnect YouTube.');
     }
-    const statusRes = await api.get<YtStatus>('/api/auth/youtube/status');
-    if (statusRes.success && statusRes.data) setStatus(statusRes.data as YtStatus);
+    await loadStatus();
     await refreshUser();
   };
 
@@ -62,8 +138,7 @@ export default function SettingsPage() {
     const res = await api.post<YtStatus>('/api/auth/youtube/channel', { channelId });
     if (res.success) {
       toast.success("Default channel updated.");
-      const statusRes = await api.get<YtStatus>('/api/auth/youtube/status');
-      if (statusRes.success && statusRes.data) setStatus(statusRes.data as YtStatus);
+      await loadStatus();
       await refreshUser();
     } else {
       toast.error(res.message || "Failed to update channel.");
@@ -88,64 +163,124 @@ export default function SettingsPage() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>YouTube Channel</CardTitle>
-              <CardDescription>Connect your channel to publish videos directly.</CardDescription>
+              <CardTitle>YouTube Channels</CardTitle>
+              <CardDescription>
+                Connect the channels you publish to and tell the app which
+                language each one is in.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
               {loading ? (
                 <p className="text-sm text-muted-foreground">Loading…</p>
-              ) : status?.connected ? (
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="default">Connected</Badge>
-                      <span className="font-medium">{status.channelTitle}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">{status.channelId}</p>
-                    {(status.accounts?.length || 0) > 1 && (
-                      <div className="mt-3 space-y-1">
-                        <Label>Connected channel (Google account)</Label>
-                        <select
-                          value={status.channelId || ""}
-                          onChange={(e) => selectChannel(e.target.value)}
-                          disabled={selectingChannel}
-                          className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                        >
-                          {(status.accounts || []).map((channel) => (
-                            <option key={channel.channelId} value={channel.channelId}>
-                              {channel.channelTitle || channel.channelId}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-                    {(status.accounts?.length || 0) <= 1 && (status.channels?.length || 0) > 1 && (
-                      <div className="mt-3 space-y-1">
-                        <Label>Default channel</Label>
-                        <select
-                          value={status.channelId || ""}
-                          onChange={(e) => selectChannel(e.target.value)}
-                          disabled={selectingChannel}
-                          className="w-full h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-                        >
-                          {(status.channels || []).map((channel) => (
-                            <option key={channel.channelId} value={channel.channelId}>
-                              {channel.channelTitle || channel.channelId}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                  <Button variant="destructive" size="sm" onClick={disconnect}>
-                    Disconnect
-                  </Button>
-                </div>
               ) : (
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">Not connected.</p>
-                  <Button onClick={connect}>Connect YouTube</Button>
-                </div>
+                <>
+                  {/* Add a new channel */}
+                  <div className="space-y-3 rounded-lg border border-dashed p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                      <div className="flex-1 space-y-1.5">
+                        <Label htmlFor="newChannelLanguage">
+                          Language for the new channel
+                        </Label>
+                        <select
+                          id="newChannelLanguage"
+                          value={newChannelLanguage}
+                          onChange={(e) => setNewChannelLanguage(e.target.value)}
+                          className="h-9 w-full rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        >
+                          {LANGUAGES.map((language) => (
+                            <option key={language.code} value={language.code}>
+                              {language.label} ({language.code})
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                          Used as the default dubbing and lesson language for this
+                          channel.
+                        </p>
+                      </div>
+                      <Button onClick={addChannel} className="sm:w-auto">
+                        {status?.connected ? "Add channel" : "Connect YouTube"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {allChannels.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium">Connected channels</p>
+                      <div className="space-y-2">
+                        {allChannels.map((channel) => {
+                          const isDefault = channel.channelId === status?.channelId;
+                          return (
+                            <div
+                              key={channel.channelId}
+                              className={cn(
+                                "flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between",
+                                isDefault && "border-primary/50 bg-primary/5",
+                              )}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate font-medium">
+                                    {channel.channelTitle || channel.channelId}
+                                  </span>
+                                  {isDefault && (
+                                    <Badge variant="default" className="shrink-0">
+                                      Default
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {channel.channelId}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <select
+                                  aria-label={`Language for ${channel.channelTitle || channel.channelId}`}
+                                  value={channel.language || ""}
+                                  disabled={savingLanguageFor === channel.channelId}
+                                  onChange={(e) =>
+                                    setChannelLanguage(channel.channelId, e.target.value)
+                                  }
+                                  className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                                >
+                                  <option value="">No language</option>
+                                  {LANGUAGES.map((language) => (
+                                    <option key={language.code} value={language.code}>
+                                      {language.label} ({language.code})
+                                    </option>
+                                  ))}
+                                </select>
+                                {!isDefault && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={selectingChannel}
+                                    onClick={() => selectChannel(channel.channelId)}
+                                  >
+                                    Make default
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {status?.connected && (
+                    <div className="flex items-center justify-between border-t pt-4">
+                      <p className="text-xs text-muted-foreground">
+                        Default channel: {status.channelTitle} ·{" "}
+                        {languageLabel(status.language)}
+                      </p>
+                      <Button variant="destructive" size="sm" onClick={disconnect}>
+                        Disconnect
+                      </Button>
+                    </div>
+                  )}
+                </>
               )}
             </CardContent>
           </Card>

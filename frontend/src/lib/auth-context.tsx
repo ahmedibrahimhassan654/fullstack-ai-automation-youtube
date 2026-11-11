@@ -14,6 +14,8 @@ export type User = {
   youtube?: {
     channelId?: string | null;
     channelTitle?: string | null;
+    /** The language the connected channel publishes in. */
+    language?: string | null;
     connectedAt?: string | null;
   };
 };

@@ -1701,10 +1701,17 @@ export const listYouTubeChannels = asyncHandler(async (req, res) => {
     accessToken,
     `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`,
   );
+  // Remember the language the user picked for each channel so the publish
+  // form can show it next to the channel name.
+  const known = new Map();
+  for (const channel of user.youtube?.channels || []) {
+    known.set(channel.channelId, channel.language || null);
+  }
   const channels = (channelsRes.items || []).map((item) => ({
     id: item.id,
     title: item.snippet?.title || item.id,
     thumbnailUrl: item.snippet?.thumbnails?.default?.url || null,
+    language: known.get(item.id) || null,
   }));
   res.status(200).json({ success: true, message: "YouTube channels", data: { channels } });
 });

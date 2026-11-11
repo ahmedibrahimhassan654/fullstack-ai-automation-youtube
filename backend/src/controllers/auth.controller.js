@@ -12,12 +12,24 @@ import {
 import { env } from '../config/env.js';
 
 const YOUTUBE_STATE_COOKIE = 'yt_oauth_state';
+// Carries the language the user picked for the channel they are adding
+// through the Google redirect.
+const YOUTUBE_LANGUAGE_COOKIE = 'yt_oauth_language';
 const stateCookieOptions = {
   httpOnly: true,
   secure: env.nodeEnv === 'production',
   sameSite: 'lax',
   maxAge: 10 * 60 * 1000, // 10 minutes
   path: '/',
+};
+
+const SUPPORTED_LANGUAGES = new Set([
+  'en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ar', 'hi', 'zh', 'ja', 'ko', 'tr', 'nl', 'pl',
+]);
+
+const normalizeLanguage = (value) => {
+  const code = String(value || '').trim().toLowerCase().split('-')[0];
+  return SUPPORTED_LANGUAGES.has(code) ? code : null;
 };
 
 // ---------- Register ----------
@@ -158,6 +170,16 @@ export const youtubeConnect = asyncHandler(async (req, res) => {
   }
   const state = generateState();
   res.cookie(YOUTUBE_STATE_COOKIE, state, stateCookieOptions);
+
+  // The language the user picked for this channel. It survives the Google
+  // redirect through a short lived cookie.
+  const language = normalizeLanguage(req.body?.language ?? req.query?.language);
+  if (language) {
+    res.cookie(YOUTUBE_LANGUAGE_COOKIE, language, stateCookieOptions);
+  } else {
+    res.clearCookie(YOUTUBE_LANGUAGE_COOKIE, { path: '/' });
+  }
+
   const url = buildYouTubeAuthUrl(state);
   res.status(200).json({ success: true, data: { url } });
 });
@@ -188,7 +210,14 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
 
   try {
     const tokens = await exchangeCodeForTokens(code);
-    const channels = await fetchYouTubeChannels(tokens.access_token);
+    const fetchedChannels = await fetchYouTubeChannels(tokens.access_token);
+
+    // The language the user picked before the Google redirect.
+    const language = normalizeLanguage(req.cookies?.[YOUTUBE_LANGUAGE_COOKIE]);
+    const channels = fetchedChannels.map((channel) => ({
+      ...channel,
+      language: channel.language || language || null,
+    }));
 
     const user = await User.findById(userId);
     if (!user) throw new Error('User not found');
@@ -197,6 +226,7 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
     const connection = {
       channelId: selected.channelId,
       channelTitle: selected.channelTitle,
+      language: selected.language || language || null,
       channels,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token || user.youtube?.refreshToken || null,
@@ -209,6 +239,13 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
       (account) => account.channelId === connection.channelId,
     );
     if (existingIndex >= 0) {
+      // Keep a language the user already set for this channel.
+      const previous = user.youtubeAccounts[existingIndex];
+      connection.language = previous?.language || connection.language;
+      connection.channels = channels.map((channel) => ({
+        ...channel,
+        language: previous?.channels?.find((c) => c.channelId === channel.channelId)?.language || channel.language,
+      }));
       user.youtubeAccounts[existingIndex] = connection;
     } else {
       user.youtubeAccounts.push(connection);
@@ -218,9 +255,11 @@ export const youtubeCallback = asyncHandler(async (req, res) => {
 
     res.clearCookie(YOUTUBE_STATE_COOKIE, { path: '/' });
     res.clearCookie('yt_oauth_user', { path: '/' });
+    res.clearCookie(YOUTUBE_LANGUAGE_COOKIE, { path: '/' });
     return res.redirect(`${env.clientUrl}/settings?youtube=connected`);
   } catch (e) {
     res.clearCookie(YOUTUBE_STATE_COOKIE, { path: '/' });
+    res.clearCookie(YOUTUBE_LANGUAGE_COOKIE, { path: '/' });
     return res.redirect(`${env.clientUrl}/settings?youtube=error&reason=${encodeURIComponent(e.message)}`);
   }
 });
@@ -267,7 +306,13 @@ export const youtubeStatus = asyncHandler(async (req, res) => {
   const accounts = (user.youtubeAccounts || []).map((account) => ({
     channelId: account.channelId,
     channelTitle: account.channelTitle,
+    language: account.language || null,
     connectedAt: account.connectedAt,
+    channels: (account.channels || []).map((channel) => ({
+      channelId: channel.channelId,
+      channelTitle: channel.channelTitle,
+      language: channel.language || null,
+    })),
   }));
 
   res.status(200).json({
@@ -276,7 +321,12 @@ export const youtubeStatus = asyncHandler(async (req, res) => {
       connected: Boolean(yt.channelId),
       channelId: yt.channelId || null,
       channelTitle: yt.channelTitle || null,
-      channels: yt.channels || [],
+      language: yt.language || null,
+      channels: (yt.channels || []).map((channel) => ({
+        channelId: channel.channelId,
+        channelTitle: channel.channelTitle,
+        language: channel.language || null,
+      })),
       accounts,
       connectedAt: yt.connectedAt || null,
       tokenExpiresAt: yt.tokenExpiresAt || null,
@@ -291,6 +341,8 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
     err.statusCode = 400;
     throw err;
   }
+  // Optional: set the language of the channel while selecting it.
+  const language = normalizeLanguage(req.body?.language);
   const user = await User.findById(req.user._id).select('+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken');
   const yt = user.youtube || {};
 
@@ -300,6 +352,12 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
   if (channel) {
     yt.channelId = channel.channelId;
     yt.channelTitle = channel.channelTitle;
+    if (language) {
+      yt.channels = channels.map((item) =>
+        item.channelId === channelId ? { ...item.toObject?.() ?? item, language } : item,
+      );
+      yt.language = language;
+    }
     user.youtube = yt;
     await user.save();
     return res.status(200).json({
@@ -308,6 +366,7 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
         connected: true,
         channelId: yt.channelId,
         channelTitle: yt.channelTitle,
+        language: yt.language || null,
         channels: yt.channels,
       },
     });
@@ -316,6 +375,12 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
   // Otherwise try selecting a different connected account.
   const account = (user.youtubeAccounts || []).find((item) => item.channelId === channelId);
   if (account) {
+    if (language) {
+      account.channels = (account.channels || []).map((item) =>
+        item.channelId === channelId ? { ...item.toObject?.() ?? item, language } : item,
+      );
+      account.language = language;
+    }
     user.youtube = account;
     await user.save();
     return res.status(200).json({
@@ -324,6 +389,7 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
         connected: true,
         channelId: account.channelId,
         channelTitle: account.channelTitle,
+        language: account.language || null,
         channels: account.channels || [],
       },
     });
@@ -332,6 +398,62 @@ export const youtubeSelectChannel = asyncHandler(async (req, res) => {
   const err = new Error('Selected channel is not available');
   err.statusCode = 400;
   throw err;
+});
+
+// ---------- YouTube OAuth: set the language of a channel ----------
+export const youtubeSetChannelLanguage = asyncHandler(async (req, res) => {
+  const channelId = String(req.body?.channelId || '').trim();
+  if (!channelId) {
+    const err = new Error('channelId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const language = normalizeLanguage(req.body?.language);
+  if (!language) {
+    const err = new Error('A valid language is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  let found = false;
+
+  const yt = user.youtube || {};
+  if ((yt.channels || []).some((channel) => channel.channelId === channelId)) {
+    found = true;
+    yt.channels = yt.channels.map((channel) =>
+      channel.channelId === channelId ? { ...channel.toObject?.() ?? channel, language } : channel,
+    );
+    if (yt.channelId === channelId) yt.language = language;
+    user.youtube = yt;
+  }
+
+  user.youtubeAccounts = (user.youtubeAccounts || []).map((account) => {
+    const channels = account.channels || [];
+    if (!channels.some((channel) => channel.channelId === channelId)) return account;
+    found = true;
+    const next = account.toObject?.() ?? account;
+    next.channels = channels.map((channel) =>
+      channel.channelId === channelId ? { ...channel.toObject?.() ?? channel, language } : channel,
+    );
+    if (next.channelId === channelId) next.language = language;
+    return next;
+  });
+
+  if (!found) {
+    const err = new Error('Channel not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  await user.save();
+  res.status(200).json({ success: true, data: { channelId, language } });
 });
 
 // ---------- YouTube OAuth: disconnect ----------
