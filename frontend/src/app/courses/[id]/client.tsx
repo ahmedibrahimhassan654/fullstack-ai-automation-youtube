@@ -96,6 +96,8 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
   const [imageUploading, setImageUploading] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -309,6 +311,26 @@ export default function CourseDetailClient({ id }: { id: string }) {
     [ids[index], ids[target]] = [ids[target], ids[index]];
 
     const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: ids });
+    if (res.success) {
+      await load();
+    } else {
+      toast.error(res.message || "Failed to reorder the lessons.");
+    }
+  };
+
+  /** Reorders the lessons with a drag and drop gesture. */
+  const reorderByDrop = async (from: number, to: number) => {
+    if (!course) return;
+    const ids = course.videos
+      .map((entry) => entry.video?._id)
+      .filter(Boolean) as string[];
+    if (from < 0 || from >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(from, 1);
+    let toIndex = to;
+    if (from < to) toIndex = to - 1;
+    next.splice(toIndex, 0, moved);
+    const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: next });
     if (res.success) {
       await load();
     } else {
@@ -557,7 +579,36 @@ export default function CourseDetailClient({ id }: { id: string }) {
                         return (
                           <li
                             key={entry.video?._id || index}
-                            className="flex items-center gap-3 rounded-lg border p-3"
+                            draggable={!isPublishing}
+                            onDragStart={(e) => {
+                              setDragIndex(index);
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("text/plain", String(index));
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              setDragOverIndex(index);
+                            }}
+                            onDragLeave={() => {
+                              if (dragOverIndex === index) setDragOverIndex(null);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setDragOverIndex(null);
+                              setDragIndex(null);
+                              if (dragIndex !== null) reorderByDrop(dragIndex, index);
+                            }}
+                            onDragEnd={() => {
+                              setDragIndex(null);
+                              setDragOverIndex(null);
+                            }}
+                            className={cn(
+                              "flex items-center gap-3 rounded-lg border p-3",
+                              dragOverIndex === index && dragIndex !== index
+                                ? "border-primary"
+                                : "border",
+                              dragIndex === index ? "opacity-60" : undefined,
+                            )}
                           >
                             <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-semibold">
                               {index + 1}
@@ -584,7 +635,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                     className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
                                   >
                                     <ExternalLink className="size-3" />
-                                    Published
+                                    Published on YouTube
                                   </a>
                                 ) : ready ? (
                                   <Badge variant="outline" className="text-[10px]">
