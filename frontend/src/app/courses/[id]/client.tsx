@@ -292,6 +292,10 @@ export default function CourseDetailClient({ id }: { id: string }) {
   };
 
   const removeVideo = async (videoId: string) => {
+    if (!videoId) {
+      toast.error("This lesson has no video to remove.");
+      return;
+    }
     const res = await api.delete(`/api/courses/${id}/videos/${videoId}`);
     if (res.success) {
       toast.success(res.message || "Video removed.");
