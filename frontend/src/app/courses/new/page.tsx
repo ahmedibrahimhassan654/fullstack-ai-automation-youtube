@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, BookOpen, Loader2, ListVideo, Plus } from "lucide-react";
+import { ArrowRight, BookOpen, ImageIcon, Loader2, ListVideo, Plus } from "lucide-react";
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { useAuth } from "@/lib/auth-context";
@@ -40,6 +40,7 @@ type CourseRow = {
   language?: string;
   channelTitle?: string | null;
   playlistTitle?: string | null;
+  thumbnailUrl?: string | null;
   createdAt?: string;
   videos?: { order: number; video: { _id: string; title: string } | null }[];
 };
@@ -76,6 +77,23 @@ export default function CreateCoursePage() {
   const [courses, setCourses] = useState<CourseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [imageDataUrl, setImageDataUrl] = useState("");
+  const [imagePreview, setImagePreview] = useState("");
+
+  const pickImage = (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Pick an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      setImageDataUrl(result);
+      setImagePreview(result);
+    };
+    reader.readAsDataURL(file);
+  };
 
   useEffect(() => {
     (async () => {
@@ -156,6 +174,7 @@ export default function CreateCoursePage() {
       title: title.trim(),
       description: description.trim(),
       language,
+      thumbnailDataUrl: imageDataUrl || undefined,
       channelId: channelId || undefined,
       playlistId: !createPlaylist && playlistId ? playlistId : undefined,
       playlistTitle: !createPlaylist && playlistId ? playlistId : undefined,
@@ -254,6 +273,48 @@ export default function CreateCoursePage() {
                           {languageLabel(channel.language)}.
                         </p>
                       )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="courseImage">Course image</Label>
+                      <div className="flex items-start gap-3">
+                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted">
+                          {imagePreview ? (
+                            <img
+                              src={imagePreview}
+                              alt="Course image preview"
+                              className="size-full object-cover"
+                            />
+                          ) : (
+                            <ImageIcon className="size-6 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <input
+                            id="courseImage"
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => pickImage(e.target.files?.[0])}
+                            className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                          />
+                          {imagePreview && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => {
+                                setImageDataUrl("");
+                                setImagePreview("");
+                              }}
+                            >
+                              Remove image
+                            </Button>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            The picture shown with the course.
+                          </p>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="space-y-1.5">
@@ -490,6 +551,13 @@ export default function CreateCoursePage() {
                           {course.channelTitle ? ` • ${course.channelTitle}` : ""}
                         </p>
                       </div>
+                      {course.thumbnailUrl && (
+                        <img
+                          src={course.thumbnailUrl}
+                          alt=""
+                          className="size-10 shrink-0 rounded-md object-cover"
+                        />
+                      )}
                       <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
                     </Link>
                   ))}

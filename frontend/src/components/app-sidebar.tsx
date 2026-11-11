@@ -12,6 +12,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Tv,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -72,6 +73,13 @@ const NAV_SECTIONS: NavSection[] = [
         icon: BookOpen,
         isActive: (pathname) =>
           pathname === "/courses/new" || pathname.startsWith("/courses/"),
+      },
+      {
+        title: "Channels",
+        href: "/channels",
+        icon: Tv,
+        isActive: (pathname) =>
+          pathname === "/channels" || pathname.startsWith("/channels/"),
       },
     ],
   },

@@ -2,6 +2,8 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import Course from '../models/Course.js';
 import Video from '../models/Video.js';
 import User from '../models/User.js';
+import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
+import { env } from '../config/env.js';
 import { publishCourseToYouTube } from '../services/coursePublish.service.js';
 import {
   createYouTubePlaylist,
@@ -146,15 +148,32 @@ export const createCourse = asyncHandler(async (req, res) => {
 
   const videoIds = await ownedVideoIds(req.user._id, req.body?.videoIds);
 
+  // The course image can be sent with the course itself.
+  let thumbnailUrl = String(req.body?.thumbnailUrl || '').trim() || null;
+  const dataUrl = String(req.body?.thumbnailDataUrl || '').trim();
+  if (!thumbnailUrl && dataUrl.startsWith('data:image/') && isCloudinaryConfigured()) {
+    try {
+      const uploaded = await cloudinary.uploader.upload(dataUrl, {
+        folder: `${env.cloudinaryFolder}/courses`,
+        resource_type: 'image',
+      });
+      thumbnailUrl = uploaded.secure_url;
+    } catch (error) {
+      console.warn('[createCourse] image upload failed:', error?.message);
+    }
+  }
+
   let playlistId = String(req.body?.playlistId || '').trim() || null;
   let playlistTitle = String(req.body?.playlistTitle || '').trim() || null;
 
-  // One playlist per course: create it now on the course channel.
+  // One playlist per course: create it now on the course channel. The
+  // tokens of the account that owns that channel are used, not the ones of
+  // whichever channel happens to be active.
   if (req.body?.createPlaylist && channel) {
     const user = await User.findById(req.user._id).select(
       '+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken',
     );
-    const accessToken = await getValidYouTubeAccessToken(user);
+    const accessToken = await getValidYouTubeAccessToken(user, channel.channelId);
     const playlist = await createYouTubePlaylist(accessToken, {
       title,
       description: String(req.body?.description || '').trim(),
@@ -167,7 +186,7 @@ export const createCourse = asyncHandler(async (req, res) => {
     title,
     description: String(req.body?.description || '').trim(),
     language,
-    thumbnailUrl: String(req.body?.thumbnailUrl || '').trim() || null,
+    thumbnailUrl,
     channelId: channel?.channelId || null,
     channelTitle: channel?.channelTitle || null,
     channelLanguage: channel?.language || null,
@@ -373,6 +392,134 @@ export const listCourseDestinations = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     data: { channels: unique, playlists },
+  });
+});
+
+// ---------- Courses: the playlists of every channel ----------
+export const listChannelPlaylists = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select(
+    '+youtube.accessToken +youtube.refreshToken +youtubeAccounts.accessToken +youtubeAccounts.refreshToken',
+  );
+
+  // The playlists live on a Google account, so they are fetched once per
+  // account and then grouped by the channel they belong to.
+  const accounts = [];
+  for (const account of user?.youtubeAccounts || []) {
+    const channels = (account.channels || []).map((channel) => ({
+      channelId: channel.channelId,
+      channelTitle: channel.channelTitle,
+      language: channel.language || null,
+    }));
+    if (!channels.length && account.channelId) {
+      channels.push({
+        channelId: account.channelId,
+        channelTitle: account.channelTitle,
+        language: account.language || null,
+      });
+    }
+    if (!channels.length) continue;
+    accounts.push({ account, channels });
+  }
+  if (!accounts.length && user?.youtube?.channelId) {
+    accounts.push({
+      account: user.youtube,
+      channels: [
+        {
+          channelId: user.youtube.channelId,
+          channelTitle: user.youtube.channelTitle,
+          language: user.youtube.language || null,
+        },
+      ],
+    });
+  }
+
+  const playlistsByChannel = new Map();
+  for (const { account, channels } of accounts) {
+    let playlists = [];
+    try {
+      const accessToken = await getValidYouTubeAccessToken(user, account.channelId);
+      const res2 = await fetch(
+        'https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50',
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      const data = await res2.json().catch(() => ({}));
+      playlists = (data.items || []).map((item) => ({
+        id: item.id,
+        title: item.snippet?.title || 'Untitled playlist',
+        description: item.snippet?.description || '',
+        channelId: item.snippet?.channelId || null,
+        thumbnailUrl: item.snippet?.thumbnails?.default?.url || null,
+      }));
+    } catch {
+      // This account is not authorized any more.
+      playlists = [];
+    }
+
+    for (const playlist of playlists) {
+      // The API gives the channel of the playlist; fall back to the account
+      // when it does not.
+      const ownerChannel =
+        channels.find((channel) => channel.channelId === playlist.channelId) ||
+        channels[0];
+      if (!ownerChannel) continue;
+      const list = playlistsByChannel.get(ownerChannel.channelId) || [];
+      list.push(playlist);
+      playlistsByChannel.set(ownerChannel.channelId, list);
+    }
+  }
+
+  const allChannels = [];
+  const seen = new Set();
+  for (const { channels } of accounts) {
+    for (const channel of channels) {
+      if (!channel.channelId || seen.has(channel.channelId)) continue;
+      seen.add(channel.channelId);
+      allChannels.push({
+        ...channel,
+        playlists: playlistsByChannel.get(channel.channelId) || [],
+      });
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    data: { channels: allChannels },
+  });
+});
+
+// ---------- Courses: the image of the course ----------
+export const uploadCourseThumbnail = asyncHandler(async (req, res) => {
+  const course = await Course.findOne({ _id: req.params.id, owner: req.user._id });
+  if (!course) {
+    const err = new Error('Course not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isCloudinaryConfigured()) {
+    const err = new Error('Cloudinary is not configured on the server');
+    err.statusCode = 500;
+    throw err;
+  }
+
+  const dataUrl = String(req.body?.thumbnailDataUrl || '').trim();
+  if (!dataUrl.startsWith('data:image/')) {
+    const err = new Error('A valid image data URL is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await cloudinary.uploader.upload(dataUrl, {
+    folder: `${env.cloudinaryFolder}/courses`,
+    resource_type: 'image',
+  });
+
+  course.thumbnailUrl = result.secure_url;
+  await course.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Course image updated',
+    data: { thumbnailUrl: course.thumbnailUrl },
   });
 });
 
