@@ -28,7 +28,7 @@ export default function RegisterPage() {
     try {
       await register(name, email, password);
       toast.success('Account created successfully.');
-      router.push('/dashboard');
+      router.push('/videos');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Registration failed';
       setError(message);

@@ -207,7 +207,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
     const res = await api.delete(`/api/videos/${video._id}`);
     if (res.success) {
       toast.success(res.message || "Video deleted.");
-      router.push("/dashboard");
+      router.push("/videos");
     } else {
       toast.error(res.message || "Failed to delete video.");
     }

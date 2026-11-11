@@ -99,7 +99,7 @@ export default function NewVideoPage() {
       // Kick off the async processing pipeline (transcription -> ...).
       await api.post(`/api/videos/${id}/process`);
       toast.success(res.message || "Video uploaded successfully.");
-      router.push("/dashboard");
+      router.push("/videos");
     } else {
       const message = res.message || "Upload failed.";
       setError(message);

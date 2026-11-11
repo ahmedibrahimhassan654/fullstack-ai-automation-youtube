@@ -32,7 +32,7 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!loading) {
       if (!user) router.replace('/login');
-      else if (user.role !== 'admin') router.replace('/dashboard');
+      else if (user.role !== 'admin') router.replace('/videos');
     }
   }, [loading, user, router]);
 

@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { AdminGuard } from '@/components/auth-guard';
 import { AppShell } from '@/components/app-shell';
 import { api } from '@/lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -35,10 +36,17 @@ type VideoRow = {
 
 export default function AdminPage() {
   const toast = useToast();
+  const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // The Videos tab points at the shared /videos page, so both menus lead to
+  // the same place.
+  const handleTabChange = (value: string) => {
+    if (value === "videos") router.push("/videos");
+  };
 
   const load = async () => {
     setLoading(true);
@@ -122,7 +130,7 @@ export default function AdminPage() {
             </div>
           )}
 
-          <Tabs defaultValue="users">
+          <Tabs defaultValue="users" onValueChange={handleTabChange}>
             <TabsList>
               <TabsTrigger value="users">Users</TabsTrigger>
               <TabsTrigger value="videos">Videos</TabsTrigger>
@@ -175,43 +183,49 @@ export default function AdminPage() {
                 </CardContent>
               </Card>
             </TabsContent>
-
-            <TabsContent value="videos">
-              <Card>
-                <CardContent className="pt-6">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Title</TableHead>
-                        <TableHead>Owner</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Created</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {videos.map((v) => (
-                        <TableRow key={v._id}>
-                          <TableCell>{v.title}</TableCell>
-                          <TableCell>{v.user?.email || v.user?.name || '—'}</TableCell>
-                          <TableCell>
-                            <Badge variant={v.status === 'completed' ? 'default' : 'secondary'}>{v.status}</Badge>
-                          </TableCell>
-                          <TableCell>{v.createdAt ? new Date(v.createdAt).toLocaleDateString() : '—'}</TableCell>
-                        </TableRow>
-                      ))}
-                      {videos.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={4} className="text-center text-muted-foreground">
-                            No videos yet
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </TabsContent>
           </Tabs>
+
+          {/* The "Videos" tab now links to /videos, so the platform wide list
+              stays here as its own card. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>All platform videos</CardTitle>
+              <CardDescription>Every video uploaded by every user.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="-mx-4 overflow-x-auto sm:-mx-6">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Owner</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Created</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {videos.map((v) => (
+                      <TableRow key={v._id}>
+                        <TableCell>{v.title}</TableCell>
+                        <TableCell>{v.user?.email || v.user?.name || '—'}</TableCell>
+                        <TableCell>
+                          <Badge variant={v.status === 'completed' ? 'default' : 'secondary'}>{v.status}</Badge>
+                        </TableCell>
+                        <TableCell>{v.createdAt ? new Date(v.createdAt).toLocaleDateString() : '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                    {videos.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center text-muted-foreground">
+                          No videos yet
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </AppShell>
     </AdminGuard>

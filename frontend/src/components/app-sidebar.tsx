@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   ChevronsLeft,
   ChevronsRight,
+  Film,
   LayoutDashboard,
   LogOut,
   Settings,
@@ -49,13 +50,13 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Workspace",
     items: [
       {
-        title: "Dashboard",
-        href: "/dashboard",
-        icon: LayoutDashboard,
-        // The dashboard holds the video list, so it stays selected while a
-        // single video is open. The upload page has its own entry.
+        title: "Videos",
+        href: "/videos",
+        icon: Film,
+        // The list of videos stays selected while a single video is open.
+        // The upload page has its own entry.
         isActive: (pathname) =>
-          pathname === "/dashboard" ||
+          pathname === "/videos" ||
           (pathname.startsWith("/videos/") && pathname !== "/videos/new"),
       },
       {
@@ -132,7 +133,7 @@ export function AppSidebar({
         )}
       >
         <Link
-          href="/dashboard"
+          href="/videos"
           onClick={onNavigate}
           className={cn(
             "flex items-center gap-2.5 overflow-hidden rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
