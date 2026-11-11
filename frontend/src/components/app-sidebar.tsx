@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  BookOpen,
   ChevronsLeft,
   ChevronsRight,
   Film,
@@ -64,6 +65,13 @@ const NAV_SECTIONS: NavSection[] = [
         href: "/videos/new",
         icon: UploadCloud,
         isActive: (pathname) => pathname === "/videos/new",
+      },
+      {
+        title: "Create Course",
+        href: "/courses/new",
+        icon: BookOpen,
+        isActive: (pathname) =>
+          pathname === "/courses/new" || pathname.startsWith("/courses/"),
       },
     ],
   },

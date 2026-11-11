@@ -1,0 +1,19 @@
+import { Router } from 'express';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { protect } from '../middleware/auth.middleware.js';
+import * as course from '../controllers/course.controller.js';
+
+const router = Router();
+
+router.use(protect);
+
+router.get('/', course.listCourses);
+router.post('/', course.createCourse);
+router.get('/:id', course.getCourse);
+router.patch('/:id', course.updateCourse);
+router.delete('/:id', course.deleteCourse);
+router.post('/:id/videos', course.addCourseVideos);
+router.delete('/:id/videos/:videoId', course.removeCourseVideo);
+router.put('/:id/videos/order', course.reorderCourseVideos);
+
+export default router;
