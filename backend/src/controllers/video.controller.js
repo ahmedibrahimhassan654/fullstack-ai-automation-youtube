@@ -744,7 +744,10 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
           targetLanguage: language,
           sourceSegments: video.transcriptSegments,
           sourceLanguage: originalLanguage,
-        }).length === 0;
+        }).length === 0 &&
+        // A translation without a spoken version would read the English
+        // technical names with the Arabic voice.
+        stored.segments.every((s) => String(s.spokenText || '').trim());
 
       if (!storedIsUsable) {
         if (stored?.segments?.length) {

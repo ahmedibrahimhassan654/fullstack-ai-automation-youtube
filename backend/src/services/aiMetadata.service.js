@@ -432,19 +432,17 @@ export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sour
     const sourceValue = String(sourceText || '').trim();
     const sourceTargetChars = countMatches(sourceValue, scriptPattern);
 
-    // The translation has to carry more of the target script than the source
-    // did. "إلى Kali Linux" gains Arabic characters and passes, while the
-    // untranslated "Have already downloaded the ISO file" does not.
-    if (targetChars > sourceTargetChars) return true;
+    // Written in the target script: a translation.
+    if (targetChars > 0) return true;
 
-    if (targetChars === 0 && sourceTargetChars === 0) {
-      // Neither side uses the target script. That is only acceptable for a
-      // short label such as a product name ("Kali Linux"), never for a
-      // sentence that should have been translated.
-      return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
-    }
+    // The source was in the target script but the translation is not: the
+    // segment was mangled or dropped.
+    if (sourceTargetChars > 0) return false;
 
-    return false;
+    // Neither side uses the target script. That is only acceptable for a
+    // short label such as a product name ("Kali Linux"), never for a
+    // sentence that should have been translated.
+    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
   }
 
   const sourceValue = String(sourceText || '').trim();
@@ -477,6 +475,126 @@ export const findUntranslatedSegments = ({
 
 const QUALITY_THRESHOLD = 8;
 const MAX_TRANSLATION_ATTEMPTS = 3;
+
+// --- Arabic number words -------------------------------------------------------
+// Numbers must be spoken as Arabic words, not read out digit by digit. This
+// is the fallback for anything the model leaves as digits in the spoken
+// version.
+const ARABIC_ONES = [
+  'صفر',
+  'واحد',
+  'اثنان',
+  'ثلاثة',
+  'أربعة',
+  'خمسة',
+  'ستة',
+  'سبعة',
+  'ثمانية',
+  'تسعة',
+];
+
+const ARABIC_TEENS = [
+  'عشرة',
+  'أحد عشر',
+  'اثنا عشر',
+  'ثلاثة عشر',
+  'أربعة عشر',
+  'خمسة عشر',
+  'ستة عشر',
+  'سبعة عشر',
+  'ثمانية عشر',
+  'تسعة عشر',
+];
+
+const ARABIC_TENS = [
+  '',
+  '',
+  'عشرون',
+  'ثلاثون',
+  'أربعون',
+  'خمسون',
+  'ستون',
+  'سبعون',
+  'ثمانون',
+  'تسعون',
+];
+
+const ARABIC_HUNDREDS = [
+  '',
+  'مائة',
+  'مائتان',
+  'ثلاثمائة',
+  'أربعمائة',
+  'خمسمائة',
+  'ستمائة',
+  'سبعمائة',
+  'ثمانمائة',
+  'تسعمائة',
+];
+
+export const spellArabicNumber = (value) => {
+  const cleaned = String(value ?? '').replace(/[^\d.]/g, '');
+  const parsed = Number.parseFloat(cleaned);
+  const n = Math.floor(Math.abs(Number.isFinite(parsed) ? parsed : 0));
+  if (!Number.isFinite(n)) return '';
+  if (n === 0) return ARABIC_ONES[0];
+  if (n < 10) return ARABIC_ONES[n];
+  if (n < 20) return ARABIC_TEENS[n - 10];
+  if (n < 100) {
+    const tens = Math.floor(n / 10);
+    const ones = n % 10;
+    return ones === 0
+      ? ARABIC_TENS[tens]
+      : `${ARABIC_ONES[ones]} و${ARABIC_TENS[tens]}`;
+  }
+  if (n < 1000) {
+    const hundreds = Math.floor(n / 100);
+    const rest = n % 100;
+    return rest === 0
+      ? ARABIC_HUNDREDS[hundreds]
+      : `${ARABIC_HUNDREDS[hundreds]} و${spellArabicNumber(rest)}`;
+  }
+  if (n < 10000) {
+    const thousands = Math.floor(n / 1000);
+    const rest = n % 1000;
+    const head =
+      thousands === 1
+        ? 'ألف'
+        : thousands === 2
+          ? 'ألفان'
+          : `${ARABIC_ONES[thousands]} آلاف`;
+    return rest === 0 ? head : `${head} و${spellArabicNumber(rest)}`;
+  }
+  return String(n);
+};
+
+/**
+ * Turns the digits of a sentence into Arabic words.
+ *
+ * Digits that belong to a Latin identifier (ISO9000, Node18) are left alone.
+ */
+export const spellOutNumbersInArabic = (text) =>
+  String(text || '').replace(
+    // A hyphen right after the number glues two words together ("64-bit"); it
+    // is consumed so the voice says the number and the unit separately.
+    /(?<![\p{L}\d])\d+(?:[.,]\d+)*(?:[-\u2011])?/gu,
+    (match) => {
+      const hadHyphen = /[-\u2011]$/.test(match);
+      const cleaned = match.replace(/[-\u2011]$/, '');
+      const [intPart, ...decParts] = cleaned.split(/[.,]/);
+      const head = spellArabicNumber(intPart);
+      const words = decParts.length
+        ? `${head} فاصلة ${decParts
+            .join('')
+            .split('')
+            .map((d) => ARABIC_ONES[Number(d)])
+            .join(' ')}`
+        : head;
+      // The hyphen is replaced by a space so the voice says the number and
+      // the unit as two words.
+      return hadHyphen ? `${words} ` : words;
+    },
+  );
 
 const toPair = (segment) => ({
   start: Number(segment?.start) || 0,
@@ -518,7 +636,7 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
     'Return ONLY valid JSON: {"segments":["translated text 1","translated text 2"]}. ' +
     'Return exactly ' +
     batch.length +
-    ' strings, in the same order as the input segments, and translate each one.';
+    ' strings, in the same order as the input segments, and translate naturally.';
 
   const userLines = [`Target language: ${targetLanguage}`, '', 'Segments (original English):', JSON.stringify(batch)];
 
@@ -551,6 +669,97 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
  * translated - it never falls back to the source text, because a silent
  * fallback is what made the dub speak English with an Arabic voice.
  */
+/**
+ * Rewrites the translated sentences that contain technical names or numbers
+ * into the form that is spoken aloud.
+ *
+ * The subtitles keep "Kali Linux" and "ISO" in Latin script so the reader can
+ * recognise them, but the narration reads "كالي لينكس" and "إيزو" with the
+ * same Arabic voice. Switching to an English voice for those words interrupts
+ * the lesson, so they are transliterated instead.
+ *
+ * Only the sentences that actually contain a technical name or a number are
+ * sent, which keeps this pass far cheaper than translating everything twice.
+ */
+const generateSpokenVersions = async ({ segments, targetLanguage, strict = false }) => {
+  const input = (segments || [])
+    .map((segment, position) => ({
+      // The caller passes the index it knows the segment by; fall back to the
+      // position when it does not.
+      index: Number.isInteger(segment?.index) ? segment.index : position,
+      start: Number(segment?.start) || 0,
+      end: Number(segment?.end) || 0,
+      text: String(segment?.text || '').trim(),
+    }))
+    .filter((segment) => segment.text);
+
+  const spoken = new Map();
+  if (input.length === 0) return spoken;
+
+  const system =
+    'You prepare Arabic subtitles for narration. For each Arabic sentence given to you, return the SAME sentence rewritten for SPEAKING ALOUD in Arabic. ' +
+    'Write every technical name, product name, command or code identifier the way an Arabic speaker pronounces it, using Arabic letters only ' +
+    '(for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس", "npm install" becomes "إن بي إم إنستال", ' +
+    '"Debian" becomes "ديبيان", "VirtualBox" becomes "فيرتشوال بوكس", "RAM" becomes "رام", "GB" becomes "جي بي", "bit" becomes "بت"). ' +
+    'Keep every number EXACTLY as it appears in the input, do not convert it and do not change its value. ' +
+    'Keep the meaning and the tone identical, and use natural, professional Modern Standard Arabic with correct grammar and correct number agreement. ' +
+    (strict
+      ? 'IMPORTANT: the result must contain no Latin letters at all. Every Latin word must be written in Arabic letters. '
+      : '') +
+    'Return ONLY valid JSON: {"segments":["spoken sentence 1","spoken sentence 2"]}. ' +
+    'Return exactly ' +
+    input.length +
+    ' strings, in the same order as the input sentences.';
+
+  const batches = chunkArray(input, 10);
+  for (const batch of batches) {
+    let content = '';
+    try {
+      content = await callQualityChat(
+        [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content:
+              `Target language: ${targetLanguage}\n\nSentences:\n` +
+              JSON.stringify(batch.map((s) => ({ start: s.start, end: s.end, text: s.text }))),
+          },
+        ],
+        {
+          fast: true,
+          temperature: 0.1,
+          maxTokens: 2500,
+          responseFormat: { type: 'json_object' },
+        },
+      );
+    } catch (error) {
+      console.error('[generateSpokenVersions] chat error:', error?.message);
+      continue;
+    }
+
+    const parsed = parseJson(content);
+    const list = parsed?.segments;
+    if (!Array.isArray(list) || list.length !== batch.length) {
+      console.warn(
+        '[generateSpokenVersions] rejected batch: expected',
+        batch.length,
+        'got',
+        list?.length ?? 'none',
+      );
+      continue;
+    }
+
+    batch.forEach((segment, i) => {
+      const value = String(
+        typeof list[i] === 'string' ? list[i] : list[i]?.text ?? '',
+      ).trim();
+      if (value) spoken.set(segment.index, value);
+    });
+  }
+
+  return spoken;
+};
+
 const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [] }) => {
   const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
   let content = '';
@@ -584,12 +793,12 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
     return null;
   }
 
-  // Accept both the compact array of strings and the verbose object format.
+  // Accept the compact array of strings as well as an object array.
   const translated = rawSegments.map((seg, index) => ({
     start: batch[index].start,
     end: batch[index].end,
     text: stripMarkdown(
-      typeof seg === 'string' ? seg : typeof seg?.text === 'string' ? seg.text : '',
+      typeof seg === 'string' ? seg : String(seg?.t ?? seg?.text ?? ''),
     ),
   }));
 
@@ -642,7 +851,13 @@ const translateBatchResilient = async ({ batch, targetLanguage, highQuality, con
   return [...head, ...tail];
 };
 
-const translateSegmentsOnce = async ({ segments, targetLanguage, highQuality = false, context = [], onProgress = null }) => {
+const translateSegmentsOnce = async ({
+  segments,
+  targetLanguage,
+  highQuality = false,
+  context = [],
+  onProgress = null,
+}) => {
   const input = (segments || []).map(toPair).filter((s) => s.text);
   if (input.length === 0) return [];
 
@@ -781,6 +996,7 @@ export const translateTranscriptSegments = async ({
       start: s.start,
       end: s.end,
       text: s.text,
+      spokenText: s.text,
       sourceText: s.text,
       originalLanguage: originalLanguage || 'en',
       targetLanguage,
@@ -808,29 +1024,18 @@ export const translateTranscriptSegments = async ({
     return { start: s.start, end: s.end, text: s.text };
   });
 
-  // Fast mode: skip evaluation-driven retries and return the initial translation.
-  if (fast) {
-    return source.map((s, index) => ({
-      start: s.start,
-      end: s.end,
-      text: currentSegments[index].text,
-      sourceText: s.text,
-      originalLanguage: originalLanguage || 'en',
-      targetLanguage,
-      qualityScore: null,
-      qualityStatus: 'unknown',
-      qualityReason: '',
-      translationAttempts: 1,
-      wordSuggestions: [],
-    }));
-  }
-
   // 2. Evaluate against original English.
-  const pairs = source.map((s, index) => ({
-    original: s.text,
-    translated: currentSegments[index].text,
-  }));
-  let evaluations = await evaluateTranslationSegments({ pairs, targetLanguage });
+  //
+  // Fast mode skips the evaluation and the retries, but still produces the
+  // spoken version, so it is not returned early.
+  let evaluations = [];
+  if (!fast) {
+    const pairs = source.map((s, index) => ({
+      original: s.text,
+      translated: currentSegments[index].text,
+    }));
+    evaluations = await evaluateTranslationSegments({ pairs, targetLanguage });
+  }
 
   const attempts = source.map(() => 1);
   const bestScores = evaluations.map((e) =>
@@ -906,6 +1111,9 @@ export const translateTranscriptSegments = async ({
           start: source[index].start,
           end: source[index].end,
           text: String(candSegment.text).trim(),
+          // The spoken version was built from the previous wording, so it is
+          // rebuilt whenever the translation changes.
+          spokenText: '',
         };
         evaluations[index] = {
           index,
@@ -924,7 +1132,74 @@ export const translateTranscriptSegments = async ({
     });
   }
 
-  // 4. Final evaluation for missing scores.
+  // 4. Spoken version for the narration.
+  //
+  // The subtitles keep the English technical names in Latin script so the
+  // reader recognises them, while the narration reads them the way the
+  // target language pronounces them. Only the sentences that contain a
+  // technical name or a number are rewritten, which keeps this pass cheap.
+  // It runs after the retries so it works from the final wording.
+  const withSpoken = Boolean(TARGET_SCRIPT_PATTERNS[languageBase(targetLanguage)]);
+  if (withSpoken) {
+    const needsSpoken = currentSegments
+      .map((segment, index) => ({ ...segment, index }))
+      .filter((segment) => /[A-Za-z0-9]/.test(segment.text));
+
+    if (needsSpoken.length > 0) {
+      const spoken = await generateSpokenVersions({
+        segments: needsSpoken,
+        targetLanguage,
+      });
+      needsSpoken.forEach((segment) => {
+        const value = spoken.get(segment.index);
+        if (value) currentSegments[segment.index].spokenText = value;
+      });
+
+      // The model sometimes leaves a technical name in Latin script. Those
+      // sentences are rewritten once more with a stricter instruction.
+      const leftovers = needsSpoken
+        .filter((segment) => {
+          const value = spoken.get(segment.index);
+          return !value || /[A-Za-z]/.test(value);
+        })
+        .map((segment) => ({
+          ...currentSegments[segment.index],
+          index: segment.index,
+        }));
+
+      if (leftovers.length > 0) {
+        const retry = await generateSpokenVersions({
+          segments: leftovers,
+          targetLanguage,
+          strict: true,
+        });
+        let fixed = 0;
+        leftovers.forEach((segment) => {
+          const value = retry.get(segment.index);
+          if (value && !/[A-Za-z]/.test(value)) {
+            currentSegments[segment.index].spokenText = value;
+            fixed += 1;
+          }
+        });
+        console.log(
+          `[translate] spoken version: ${spoken.size}/${needsSpoken.length} written, ${fixed}/${leftovers.length} leftovers rewritten in Arabic`,
+        );
+      } else {
+        console.log(
+          `[translate] spoken version generated for ${spoken.size}/${needsSpoken.length} segment(s) with technical names`,
+        );
+      }
+    }
+  }
+
+  // Every segment gets a spoken version: the ones without technical names
+  // simply reuse the subtitle text with the numbers spelled out.
+  currentSegments.forEach((segment) => {
+    const spoken = String(segment.spokenText || segment.text || '').trim();
+    segment.spokenText = withSpoken ? spellOutNumbersInArabic(spoken) : spoken;
+  });
+
+  // 5. Final evaluation for missing scores.
   const needsFinalEval = source
     .map((_, index) => index)
     .filter((index) => evaluations[index] == null || evaluations[index].score == null);
@@ -954,10 +1229,14 @@ export const translateTranscriptSegments = async ({
   return source.map((s, index) => {
     const ev = evaluations[index] || {};
     const score = typeof ev.score === 'number' ? ev.score : null;
+    const spokenText = String(
+      currentSegments[index].spokenText || currentSegments[index].text,
+    ).trim();
     return {
       start: s.start,
       end: s.end,
       text: currentSegments[index].text,
+      spokenText: withSpoken ? spellOutNumbersInArabic(spokenText) : spokenText,
       sourceText: s.text,
       originalLanguage: originalLanguage || 'en',
       targetLanguage,

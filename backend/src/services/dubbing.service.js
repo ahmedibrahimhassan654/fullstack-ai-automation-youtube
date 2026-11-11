@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
-import { synthesizeSpeech, technicalTermVoiceFor, VOICES } from './tts.service.js';
+import { synthesizeSpeech, VOICES } from './tts.service.js';
 import {
   translateTranscriptSegments,
   findUntranslatedSegments,
@@ -145,23 +145,22 @@ const normalizeToWav = async (inputPath, outputPath) => {
 
 const getTranslationSegments = async (video, language, onProgress = null) => {
   const originalLanguage = video.originalLanguage || video.transcriptLanguage || 'en';
+  const toSegment = (s) => ({
+    start: Number(s.start) || 0,
+    end: Number(s.end) || 0,
+    text: String(s.text || '').trim(),
+    spokenText: String(s.spokenText || s.text || '').trim(),
+  });
+
   if (String(language).toLowerCase() === String(originalLanguage).toLowerCase()) {
-    return (video.transcriptSegments || []).map((s) => ({
-      start: Number(s.start) || 0,
-      end: Number(s.end) || 0,
-      text: String(s.text || '').trim(),
-    }));
+    return (video.transcriptSegments || []).map(toSegment);
   }
 
   const existing = (video.translations || []).find(
     (t) => String(t.language).toLowerCase() === String(language).toLowerCase(),
   );
   if (existing?.segments?.length) {
-    const segments = existing.segments.map((s) => ({
-      start: Number(s.start) || 0,
-      end: Number(s.end) || 0,
-      text: String(s.text || '').trim(),
-    }));
+    const segments = existing.segments.map(toSegment);
 
     // A stored translation can be stale, or it can have been saved while the
     // AI provider was rate limited and still contain the source language.
@@ -174,12 +173,18 @@ const getTranslationSegments = async (video, language, onProgress = null) => {
       sourceLanguage: originalLanguage,
     });
 
-    if (untranslated.length === 0) {
+    // A translation without a spoken version would read the English technical
+    // names with the Arabic voice, so it is regenerated as well.
+    const missingSpoken = segments.filter(
+      (s) => !String(s.spokenText || '').trim(),
+    ).length;
+
+    if (untranslated.length === 0 && missingSpoken === 0) {
       return segments;
     }
 
     console.warn(
-      `[dubbing] stored translation for ${language} still has ${untranslated.length} untranslated segment(s) - re-translating`,
+      `[dubbing] stored translation for ${language} needs regenerating (${untranslated.length} untranslated, ${missingSpoken} without a spoken version) - re-translating`,
     );
   }
 
@@ -206,11 +211,7 @@ const getTranslationSegments = async (video, language, onProgress = null) => {
       throw err;
     }
 
-    return translated.map((s) => ({
-      start: Number(s.start) || 0,
-      end: Number(s.end) || 0,
-      text: String(s.text || '').trim(),
-    }));
+    return translated.map(toSegment);
   }
 
   return [];
@@ -266,8 +267,14 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
   let current = null;
 
   for (const segment of segments) {
+    const spoken = String(segment.spokenText || segment.text || '').trim();
     if (!current) {
-      current = { start: segment.start, end: segment.end, texts: [segment.text] };
+      current = {
+        start: segment.start,
+        end: segment.end,
+        texts: [segment.text],
+        spoken: [spoken],
+      };
       continue;
     }
     const gap = segment.start - current.end;
@@ -276,9 +283,15 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
     if (gap <= 0.9 && combined.length <= 320 && !endsSentence) {
       current.end = segment.end;
       current.texts.push(segment.text);
+      current.spoken.push(spoken);
     } else {
       blocks.push(current);
-      current = { start: segment.start, end: segment.end, texts: [segment.text] };
+      current = {
+        start: segment.start,
+        end: segment.end,
+        texts: [segment.text],
+        spoken: [spoken],
+      };
     }
   }
   if (current) blocks.push(current);
@@ -291,7 +304,10 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
         index + 1 < blocks.length
           ? blocks[index + 1].start
           : Math.max(block.end, videoDuration || block.end),
+      // The subtitles keep the English technical names in Latin script, the
+      // narration reads them the way an Arabic speaker pronounces them.
       text: block.texts.join(" ").replace(/\s+/g, " ").trim(),
+      spokenText: block.spoken.join(" ").replace(/\s+/g, " ").trim(),
     }))
     .filter((block) => block.text);
 };
@@ -396,10 +412,10 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
         // A slightly brisker delivery than the default (-3%) buys back tempo
         // budget, so the whole dub fits the video without sounding rushed.
         rate: '+2%',
-        // Technical names and numbers inside the Arabic are spoken by an
-        // English voice so they are pronounced correctly.
-        mixedScript: true,
-        secondaryVoice: technicalTermVoiceFor(selectedVoice),
+        // One voice for the whole narration. Switching to an English voice for
+        // the technical names interrupts the lesson, so the spoken version
+        // already renders them in Arabic script.
+        mixedScript: false,
       }
     : { provider: 'elevenlabs', voiceId: elevenLabsVoiceId };
 
@@ -416,7 +432,10 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     if (videoDuration > 0 && block.start >= videoDuration) break;
 
-    const tts = await synthesizeSpeech(block.text, selectedVoice, ttsOptions);
+    // The narration uses the spoken version (technical names in Arabic
+    // script, numbers as Arabic words); the subtitles keep the clear text.
+    const spokenText = String(block.spokenText || block.text || '').trim();
+    const tts = await synthesizeSpeech(spokenText, selectedVoice, ttsOptions);
     if (!tts?.buffer?.length) {
       throw new Error(`TTS returned no audio for sentence ${i + 1}`);
     }

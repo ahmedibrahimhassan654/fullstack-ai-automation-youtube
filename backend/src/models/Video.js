@@ -15,6 +15,10 @@ const transcriptSegmentSchema = new mongoose.Schema(
     start: { type: Number, default: 0 },
     end: { type: Number, default: 0 },
     text: { type: String, default: '' },
+    // The same sentence prepared for speaking: technical names written the
+    // way an Arabic speaker pronounces them and numbers spelled out in Arabic
+    // words. The subtitles keep using `text`.
+    spokenText: { type: String, default: '' },
     sourceText: { type: String, default: '' },
     originalLanguage: { type: String, default: 'en' },
     qualityScore: { type: Number, default: null },
