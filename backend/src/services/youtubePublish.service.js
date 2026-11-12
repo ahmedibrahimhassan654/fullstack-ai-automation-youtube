@@ -241,6 +241,23 @@ export const replyYouTubeComment = async (accessToken, parentId, text) => {
   });
 };
 
+export const postYouTubeComment = async (accessToken, videoId, text) => {
+  return youtubeFetch(accessToken, `${API_URL}/commentThreads?part=snippet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      snippet: {
+        videoId,
+        topLevelComment: {
+          snippet: {
+            textOriginal: text,
+          },
+        },
+      },
+    }),
+  });
+};
+
 export const deletePlaylistItem = async (accessToken, playlistItemId) => {
   const res = await fetch(
     `${API_URL}/playlistItems?id=${encodeURIComponent(playlistItemId)}`,

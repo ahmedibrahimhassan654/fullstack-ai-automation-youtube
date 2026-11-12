@@ -441,7 +441,7 @@ Analyze the transcript and return ONLY valid JSON with these fields:
   "keyPoints": ["5-8 practical key points that a viewer can apply"],
   "actionItems": ["actionable tasks mentioned or implied"],
   "decisions": ["decisions made in the content"],
-  "openQuestions": ["unanswered questions raised"]
+  "openQuestions": ["3 clear, separate questions a viewer might ask after watching, each a single well-formed question ending with a question mark"]
 }
 
 Strictly enforce:
@@ -449,6 +449,7 @@ Strictly enforce:
 - Never use placeholders or outdated syntax.
 - Include sequential chapter titles based on real transcript timestamps.
 - Descriptions should be concise, practical, and include what the viewer will do, learn, and troubleshoot.
+- openQuestions: generate exactly 3 separate, well-formed questions in the target language, each ending with a question mark. Do not merge multiple questions into one. Each question must be clear and answerable by viewers.
 - If a field has no items, return an empty array. Do not include markdown outside JSON.`;
 
   const content = await callChatCompletion(

@@ -32,6 +32,7 @@ import {
   youtubeFetch,
   setYouTubeThumbnail,
   replyYouTubeComment as replyToYouTubeComment,
+  postYouTubeComment,
 } from "../services/youtubePublish.service.js";
 import User from "../models/User.js";
 import Course from "../models/Course.js";
@@ -1720,6 +1721,20 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     courseEntry.youtubePlaylistItemId = lesson.youtubePlaylistItemId || null;
     courseEntry.publishedAt = courseEntry.publishedAt || new Date();
     await course.save();
+  }
+
+  // Post up to 3 of the AI-generated open questions as top-level comments on
+  // the published video, so viewers can answer them. Best-effort: a comment
+  // failure never fails the publish.
+  const openQuestions = Array.isArray(video.aiMetadata?.openQuestions)
+    ? video.aiMetadata.openQuestions.map((q) => String(q || "").trim()).filter(Boolean).slice(0, 3)
+    : [];
+  for (const question of openQuestions) {
+    try {
+      await postYouTubeComment(accessToken, youtubeVideoId, question);
+    } catch (error) {
+      console.warn("[publishLessonVideo] comment posting failed:", error?.message);
+    }
   }
 
   res.status(200).json({

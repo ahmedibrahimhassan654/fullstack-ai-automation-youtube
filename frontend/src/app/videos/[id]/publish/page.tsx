@@ -393,6 +393,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
+  const [questions, setQuestions] = useState<string[]>([]);
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [visibility, setVisibility] = useState("private");
   const [categoryId, setCategoryId] = useState("27");
@@ -568,20 +569,25 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           .filter((c) => c?.title)
           .map((c) => `${c.time || "00:00"} — ${c.title}`)
           .join("\n");
-        const body = [opening, pointLines, (meta.openQuestions || []).length ? `❓ ${(meta.openQuestions || []).join(" ")}` : ""]
-          .filter(Boolean)
-          .join("\n");
+        const body = [opening, pointLines].filter(Boolean).join("\n");
         const resourceLinks = (v.attachments || [])
           .filter((a) => a?.url)
           .map((a) => `- ${a?.name || a.url}: ${a.url}`)
           .join("\n");
-        const courseNav = `Course navigation: Review the full playlist and next steps on the channel. Details: ${window.location.origin}/videos/${id}`;
+        const questionsBlock = (meta.openQuestions || []).length
+          ? `❓ Questions:\n${(meta.openQuestions || [])
+              .map((q, i) => `${i + 1}. ${String(q).trim()}`)
+              .join("\n")}`
+          : "";
+        const shareCta = (language || "").toLowerCase().startsWith("ar")
+          ? "👍 إذا أعجبك الفيديو، شاركه مع أصدقائك وادعم القناة بالاشتراك — نشركم هو دعم لنا!"
+          : "👍 If you found this helpful, please like, share and subscribe to support the channel!";
         const composedDescription = [
           body,
           chapterLines ? `-----------------------------------------------------------------------------------------------------\n${chapterLines}` : "",
           resourceLinks ? `🔗 Resources, commands, and links:\n${resourceLinks}` : "",
-          `🧭 ${courseNav}`,
-          (meta.openQuestions || []).length ? `❓ ${(meta.openQuestions || []).join(" ")}` : "",
+          questionsBlock,
+          `📣 ${shareCta}`,
           hashtags ? `🏷️ ${hashtags}` : "",
         ]
           .filter(Boolean)
@@ -618,6 +624,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         setTitle(titledWithNumber);
         setDescription(existingPublishLesson?.youtubeDescription || composedDescription);
         setTags(((existingPublishLesson?.youtubeTags && existingPublishLesson.youtubeTags.length ? existingPublishLesson.youtubeTags : (meta.tags || [])) as string[]).join(", "));
+        setQuestions((meta.openQuestions || []).map((q) => String(q).trim()).filter(Boolean));
         setVisibility(existingPublishLesson?.youtubeVisibility || v.youtubeVisibility || "private");
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
         setPlaylistId(existingPublishLesson?.youtubePlaylistId || "");
@@ -1004,6 +1011,20 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                   className="w-full min-h-24 rounded-md border-2 border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                 />
               </div>
+              {questions.length > 0 && (
+                <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    ❓ Questions (will be added as comments on YouTube)
+                  </Label>
+                  <ol className="list-decimal space-y-1 pl-5 text-sm">
+                    {questions.map((q, i) => (
+                      <li key={i} className="leading-relaxed">
+                        {q}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Tags (comma separated)</Label>
                 <Input value={tags} onChange={(e) => setTags(e.target.value)} />
