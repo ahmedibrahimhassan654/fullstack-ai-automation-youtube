@@ -769,6 +769,7 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
   const system =
     'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
     'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
+    'PRESERVE THE SOURCE WORD ORDER AND MEANING: keep the number of content words as close as possible to the source so the dub stays in sync with the original audio; do not drop, merge or reorder words. Each translated segment must be a complete, natural sentence that a native speaker can pronounce fluently. ' +
     (String(targetLanguage).toLowerCase().startsWith('ar')
       ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
       : '') +

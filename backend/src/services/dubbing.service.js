@@ -607,6 +607,14 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     : ['-c:v', 'copy'];
 
   try {
+    // Fade the narration out over the last 0.6s so the dub ends smoothly
+    // instead of being cut mid-word. The video keeps its original length.
+    const fadeStart = Math.max(0, (videoDuration || 0) - 0.6);
+    const audioFilter =
+      videoDuration > 0
+        ? `afade=t=out:st=${fadeStart.toFixed(3)}:d=0.6`
+        : null;
+
     const args = [
       '-y',
       '-i',
@@ -622,6 +630,7 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
       'aac',
       '-b:a',
       '160k',
+      ...(audioFilter ? ['-af', audioFilter] : []),
       '-movflags',
       '+faststart',
       ...(videoDuration > 0
