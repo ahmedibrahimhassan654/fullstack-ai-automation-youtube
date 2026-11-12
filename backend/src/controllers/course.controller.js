@@ -618,9 +618,35 @@ export const removeCourseVideo = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  course.videos = (course.videos || []).filter(
-    (entry) => String(entry.video) !== String(req.params.videoId),
-  );
+  const videoId = String(req.params.videoId || '').trim();
+  const orderParam = req.query?.order ?? req.body?.order;
+  const order = orderParam !== undefined && orderParam !== null && orderParam !== ''
+    ? Number(orderParam)
+    : null;
+
+  const before = (course.videos || []).length;
+  if (videoId && videoId !== 'null' && videoId !== 'undefined' && videoId !== 'entry') {
+    course.videos = (course.videos || []).filter(
+      (entry) => String(entry.video || '') !== videoId,
+    );
+  } else if (Number.isFinite(order)) {
+    // Remove by position/order when the entry has no video reference (e.g. a
+    // missing/orphan lesson slot). Match by stored order, else by array index.
+    const idxByOrder = (course.videos || []).findIndex((e) => Number(e.order) === order);
+    const idx = idxByOrder >= 0 ? idxByOrder : order;
+    if (idx >= 0 && idx < course.videos.length) {
+      course.videos.splice(idx, 1);
+    }
+  } else {
+    const err = new Error('A video id or lesson order is required to remove this lesson.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if ((course.videos || []).length === before) {
+    // Nothing matched — still normalize order and report clearly.
+  }
+
   course.videos.forEach((entry, index) => {
     entry.order = index;
   });
@@ -628,7 +654,9 @@ export const removeCourseVideo = asyncHandler(async (req, res) => {
   await course.save();
   res.status(200).json({
     success: true,
-    message: 'Video removed from the course',
+    message: (course.videos || []).length === before
+      ? 'Lesson not found in the course (order refreshed).'
+      : 'Lesson removed from the course.',
     data: { course: withSummary(course.toObject()) },
   });
 });

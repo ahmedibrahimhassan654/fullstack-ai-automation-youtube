@@ -487,8 +487,13 @@ export default function CourseDetailClient({
     await load();
   };
 
-  const removeVideo = async (videoId: string, opts?: { missing?: boolean; published?: boolean }) => {
-    if (!videoId) {
+  const removeVideo = async (
+    videoId: string,
+    opts?: { missing?: boolean; published?: boolean; order?: number },
+  ) => {
+    const hasId = Boolean(videoId);
+    const hasOrder = Number.isFinite(opts?.order);
+    if (!hasId && !hasOrder) {
       toast.error("This lesson has no video to remove.");
       return;
     }
@@ -496,12 +501,14 @@ export default function CourseDetailClient({
       "This removes the lesson from this course list only (it does not delete the video file or your YouTube views).",
       opts?.published
         ? "The lesson is published on YouTube — removing it here will not delete/unpublish the YouTube video or remove it from the playlist."
-        : opts?.missing
-          ? "This lesson's video record is missing or it was removed from the YouTube playlist — you can safely remove it from this course."
+        : opts?.missing || !hasId
+          ? "This lesson's video record is missing or it was removed from the YouTube playlist — you can safely remove it from this course to free its slot/order."
           : "If it is already on a YouTube playlist, remove or reorder it there via YouTube sync if needed.",
     ].join("\n\n");
     if (!confirm(`Remove this lesson from the course?\n\n${notes}`)) return;
-    const res = await api.delete(`/api/courses/${id}/videos/${videoId}`);
+    const target = hasId ? videoId : "entry";
+    const query = !hasId && hasOrder ? `?order=${opts!.order}` : "";
+    const res = await api.delete(`/api/courses/${id}/videos/${target}${query}`);
     if (res.success) {
       toast.success(res.message || "Lesson removed from the course.");
       await load();
@@ -1065,6 +1072,7 @@ export default function CourseDetailClient({
                                 removeVideo(vidId, {
                                   missing: !entry.video,
                                   published: Boolean(yt?.published || entry.youtubeUrl || entry.youtubeVideoId),
+                                  order: index,
                                 });
                               }}
                               disabled={isPublishing}
