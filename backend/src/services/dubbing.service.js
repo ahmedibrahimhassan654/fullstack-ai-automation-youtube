@@ -9,6 +9,7 @@ import { synthesizeSpeech, VOICES } from './tts.service.js';
 import {
   translateTranscriptSegments,
   findUntranslatedSegments,
+  condenseTranslationForDuration,
 } from './aiMetadata.service.js';
 
 const TEMP_DIR = os.tmpdir();
@@ -434,25 +435,59 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     // The narration uses the spoken version (technical names in Arabic
     // script, numbers as Arabic words); the subtitles keep the clear text.
-    const spokenText = String(block.spokenText || block.text || '').trim();
-    const tts = await synthesizeSpeech(spokenText, selectedVoice, ttsOptions);
-    if (!tts?.buffer?.length) {
-      throw new Error(`TTS returned no audio for sentence ${i + 1}`);
+    let spokenText = String(block.spokenText || block.text || '').trim();
+
+    // Per-block fitting: if this sentence's natural speech is longer than
+    // its slot on the timeline, condense the spoken text (never the subtitle
+    // text) so the sentence finishes inside its slot instead of being cut
+    // mid-word by the global -t. Condensing is per-block (not per-cue) so
+    // the voice stays natural - a single uniform tempo is still applied
+    // afterwards to the whole narration.
+    const slotEnd = Number(block.nextStart) > block.start
+      ? Number(block.nextStart)
+      : (videoDuration > 0 ? videoDuration : block.end);
+    const slot = Math.max(0.4, slotEnd - block.start);
+
+    const synthesize = async (text) => {
+      const tts = await synthesizeSpeech(text, selectedVoice, ttsOptions);
+      if (!tts?.buffer?.length) return null;
+      const f = path.join(
+        TEMP_DIR,
+        `dub-tts-${video._id}-${language}-${i}-${Date.now()}.mp3`,
+      );
+      tempFiles.push(f);
+      fs.writeFileSync(f, tts.buffer);
+      let d = await getAudioDurationSeconds(f);
+      if (!d) d = estimateSpeechSeconds(text, language);
+      return { file: f, duration: d };
+    };
+
+    let synth = await synthesize(spokenText);
+    if (!synth) throw new Error(`TTS returned no audio for sentence ${i + 1}`);
+
+    // Condense only when the natural speech overflows its slot by more than
+    // 5%, and only once, to keep the API cost bounded.
+    if (videoDuration > 0 && synth.duration > slot * 1.05) {
+      const targetChars = Math.max(40, Math.floor(slot * 12));
+      try {
+        const condensed = await condenseTranslationForDuration({
+          text: spokenText,
+          targetLanguage: language,
+          maxChars: targetChars,
+        });
+        if (condensed && condensed !== spokenText) {
+          const synth2 = await synthesize(condensed);
+          if (synth2) {
+            synth = synth2;
+            spokenText = condensed;
+          }
+        }
+      } catch {
+        // keep the original synthesis
+      }
     }
 
-    const rawTtsFile = path.join(
-      TEMP_DIR,
-      `dub-tts-${video._id}-${language}-${i}-${Date.now()}.mp3`,
-    );
-    tempFiles.push(rawTtsFile);
-    fs.writeFileSync(rawTtsFile, tts.buffer);
-
-    let duration = await getAudioDurationSeconds(rawTtsFile);
-    if (!duration) {
-      duration = estimateSpeechSeconds(block.text, language);
-    }
-
-    prepared.push({ block, index: i, rawFile: rawTtsFile, duration });
+    prepared.push({ block, index: i, rawFile: synth.file, duration: synth.duration, spokenText });
 
     await reportProgress(
       Math.min(60, 35 + Math.round(((i + 1) / blocks.length) * 25)),
