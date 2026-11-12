@@ -1,7 +1,9 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { ExternalLink } from "lucide-react";
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { api } from "@/lib/api";
@@ -367,6 +369,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [source, setSource] = useState<"lesson" | "dub">("lesson");
   const [courseImageUrl, setCourseImageUrl] = useState("");
   const [courseTitle, setCourseTitle] = useState("");
+  const [courseId, setCourseId] = useState("");
   const [lessonNumber, setLessonNumber] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   // The YouTube Automation Form checklist fields. They decide how the video
@@ -431,6 +434,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         );
         if (course) {
           setCourseTitle(course.title);
+          setCourseId(course._id);
           if (course.thumbnailUrl) {
             courseImage = course.thumbnailUrl;
             setCourseImageUrl(course.thumbnailUrl);
@@ -722,9 +726,20 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         description="Review the title, description and thumbnail before publishing"
         contentClassName="max-w-3xl"
         actions={
-          <Button variant="outline" size="sm" onClick={() => router.push(`/videos/${id}`)}>
-            Back to video
-          </Button>
+          <div className="flex items-center gap-2">
+            {courseId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => router.push(`/courses/${courseId}`)}
+              >
+                Open course
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={() => router.push(`/videos/${id}`)}>
+              Back to video
+            </Button>
+          </div>
         }
       >
         <Card>
@@ -812,6 +827,15 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                         ? " Its image is the background of the thumbnail."
                         : " Add an image to the course to use it as the thumbnail background."}
                     </p>
+                    {courseId && (
+                      <Link
+                        href={`/courses/${courseId}`}
+                        className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                      >
+                        <ExternalLink className="size-3" />
+                        Open the course
+                      </Link>
+                    )}
                   </div>
                 </div>
               )}
