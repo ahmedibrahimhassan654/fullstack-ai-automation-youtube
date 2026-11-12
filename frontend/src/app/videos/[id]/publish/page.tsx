@@ -399,6 +399,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [categoryId, setCategoryId] = useState("27");
   const [playlistId, setPlaylistId] = useState("");
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
+  const [coursePlaylistId, setCoursePlaylistId] = useState("");
   const [channels, setChannels] = useState<{ id: string; title: string; language?: string | null }[]>([]);
   const [channelId, setChannelId] = useState("");
   const [ytConnected, setYtConnected] = useState(false);
@@ -486,6 +487,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           title: string;
           thumbnailUrl?: string | null;
           language?: string | null;
+          playlistId?: string | null;
           videos?: { video: { _id: string } | null; order?: number | null }[];
         }[];
       }>("/api/courses");
@@ -504,6 +506,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         if (course) {
           setCourseTitle(course.title);
           setCourseId(course._id);
+          if (course.playlistId) setCoursePlaylistId(course.playlistId);
           if (course.thumbnailUrl) {
             courseImage = course.thumbnailUrl;
             setCourseImageUrl(course.thumbnailUrl);
@@ -725,12 +728,34 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         `/api/videos/youtube/playlists?channelId=${encodeURIComponent(channelId)}`,
       )
       .then((r) => {
-        if (!cancelled && r.success && r.data?.playlists) setPlaylists(r.data.playlists);
+        if (cancelled || !r.success || !r.data?.playlists) return;
+        setPlaylists(r.data.playlists);
+        // Auto-select the playlist that belongs to this course, so the user
+        // does not have to pick it manually (and never lands on a stale one).
+        setPlaylistId((current) => {
+          if (current && r.data!.playlists.some((p) => p.id === current)) return current;
+          const match = coursePlaylistId
+            ? r.data!.playlists.find((p) => p.id === coursePlaylistId)
+            : null;
+          return match?.id || r.data!.playlists[0]?.id || current;
+        });
       });
     return () => {
       cancelled = true;
     };
   }, [channelId]);
+
+  // Auto-select the course playlist once both the playlist list and the
+  // course playlist id are known (handles the case where the course loads
+  // after the channel's playlists).
+  useEffect(() => {
+    if (!coursePlaylistId || playlists.length === 0) return;
+    setPlaylistId((current) => {
+      if (current && playlists.some((p) => p.id === current)) return current;
+      const match = playlists.find((p) => p.id === coursePlaylistId);
+      return match?.id || current;
+    });
+  }, [coursePlaylistId, playlists]);
 
   /**
    * Rebuilds the thumbnail by hand: the course image as the background, the
