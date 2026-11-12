@@ -639,9 +639,14 @@ export default function CourseDetailClient({
                           {youtube.summary.duplicates} duplicate
                           {youtube.summary.duplicates === 1 ? "" : "s"}
                         </Badge>
-                        {youtube.course.playlistUrl && (
+                        {(youtube.course.playlistUrl || course?.playlistId) && (
                           <a
-                            href={youtube.course.playlistUrl}
+                            href={
+                              youtube.course.playlistUrl ||
+                              (course?.playlistId
+                                ? `https://www.youtube.com/playlist?list=${course.playlistId}`
+                                : "")
+                            }
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
