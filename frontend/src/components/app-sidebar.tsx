@@ -68,11 +68,16 @@ const NAV_SECTIONS: NavSection[] = [
         isActive: (pathname) => pathname === "/videos/new",
       },
       {
+        title: "Courses",
+        href: "/courses",
+        icon: BookOpen,
+        isActive: (pathname) => pathname === "/courses",
+      },
+      {
         title: "Create Course",
         href: "/courses/new",
         icon: BookOpen,
-        isActive: (pathname) =>
-          pathname === "/courses/new" || pathname.startsWith("/courses/"),
+        isActive: (pathname) => pathname === "/courses/new",
       },
       {
         title: "Channels",

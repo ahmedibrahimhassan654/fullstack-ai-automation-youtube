@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   ListVideo,
   Loader2,
@@ -17,7 +19,7 @@ import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { useToast } from "@/components/toast-provider";
 import { api } from "@/lib/api";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -117,6 +119,11 @@ export default function CoursesPage() {
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [collapsedCourses, setCollapsedCourses] = useState<Record<string, boolean>>({});
+
+  const toggleCourse = (courseId: string) => {
+    setCollapsedCourses((current) => ({ ...current, [courseId]: !current[courseId] }));
+  };
 
   const load = async () => {
     const res = await api.get<{ items: Course[] }>("/api/courses");
@@ -183,6 +190,7 @@ export default function CoursesPage() {
                 const publishedCount = lessons.filter(
                   (lesson) => lesson.youtubeUrl || lesson.youtubeVideoId,
                 ).length;
+                const isCollapsed = Boolean(collapsedCourses[course._id]);
 
                 return (
                   <Card key={course._id}>
@@ -206,19 +214,35 @@ export default function CoursesPage() {
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                          variant={course.status === "published" ? "default" : "secondary"}
-                          className="text-[10px]"
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant={course.status === "published" ? "default" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {course.status || "draft"}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {languageLabel(course.language)}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {publishedCount} of {lessons.length} published on YouTube
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => toggleCourse(course._id)}
+                          className="shrink-0"
+                          aria-expanded={!isCollapsed}
                         >
-                          {course.status || "draft"}
-                        </Badge>
-                        <Badge variant="outline" className="text-[10px]">
-                          {languageLabel(course.language)}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          {publishedCount} of {lessons.length} published on YouTube
-                        </span>
+                          {isCollapsed ? (
+                            <ChevronDown className="mr-2 size-4" />
+                          ) : (
+                            <ChevronUp className="mr-2 size-4" />
+                          )}
+                          {isCollapsed ? "Open" : "Collapse"}
+                        </Button>
                       </div>
 
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -263,8 +287,10 @@ export default function CoursesPage() {
                         </div>
                       </div>
 
-                      {lessons.length > 0 && (
-                        <ol className="space-y-2">
+                      {lessons.length > 0 &&
+                        !isCollapsed &&
+                        (
+                          <ol className="space-y-2">
                           {lessons.map((entry, index) => {
                             const lessonLanguage = entry.language || course.language;
                             const version = versionFor(entry.video, lessonLanguage);
