@@ -485,13 +485,22 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           _id: string;
           title: string;
           thumbnailUrl?: string | null;
+          language?: string | null;
           videos?: { video: { _id: string } | null; order?: number | null }[];
         }[];
       }>("/api/courses");
       if (courseRes.success) {
-        const course = (courseRes.data?.items || []).find((item) =>
+        const coursesWithVideo = (courseRes.data?.items || []).filter((item) =>
           (item.videos || []).some((entry) => entry.video?._id === id),
         );
+        // Prefer the course whose language matches the dub language, so the
+        // thumbnail uses the right course image.
+        const course =
+          coursesWithVideo.find(
+            (item) =>
+              (item.language || "").toLowerCase().split("-")[0] ===
+              language.toLowerCase().split("-")[0],
+          ) || coursesWithVideo[0];
         if (course) {
           setCourseTitle(course.title);
           setCourseId(course._id);
