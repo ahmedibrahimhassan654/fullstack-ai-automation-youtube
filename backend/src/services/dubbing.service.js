@@ -65,9 +65,10 @@ const toSrt = (segments) =>
     })
     .join('\n');
 
-// Yellow text on a soft black box: easy to read on any footage.
+// Yellow text rendered in a dedicated black bar at the very bottom of the
+// frame, so the subtitles never cover the teacher's content.
 const SUBTITLE_STYLE =
-  "FontName=Arial,FontSize=22,Bold=1,PrimaryColour=&H0000FFFF,BackColour=&H99000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=40,Alignment=2";
+  "FontName=Arial,FontSize=22,Bold=1,PrimaryColour=&H0000FFFF,BackColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=8,Alignment=2";
 
 const uploadFile = (filePath, options) =>
   new Promise((resolve, reject) => {
@@ -624,12 +625,14 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     fs.writeFileSync(subtitleFile, toSrt(burnSegments), 'utf8');
   }
 
+  // A dedicated black bar at the very bottom of the frame keeps the subtitles
+  // out of the teacher's content. The video is padded downward by the bar
+  // height and the subtitles are burned inside that bar.
+  const SUBTITLE_BAR_HEIGHT = 70;
   const videoArgs = subtitleFile
     ? [
         '-vf',
-        // Only the file name is passed (ffmpeg runs inside TEMP_DIR), which
-        // avoids Windows drive-letter escaping problems in the filter string.
-        `subtitles=${path.basename(subtitleFile)}:force_style='${SUBTITLE_STYLE}'`,
+        `pad=iw:ih+${SUBTITLE_BAR_HEIGHT}:0:0:black,subtitles=${path.basename(subtitleFile)}:force_style='${SUBTITLE_STYLE}'`,
         '-c:v',
         'libx264',
         '-preset',
