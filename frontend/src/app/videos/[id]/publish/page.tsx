@@ -687,7 +687,13 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
             // The video is published in one language, so the channel that
             // speaks that language is the right default.
             const wanted = language.toLowerCase().split("-")[0];
-            const match = list.find((c) => (c.language || "").toLowerCase().split("-")[0] === wanted);
+            let match = list.find((c) => (c.language || "").toLowerCase().split("-")[0] === wanted);
+            // Fallback: if no channel declares this language, prefer a channel
+            // whose title is written in that language's script (e.g. an Arabic
+            // title for an Arabic video).
+            if (!match && wanted === "ar") {
+              match = list.find((c) => /[\u0600-\u06FF]/.test(c.title || ""));
+            }
             return match?.id || list[0]?.id || "";
           });
         }
