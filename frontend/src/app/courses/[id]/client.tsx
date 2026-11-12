@@ -1059,12 +1059,14 @@ export default function CourseDetailClient({
                             <Button
                               variant="ghost"
                               size="icon-xs"
-                              onClick={() =>
-                                removeVideo(entry.video?._id || entry.videoId || "", {
+                              onClick={() => {
+                                const vidId = entry.video?._id || entry.videoId || "";
+                                const yt = vidId ? ytByVideo.get(vidId) : null;
+                                removeVideo(vidId, {
                                   missing: !entry.video,
-                                  published: Boolean(ytLesson?.published || entry.youtubeUrl || entry.youtubeVideoId),
-                                })
-                              }
+                                  published: Boolean(yt?.published || entry.youtubeUrl || entry.youtubeVideoId),
+                                });
+                              }}
                               disabled={isPublishing}
                               aria-label="Remove lesson"
                               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
