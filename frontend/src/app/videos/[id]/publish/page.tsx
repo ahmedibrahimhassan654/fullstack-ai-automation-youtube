@@ -786,7 +786,10 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         setVisibility(existingPublishLesson?.youtubeVisibility || v.youtubeVisibility || "private");
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
         setPlaylistId(existingPublishLesson?.youtubePlaylistId || "");
-        setThumbnailUrl(existingPublishLesson?.thumbnailUrl || v.thumbnailUrl || "");
+        // Prefer the video's current thumbnail (which is updated by the
+        // "regenerate thumbnail" button) over the stale one saved at the last
+        // publish, so a regenerated thumbnail is actually shown.
+        setThumbnailUrl(v.thumbnailUrl || existingPublishLesson?.thumbnailUrl || "");
         setMadeForKids(Boolean(existingPublishLesson?.youtubeMadeForKids ?? false));
         setSelfDeclaredAiContent(Boolean(existingPublishLesson?.youtubeSelfDeclaredAiContent ?? false));
         setPaidPromotion(Boolean(existingPublishLesson?.youtubePaidPromotion ?? false));
