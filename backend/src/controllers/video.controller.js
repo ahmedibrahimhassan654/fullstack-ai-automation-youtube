@@ -1725,15 +1725,19 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 
   // Post up to 3 of the AI-generated open questions as top-level comments on
   // the published video, so viewers can answer them. Best-effort: a comment
-  // failure never fails the publish.
+  // failure never fails the publish. Pinned comments are not available via
+  // the YouTube Data API, so pinning must be done manually in YouTube Studio.
   const openQuestions = Array.isArray(video.aiMetadata?.openQuestions)
     ? video.aiMetadata.openQuestions.map((q) => String(q || "").trim()).filter(Boolean).slice(0, 3)
     : [];
+  const commentWarnings = [];
   for (const question of openQuestions) {
     try {
       await postYouTubeComment(accessToken, youtubeVideoId, question);
     } catch (error) {
-      console.warn("[publishLessonVideo] comment posting failed:", error?.message);
+      const msg = error?.message || "comment posting failed";
+      console.warn("[publishLessonVideo] comment posting failed:", msg);
+      commentWarnings.push(msg);
     }
   }
 
@@ -1752,6 +1756,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       playlistPosition: coursePosition,
       removedDuplicates: reconcile.deleted,
       reconcileWarnings: reconcile.warnings,
+      commentWarnings,
     },
   });
 });

@@ -791,6 +791,12 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
     if (res.success) {
       toast.success(res.message || (res.data?.mode === "updated" ? "Updated on YouTube." : "Published to YouTube."));
       setPublishedUrl(res.data?.youtubeUrl || null);
+      const commentWarnings = (res.data as { commentWarnings?: string[] } | undefined)?.commentWarnings || [];
+      if (commentWarnings.length) {
+        toast.error(
+          "Comments were not posted (re-connect YouTube to grant comment permission).",
+        );
+      }
       await load();
     } else {
       toast.error(res.message || "Publishing failed.");
