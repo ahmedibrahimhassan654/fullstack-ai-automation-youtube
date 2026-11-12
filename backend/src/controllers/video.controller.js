@@ -1425,6 +1425,17 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       (item.source || "lesson") === source &&
       (source !== "dub" || String(item.voice || "") === String(dub?.voice || "")),
   );
+  // When publishing a new dub for a language that already has a published
+  // lesson, update the existing YouTube video instead of creating a new
+  // lesson entry / uploading a duplicate video to the playlist.
+  if (!lesson && source === "dub") {
+    lesson = (video.lessonVideos || []).find(
+      (item) =>
+        item.language === language &&
+        (item.source || "lesson") === "dub" &&
+        item.youtubeVideoId,
+    );
+  }
 
   if (!lesson) {
     lesson = {
