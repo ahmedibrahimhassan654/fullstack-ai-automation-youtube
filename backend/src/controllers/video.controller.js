@@ -879,7 +879,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
             ),
           },
         ];
-        await video.save();
+        await Video.updateOne({ _id: video._id }, { $set: { translations: video.translations } });
         emitVideoProgress(video);
       }
     }
@@ -892,7 +892,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
       startedAt: video.dubbing?.startedAt || new Date(),
       completedAt: null,
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
     emitVideoProgress(video);
 
     let lastReportedProgress = video.dubbing?.progress ?? 10;
@@ -911,7 +911,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
           throw cancelError;
         }
         video.dubbing.progress = value;
-        await video.save();
+        await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
         emitVideoProgress(video);
       },
     });
@@ -933,7 +933,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
         ),
     );
     video.dubs = [...existing, dub];
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubs: video.dubs, dubbing: video.dubbing } });
     emitVideoProgress(video);
   } catch (error) {
     video.dubbing = {
@@ -944,7 +944,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
       startedAt: video.dubbing?.startedAt || new Date(),
       completedAt: new Date(),
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
     emitVideoProgress(video);
   }
 };
@@ -1114,7 +1114,7 @@ export const runLessonGeneration = async (
       startedAt: video.lessonGeneration?.startedAt || new Date(),
       completedAt: new Date(),
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { lessonGeneration: video.lessonGeneration } });
     emitVideoProgress(video);
   }
 };
