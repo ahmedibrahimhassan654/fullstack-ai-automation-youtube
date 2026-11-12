@@ -966,6 +966,25 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                   )}
                 </div>
               )}
+              {(dubForLanguage?.url || lessonForLanguage?.url) && (
+                <div className="space-y-2">
+                  <Label>
+                    Preview — {dubForLanguage?.url ? "dubbed video" : "lesson video"}
+                    {dubForLanguage?.voice ? ` (${dubForLanguage.voice})` : ""}
+                  </Label>
+                  <video
+                    src={dubForLanguage?.url || lessonForLanguage?.url || ""}
+                    controls
+                    className="w-full max-w-2xl rounded-md border bg-black"
+                    preload="metadata"
+                  />
+                  {dubForLanguage?.url && (
+                    <p className="text-xs text-muted-foreground">
+                      This is the video that will be published to YouTube.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Title</Label>
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
