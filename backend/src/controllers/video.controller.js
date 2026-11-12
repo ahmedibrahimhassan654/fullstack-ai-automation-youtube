@@ -1727,9 +1727,13 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   // the published video, so viewers can answer them. Best-effort: a comment
   // failure never fails the publish. Pinned comments are not available via
   // the YouTube Data API, so pinning must be done manually in YouTube Studio.
-  const openQuestions = Array.isArray(video.aiMetadata?.openQuestions)
-    ? video.aiMetadata.openQuestions.map((q) => String(q || "").trim()).filter(Boolean).slice(0, 3)
-    : [];
+  const localizedQuestions = Array.isArray(video.aiMetadata?.localized?.[language.toLowerCase()]?.openQuestions)
+    ? video.aiMetadata.localized[language.toLowerCase()].openQuestions
+    : null;
+  const openQuestions = (localizedQuestions || video.aiMetadata?.openQuestions || [])
+    .map((q) => String(q || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
   const commentWarnings = [];
   for (const question of openQuestions) {
     try {
