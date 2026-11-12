@@ -65,9 +65,9 @@ const toSrt = (segments) =>
     })
     .join('\n');
 
-// White text on a soft black box: readable on any footage.
+// Yellow text on a soft black box: easy to read on any footage.
 const SUBTITLE_STYLE =
-  "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H8C000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2";
+  "FontName=Arial,FontSize=22,Bold=1,PrimaryColour=&H0000FFFF,BackColour=&H99000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=40,Alignment=2";
 
 const uploadFile = (filePath, options) =>
   new Promise((resolve, reject) => {
