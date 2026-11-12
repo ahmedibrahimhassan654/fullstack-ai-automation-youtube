@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 
 type CourseVideo = {
   order: number;
+  videoId?: string | null;
   language?: string | null;
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
@@ -486,24 +487,33 @@ export default function CourseDetailClient({
     await load();
   };
 
-  const removeVideo = async (videoId: string) => {
+  const removeVideo = async (videoId: string, opts?: { missing?: boolean; published?: boolean }) => {
     if (!videoId) {
       toast.error("This lesson has no video to remove.");
       return;
     }
+    const notes = [
+      "This removes the lesson from this course list only (it does not delete the video file or your YouTube views).",
+      opts?.published
+        ? "The lesson is published on YouTube — removing it here will not delete/unpublish the YouTube video or remove it from the playlist."
+        : opts?.missing
+          ? "This lesson's video record is missing or it was removed from the YouTube playlist — you can safely remove it from this course."
+          : "If it is already on a YouTube playlist, remove or reorder it there via YouTube sync if needed.",
+    ].join("\n\n");
+    if (!confirm(`Remove this lesson from the course?\n\n${notes}`)) return;
     const res = await api.delete(`/api/courses/${id}/videos/${videoId}`);
     if (res.success) {
-      toast.success(res.message || "Video removed.");
+      toast.success(res.message || "Lesson removed from the course.");
       await load();
     } else {
-      toast.error(res.message || "Failed to remove the video.");
+      toast.error(res.message || "Failed to remove the lesson.");
     }
   };
 
   const move = async (index: number, direction: -1 | 1) => {
     if (!course) return;
     const ids = course.videos
-      .map((entry) => entry.video?._id)
+      .map((entry) => entry.video?._id || entry.videoId)
       .filter(Boolean) as string[];
     const target = index + direction;
     if (target < 0 || target >= ids.length) return;
@@ -521,7 +531,7 @@ export default function CourseDetailClient({
   const reorderByDrop = async (from: number, to: number) => {
     if (!course) return;
     const ids = course.videos
-      .map((entry) => entry.video?._id)
+      .map((entry) => entry.video?._id || entry.videoId)
       .filter(Boolean) as string[];
     if (from < 0 || from >= ids.length) return;
     const next = [...ids];
@@ -923,7 +933,7 @@ export default function CourseDetailClient({
                         const ready = hasVersion(entry, language);
                         return (
                           <li
-                            key={entry.video?._id || index}
+                            key={entry.video?._id || entry.videoId || index}
                             draggable={!isPublishing}
                             onDragStart={(e) => {
                               setDragIndex(index);
@@ -959,25 +969,34 @@ export default function CourseDetailClient({
                               {index + 1}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <Link
-                                href={`/videos/${entry.video?._id}`}
-                                className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
-                              >
-                                <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
-                                <span className="truncate">
-                                  {entry.video?.title || "Removed video"}
-                                </span>
-                              </Link>
+                              {entry.video?._id ? (
+                                <Link
+                                  href={`/videos/${entry.video._id}`}
+                                  className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
+                                >
+                                  <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
+                                  <span className="truncate">{entry.video.title}</span>
+                                </Link>
+                              ) : (
+                                <div className="flex items-center gap-1.5 truncate text-sm font-medium text-muted-foreground">
+                                  <PlayCircle className="size-4 shrink-0" />
+                                  <span className="truncate">Removed / missing lesson</span>
+                                  <span className="shrink-0 text-xs font-normal">(can be removed from course)</span>
+                                </div>
+                              )}
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className="text-xs text-muted-foreground">
-                                  {entry.video?.status}
+                                  {entry.video?.status || "missing"}
                                 </span>
+                                {!entry.video && (
+                                  <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">
+                                    Not in library{entry.youtubeVideoId ? "" : " / not on YouTube"}
+                                  </Badge>
+                                )}
                                 {(() => {
-                                  const ytLesson = ytByVideo.get(
-                                    entry.video?._id || "",
-                                  );
-                                  const link =
-                                    ytLesson?.youtubeUrl || entry.youtubeUrl;
+                                  const vidId = entry.video?._id || entry.videoId || "";
+                                  const ytLesson = vidId ? ytByVideo.get(vidId) : null;
+                                  const link = ytLesson?.youtubeUrl || entry.youtubeUrl;
                                   if (link) {
                                     return (
                                       <a
@@ -1040,7 +1059,12 @@ export default function CourseDetailClient({
                             <Button
                               variant="ghost"
                               size="icon-xs"
-                              onClick={() => removeVideo(entry.video?._id || "")}
+                              onClick={() =>
+                                removeVideo(entry.video?._id || entry.videoId || "", {
+                                  missing: !entry.video,
+                                  published: Boolean(ytLesson?.published || entry.youtubeUrl || entry.youtubeVideoId),
+                                })
+                              }
                               disabled={isPublishing}
                               aria-label="Remove lesson"
                               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
