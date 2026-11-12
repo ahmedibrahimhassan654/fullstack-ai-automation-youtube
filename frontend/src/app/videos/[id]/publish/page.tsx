@@ -773,7 +773,9 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
             ? `${lessonNumberValue}. ${preferredTitle}`
             : preferredTitle;
         setTitle(titledWithNumber);
-        setDescription(existingPublishLesson?.youtubeDescription || composedDescription);
+        // Prefer the freshly composed (latest) description over the previously
+        // published one, so an updated video never re-publishes stale text.
+        setDescription(composedDescription || existingPublishLesson?.youtubeDescription || "");
         setTags(((existingPublishLesson?.youtubeTags && existingPublishLesson.youtubeTags.length ? existingPublishLesson.youtubeTags : (meta.tags || [])) as string[]).join(", "));
         setQuestions((meta.openQuestions || []).map((q) => String(q).trim()).filter(Boolean));
         setAiMeta({
@@ -930,6 +932,9 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
       );
       if (res.success && res.data?.thumbnailUrl) {
         setThumbnailUrl(res.data.thumbnailUrl);
+        // Refresh metadata-derived fields (description, title, tags) so the
+        // published video never carries a stale description.
+        await load();
         toast.success("Thumbnail regenerated.");
       } else {
         toast.error(res.message || "The thumbnail could not be saved.");
@@ -1299,6 +1304,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                         );
                         if (res.success && res.data?.thumbnailUrl) {
                           setThumbnailUrl(res.data.thumbnailUrl);
+                          await load();
                           toast.success("AI thumbnail generated.");
                         } else {
                           toast.error(res.message || "The AI thumbnail could not be saved.");
