@@ -122,16 +122,22 @@ const formatDate = (value: string | null | undefined) => {
 const fieldClass =
   "h-9 w-full rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
 
-export default function CourseDetailClient({ id }: { id: string }) {
+export default function CourseDetailClient({
+  id,
+  initialCourse = null,
+}: {
+  id: string;
+  initialCourse?: Course | null;
+}) {
   const router = useRouter();
   const toast = useToast();
 
-  const [course, setCourse] = useState<Course | null>(null);
+  const [course, setCourse] = useState<Course | null>(initialCourse);
   const [allVideos, setAllVideos] = useState<VideoRow[]>([]);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [language, setLanguage] = useState("en");
-  const [loading, setLoading] = useState(true);
+  const [title, setTitle] = useState(initialCourse?.title || "");
+  const [description, setDescription] = useState(initialCourse?.description || "");
+  const [language, setLanguage] = useState(initialCourse?.language || "en");
+  const [loading, setLoading] = useState(!initialCourse);
   const [saving, setSaving] = useState(false);
   const [dubbing, setDubbing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -161,13 +167,16 @@ export default function CourseDetailClient({ id }: { id: string }) {
   }, [id, toast]);
 
   useEffect(() => {
-    load();
+    // When the server already provided the course (SSR), skip the initial
+    // fetch and only load the supplementary video list.
+    if (!initialCourse) load();
     api
       .get<{ items: VideoRow[] }>("/api/videos?limit=100")
       .then((res) => {
         if (res.success) setAllVideos(res.data?.items || []);
       });
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, initialCourse]);
 
   // The real YouTube state is read separately: it is the source of truth for
   // the published status and links shown on this page.

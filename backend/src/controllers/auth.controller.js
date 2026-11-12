@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { signAccessToken, generateRefreshToken, hashRefreshToken, refreshCookieOptions } from '../utils/token.js';
+import { signAccessToken, generateRefreshToken, hashRefreshToken, refreshCookieOptions, accessCookieOptions } from '../utils/token.js';
 import {
   buildYouTubeAuthUrl,
   generateState,
@@ -68,6 +68,7 @@ export const register = asyncHandler(async (req, res) => {
   await user.save();
 
   res.cookie('refreshToken', refreshToken, refreshCookieOptions);
+  res.cookie('accessToken', accessToken, accessCookieOptions);
   res.status(201).json({
     success: true,
     message: 'User registered successfully',
@@ -111,6 +112,7 @@ export const login = asyncHandler(async (req, res) => {
   await user.save();
 
   res.cookie('refreshToken', refreshToken, refreshCookieOptions);
+  res.cookie('accessToken', accessToken, accessCookieOptions);
   res.status(200).json({
     success: true,
     message: 'Login successful',
@@ -158,6 +160,7 @@ export const refresh = asyncHandler(async (req, res) => {
   await user.save();
 
   res.cookie('refreshToken', newRefresh, refreshCookieOptions);
+  res.cookie('accessToken', accessToken, accessCookieOptions);
   res.status(200).json({ success: true, data: { accessToken } });
 });
 

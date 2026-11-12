@@ -174,21 +174,27 @@ const languageOptions = (video: {
   return all.filter((code, index) => all.indexOf(code) === index);
 };
 
-export default function VideoDetailClient({ id }: { id: string }) {
+export default function VideoDetailClient({
+  id,
+  initialVideo = null,
+}: {
+  id: string;
+  initialVideo?: VideoDetail | null;
+}) {
   const router = useRouter();
   const { user } = useAuth();
   const toast = useToast();
 
-  const [video, setVideo] = useState<VideoDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [video, setVideo] = useState<VideoDetail | null>(initialVideo);
+  const [loading, setLoading] = useState(!initialVideo);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editVisibility, setEditVisibility] = useState("public");
-  const [editCategory, setEditCategory] = useState("27");
-  const [editTags, setEditTags] = useState("");
+  const [editTitle, setEditTitle] = useState(initialVideo?.title || "");
+  const [editDescription, setEditDescription] = useState(initialVideo?.description || "");
+  const [editVisibility, setEditVisibility] = useState(initialVideo?.youtubeVisibility || "public");
+  const [editCategory, setEditCategory] = useState(initialVideo?.youtubeCategoryId || "27");
+  const [editTags, setEditTags] = useState(initialVideo?.aiMetadata?.tags?.join(", ") || "");
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState("");
@@ -214,15 +220,22 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
   const load = async () => {
     setLoading(true);
-    const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
-    if (res.success && res.data?.video) {
-      const v = res.data.video;
-      setVideo(v);
-      setEditTitle(v.title || "");
-      setEditDescription(v.description || "");
-      setEditVisibility(v.youtubeVisibility || "public");
-      setEditCategory(v.youtubeCategoryId || "27");
-      setEditTags(v.aiMetadata?.tags?.join(", ") || "");
+    let v: VideoDetail | null = initialVideo;
+    if (!v) {
+      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
+      if (res.success && res.data?.video) {
+        v = res.data.video;
+        setVideo(v);
+        setEditTitle(v.title || "");
+        setEditDescription(v.description || "");
+        setEditVisibility(v.youtubeVisibility || "public");
+        setEditCategory(v.youtubeCategoryId || "27");
+        setEditTags(v.aiMetadata?.tags?.join(", ") || "");
+      } else {
+        toast.error(res.message || "Failed to load video.");
+      }
+    }
+    if (v) {
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
       // The channel language wins: the user explicitly declared which
       // language that channel publishes in. Without one, fall back to the
@@ -233,8 +246,6 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setLessonLanguage(
         channelLanguage || v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en",
       );
-    } else {
-      toast.error(res.message || "Failed to load video.");
     }
 
     // The published status on YouTube is read from YouTube itself, so the
