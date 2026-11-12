@@ -146,9 +146,12 @@ export const listAllPlaylistItems = async (accessToken, playlistId) => {
 export const ensureCoursePlaylist = async (course, accessToken) => {
   if (course.playlistId) return course.playlistId;
 
+  // A course playlist is the way the channel shows its courses, so it has to
+  // be visible to viewers. Its videos keep their own privacy.
   const playlist = await createYouTubePlaylist(accessToken, {
     title: course.title,
     description: course.description || '',
+    visibility: 'public',
   });
   course.playlistId = playlist.id;
   course.playlistTitle = playlist.title;
