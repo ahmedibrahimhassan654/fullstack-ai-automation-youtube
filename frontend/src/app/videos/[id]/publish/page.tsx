@@ -321,6 +321,143 @@ type LessonPublishInfo = {
   youtubeRecordingDate?: string | Date | null;
   youtubeLocation?: string | null;
 };
+async function generateAiThumbnailDataUrl({
+  title,
+  language,
+  lessonNumber,
+  metadata,
+}: {
+  title: string;
+  language: string;
+  lessonNumber: number | null;
+  metadata?: { summary?: string; keyPoints?: string[]; tags?: string[] } | null;
+}): Promise<string> {
+  const isArabic = language.toLowerCase().startsWith("ar");
+  const safeTitle = (title || "Lesson").trim().replace(/^\\d+\\s*[.\\-–:)]\\s*/, "");
+
+  const keywords = [
+    metadata?.summary?.slice(0, 120),
+    ...(metadata?.keyPoints || []).slice(0, 3),
+    ...(metadata?.tags || []).slice(0, 5),
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const prompt = encodeURIComponent(
+    `professional youtube thumbnail background for a tech tutorial about ${safeTitle}. ` +
+      (keywords ? `Topic and technologies: ${keywords}. ` : "") +
+      "modern cinematic tech aesthetic, dark blue and orange accents, abstract digital circuit and code patterns, " +
+      "no text, no faces, no logos, high contrast, 16:9, 4k quality",
+  );
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  let bgLoaded = false;
+  try {
+    const res = await fetch(
+      `https://image.pollinations.ai/prompt/${prompt}?width=1280&height=720&nologo=true&seed=${Date.now()}`,
+    );
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const img = await loadImage(url);
+      URL.revokeObjectURL(url);
+      if (img) {
+        const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+        const shade = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        shade.addColorStop(0, "rgba(4, 10, 28, 0.4)");
+        shade.addColorStop(0.5, "rgba(4, 10, 28, 0.3)");
+        shade.addColorStop(1, "rgba(4, 10, 28, 0.7)");
+        ctx.fillStyle = shade;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        bgLoaded = true;
+      }
+    }
+  } catch {
+    bgLoaded = false;
+  }
+
+  if (!bgLoaded) {
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, "#081229");
+    gradient.addColorStop(0.55, "#102a5c");
+    gradient.addColorStop(1, "#1f4f99");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.fillRect(0, 430, canvas.width, 290);
+
+  ctx.direction = isArabic ? "rtl" : "ltr";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffffff";
+
+  const FONT = (size: number) => `bold ${size}px 'Segoe UI', 'Tahoma', sans-serif`;
+  const MAX_LINES = 2;
+  let fontSize = 74;
+  let lines: string[] = [];
+  let cut = false;
+  for (;;) {
+    ctx.font = FONT(fontSize);
+    const wrapped = wrapCanvasText(ctx, safeTitle, 1080);
+    const tooWide = wrapped.some((line) => ctx.measureText(line).width > 1080);
+    if (wrapped.length <= MAX_LINES && !tooWide) {
+      lines = wrapped;
+      break;
+    }
+    if (fontSize <= 38) {
+      lines = wrapped.slice(0, MAX_LINES);
+      cut = wrapped.length > MAX_LINES || tooWide;
+      break;
+    }
+    fontSize -= 4;
+  }
+  if (cut && lines.length) {
+    let last = lines[lines.length - 1].replace(/[\\s.\\-]+$/, "");
+    while (last.length > 4 && ctx.measureText(`${last}…`).width > 1080) {
+      last = last.slice(0, -2).trimEnd();
+    }
+    lines[lines.length - 1] = `${last}…`;
+  }
+  ctx.font = FONT(fontSize);
+
+  const lineHeight = Math.round(fontSize * 1.16);
+  const titleCenter = 588;
+  const startY = titleCenter - ((lines.length - 1) * lineHeight) / 2;
+  lines.forEach((line, index) => {
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.fillText(line, canvas.width / 2 + 4, startY + index * lineHeight + 4);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(line, canvas.width / 2, startY + index * lineHeight);
+  });
+
+  ctx.fillStyle = "#ff8a00";
+  ctx.fillRect(canvas.width / 2 - 180, startY + lines.length * lineHeight - 18, 360, 8);
+
+  const badgeCenter = 481;
+  if (lessonNumber) {
+    const badgeText = lessonBadgeText(language, lessonNumber);
+    ctx.font = "bold 34px 'Segoe UI', 'Tahoma', sans-serif";
+    const badgeWidth = ctx.measureText(badgeText).width + 60;
+    const badgeHeight = 58;
+    ctx.fillStyle = "#ff8a00";
+    fillRoundedRect(ctx, (canvas.width - badgeWidth) / 2, badgeCenter - badgeHeight / 2, badgeWidth, badgeHeight, badgeHeight / 2);
+    ctx.fillStyle = "#1b1206";
+    ctx.fillText(badgeText, canvas.width / 2, badgeCenter + 2);
+  }
+
+  return canvas.toDataURL("image/png");
+}
+
 function lessonNumberFrom(value?: string | null) {
   const match = String(value || "").trim().match(/^(\d+)/);
   return match ? match[1] : null;
@@ -394,6 +531,8 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [questions, setQuestions] = useState<string[]>([]);
+  const [aiMeta, setAiMeta] = useState<{ summary?: string; keyPoints?: string[]; tags?: string[] } | null>(null);
+  const [generatingAi, setGeneratingAi] = useState(false);
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [visibility, setVisibility] = useState("private");
   const [categoryId, setCategoryId] = useState("27");
@@ -637,6 +776,11 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         setDescription(existingPublishLesson?.youtubeDescription || composedDescription);
         setTags(((existingPublishLesson?.youtubeTags && existingPublishLesson.youtubeTags.length ? existingPublishLesson.youtubeTags : (meta.tags || [])) as string[]).join(", "));
         setQuestions((meta.openQuestions || []).map((q) => String(q).trim()).filter(Boolean));
+        setAiMeta({
+          summary: meta.summary,
+          keyPoints: meta.keyPoints,
+          tags: meta.tags,
+        });
         setVisibility(existingPublishLesson?.youtubeVisibility || v.youtubeVisibility || "private");
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
         setPlaylistId(existingPublishLesson?.youtubePlaylistId || "");
@@ -1125,9 +1269,51 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                     variant="outline"
                     size="sm"
                     onClick={regenerateThumbnail}
-                    disabled={regenerating}
+                    disabled={regenerating || generatingAi}
                   >
-                    {regenerating ? "Regenerating…" : "Regenerate thumbnail"}
+                    {regenerating ? "Regenerating…" : "Regenerate thumbnail (course image)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    onClick={async () => {
+                      setGeneratingAi(true);
+                      try {
+                        const titleForImage = String(title || "")
+                          .trim()
+                          .replace(/^\\d+\\s*[.\\-–:)]\\s*/, "");
+                        const dataUrl = await generateAiThumbnailDataUrl({
+                          title: titleForImage,
+                          language,
+                          lessonNumber,
+                          metadata: aiMeta,
+                        });
+                        if (!dataUrl) {
+                          toast.error("The AI thumbnail could not be drawn.");
+                          return;
+                        }
+                        const res = await api.post<{ thumbnailUrl: string }>(
+                          `/api/videos/${id}/thumbnail`,
+                          { thumbnailDataUrl: dataUrl },
+                        );
+                        if (res.success && res.data?.thumbnailUrl) {
+                          setThumbnailUrl(res.data.thumbnailUrl);
+                          toast.success("AI thumbnail generated.");
+                        } else {
+                          toast.error(res.message || "The AI thumbnail could not be saved.");
+                        }
+                      } catch (error) {
+                        toast.error(
+                          error instanceof Error ? error.message : "The AI thumbnail could not be generated.",
+                        );
+                      } finally {
+                        setGeneratingAi(false);
+                      }
+                    }}
+                    disabled={regenerating || generatingAi}
+                  >
+                    {generatingAi ? "Generating AI thumbnail…" : "Generate AI thumbnail (lesson)"}
                   </Button>
                   <span className="text-xs text-muted-foreground">
                     {lessonNumber
