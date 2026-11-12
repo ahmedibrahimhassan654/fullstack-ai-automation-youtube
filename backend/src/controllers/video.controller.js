@@ -1521,7 +1521,13 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     }
   }
 
-  const title = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
+  const rawTitle = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
+  // YouTube rejects titles containing '<' or '>' and requires a non-empty
+  // title of at most 100 characters.
+  const title = rawTitle
+    .replace(/[<>]/g, "")
+    .slice(0, 100)
+    .trim() || `${String(video.title || "Lesson").trim()} (${language})`.slice(0, 100).trim();
   const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
   const tags = Array.isArray(req.body?.tags)
     ? req.body.tags
