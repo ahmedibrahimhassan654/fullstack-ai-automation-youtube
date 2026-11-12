@@ -6,7 +6,7 @@ import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
-import { Loader2 } from "lucide-react";
+import { Loader2, ExternalLink } from "lucide-react";
 import { api, API_BASE } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import LessonVideoCard from "./lesson-card";
@@ -85,6 +85,44 @@ type VideoDetail = {
   aiMetadata?: AiMetadata | null;
 };
 
+type YouTubeLessonState = {
+  videoId: string;
+  title: string;
+  order: number;
+  lessonNumber: number | null;
+  language: string;
+  published: boolean;
+  youtubeVideoId: string | null;
+  youtubeUrl: string | null;
+  youtubeTitle: string | null;
+  publishedAt: string | null;
+  inPlaylist: boolean;
+  playlistPosition: number | null;
+  duplicates: { videoId: string; title: string; publishedAt: string | null }[];
+};
+
+type VideoYouTubeCourse = {
+  course: {
+    id: string;
+    title: string;
+    language: string;
+    channelTitle?: string | null;
+    playlistId: string | null;
+    playlistUrl: string | null;
+  };
+  lesson: YouTubeLessonState | null;
+  dubs: {
+    language: string;
+    voice: string | null;
+    createdAt: string | null;
+    published: boolean;
+    youtubeUrl: string | null;
+  }[];
+  error?: string;
+};
+
+type VideoYouTubeState = { videoId: string; courses: VideoYouTubeCourse[] };
+
 const LANGUAGES = [
   { code: "en", label: "English" },
   { code: "es", label: "Spanish" },
@@ -159,6 +197,7 @@ export default function VideoDetailClient({ id }: { id: string }) {
   const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
   const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
+  const [youtubeState, setYoutubeState] = useState<VideoYouTubeState | null>(null);
 
   // Study-journey lesson render is a separate product from dubbing, so it keeps
   // its own language / voice selection state.
@@ -196,6 +235,15 @@ export default function VideoDetailClient({ id }: { id: string }) {
       );
     } else {
       toast.error(res.message || "Failed to load video.");
+    }
+
+    // The published status on YouTube is read from YouTube itself, so the
+    // dubs tab never claims a live video is missing.
+    try {
+      const yt = await api.get<VideoYouTubeState>(`/api/videos/${id}/youtube`);
+      if (yt.success && yt.data) setYoutubeState(yt.data);
+    } catch {
+      setYoutubeState(null);
     }
     setLoading(false);
   };
@@ -378,6 +426,18 @@ export default function VideoDetailClient({ id }: { id: string }) {
       return acc;
     }, {}),
   );
+
+  // The dub that is actually live on YouTube for its language. The backend
+  // marks the newest voice of each language as the published one.
+  const findYouTubeDub = (dub: Dub) =>
+    (youtubeState?.courses || [])
+      .flatMap((entry) => entry.dubs)
+      .find(
+        (item) =>
+          String(item.language).split("-")[0] ===
+            String(dub.language).split("-")[0] &&
+          String(item.voice || "") === String(dub.voice || ""),
+      );
 
   return (
     <AuthGuard>
@@ -612,6 +672,89 @@ export default function VideoDetailClient({ id }: { id: string }) {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {(youtubeState?.courses || []).length > 0 && (
+                    <div className="space-y-2">
+                      {youtubeState!.courses.map((entry) => {
+                        const lesson = entry.lesson;
+                        const published = Boolean(lesson?.published);
+                        return (
+                          <div
+                            key={entry.course.id}
+                            className={`rounded-md border p-3 text-sm ${
+                              published
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-100"
+                                : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-semibold">
+                                {published
+                                  ? "Published on YouTube"
+                                  : "Not on YouTube yet"}{" "}
+                                · {entry.course.title}
+                              </p>
+                              {entry.course.playlistUrl && (
+                                <a
+                                  href={entry.course.playlistUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs underline"
+                                >
+                                  Open playlist
+                                </a>
+                              )}
+                            </div>
+                            {entry.error ? (
+                              <p className="mt-1 text-xs">
+                                Could not read YouTube: {entry.error}
+                              </p>
+                            ) : lesson?.published ? (
+                              <div className="mt-1 space-y-1 text-xs">
+                                <p>{lesson.youtubeTitle}</p>
+                                <p>
+                                  Uploaded{" "}
+                                  {lesson.publishedAt
+                                    ? new Date(
+                                        lesson.publishedAt,
+                                      ).toLocaleString()
+                                    : "unknown"}{" "}
+                                  ·{" "}
+                                  {lesson.inPlaylist
+                                    ? `playlist position ${
+                                        (lesson.playlistPosition ?? 0) + 1
+                                      }`
+                                    : "not in the playlist"}
+                                </p>
+                                {lesson.duplicates.length > 0 && (
+                                  <p>
+                                    {lesson.duplicates.length} older copy
+                                    {lesson.duplicates.length === 1
+                                      ? ""
+                                      : "ies"}{" "}
+                                    still on the channel.
+                                  </p>
+                                )}
+                                <a
+                                  href={lesson.youtubeUrl || "#"}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 underline"
+                                >
+                                  <ExternalLink className="size-3" />
+                                  Watch on YouTube
+                                </a>
+                              </div>
+                            ) : (
+                              <p className="mt-1 text-xs">
+                                The newest dub for this language has not been
+                                uploaded yet.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-2">
                     <Label htmlFor="dubLanguage">Dub language</Label>
                     <select
@@ -737,6 +880,27 @@ export default function VideoDetailClient({ id }: { id: string }) {
                                             ? " • subtitles burned in"
                                             : ""}
                                         </p>
+                                        {(() => {
+                                          const ytDub = findYouTubeDub(dub);
+                                          if (!ytDub) return null;
+                                          return ytDub.published &&
+                                            ytDub.youtubeUrl ? (
+                                            <a
+                                              href={ytDub.youtubeUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-emerald-700 underline dark:text-emerald-400"
+                                            >
+                                              <ExternalLink className="size-3" />
+                                              Published on YouTube (newest
+                                              version)
+                                            </a>
+                                          ) : (
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                              Not the version on YouTube
+                                            </p>
+                                          );
+                                        })()}
                                       </div>
                                       <div className="flex flex-wrap items-center gap-3">
                                         <a

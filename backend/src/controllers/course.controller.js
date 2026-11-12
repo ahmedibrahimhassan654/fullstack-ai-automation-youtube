@@ -6,6 +6,10 @@ import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { publishCourseToYouTube } from '../services/coursePublish.service.js';
 import {
+  applyCourseYouTubeSync,
+  getCourseYouTubeStateById,
+} from '../services/youtubeSync.service.js';
+import {
   createYouTubePlaylist,
   getValidYouTubeAccessToken,
 } from '../services/youtubePublish.service.js';
@@ -313,6 +317,31 @@ export const updateCourse = asyncHandler(async (req, res) => {
 
   await course.save();
   res.status(200).json({ success: true, message: 'Course updated', data: { course } });
+});
+
+// ---------- Courses: read the real YouTube state ----------
+export const getCourseYouTube = asyncHandler(async (req, res) => {
+  const state = await getCourseYouTubeStateById(req.params.id, req.user._id);
+  res.status(200).json({ success: true, data: { youtube: state } });
+});
+
+// ---------- Courses: sync the database with YouTube ----------
+export const syncCourseYouTube = asyncHandler(async (req, res) => {
+  const result = await applyCourseYouTubeSync({
+    courseId: req.params.id,
+    userId: req.user._id,
+    deleteDuplicates: Boolean(req.body?.deleteDuplicates),
+    reorderPlaylist:
+      req.body?.reorderPlaylist === undefined
+        ? true
+        : Boolean(req.body.reorderPlaylist),
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Course synced with YouTube',
+    data: result,
+  });
 });
 
 // ---------- Courses: publish ----------

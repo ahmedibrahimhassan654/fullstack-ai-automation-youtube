@@ -22,18 +22,24 @@ import { parseSubtitle } from "../services/subtitle.service.js";
 import { generateLessonVideo } from "../services/lessonVideo.service.js";
 import { ElevenLabsClient } from "elevenlabs";
 import {
-  addVideoToPlaylist,
   getValidYouTubeAccessToken,
   listYouTubeComments as fetchYouTubeComments,
   listYouTubePlaylists as fetchYouTubePlaylists,
   publishYouTubeVideo,
   updateYouTubeVideo,
   deletePlaylistItem,
+  deleteYouTubeVideo,
   youtubeFetch,
   setYouTubeThumbnail,
   replyYouTubeComment as replyToYouTubeComment,
 } from "../services/youtubePublish.service.js";
 import User from "../models/User.js";
+import Course from "../models/Course.js";
+import {
+  ensureCoursePlaylist,
+  getVideoYouTubeState,
+  reconcilePublishedLesson,
+} from "../services/youtubeSync.service.js";
 
 const emitVideoProgress = (video) => {
   if (!video) return;
@@ -1428,7 +1434,9 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   // When publishing a new dub for a language that already has a published
   // lesson, update the existing YouTube video instead of creating a new
   // lesson entry / uploading a duplicate video to the playlist.
-  if (!lesson && source === "dub") {
+  // A different voice means different audio, which YouTube cannot swap inside
+  // an existing video: that case uploads a new video and removes the old one.
+  if (!lesson && source === "dub" && !requestedVoice) {
     lesson = (video.lessonVideos || []).find(
       (item) =>
         item.language === language &&
@@ -1463,12 +1471,54 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     }
   }
 
+  // The course decides the playlist and the position of the lesson in it.
+  const courses = await Course.find({
+    owner: req.user._id,
+    'videos.video': video._id,
+  });
+  const course =
+    courses.find((item) => item.language === language && item.playlistId) ||
+    courses.find((item) => item.language === language) ||
+    courses.find((item) => item.playlistId) ||
+    courses[0] ||
+    null;
+  const courseEntry = course
+    ? (course.videos || []).find(
+        (entry) => String(entry.video) === String(video._id),
+      )
+    : null;
+  const coursePosition =
+    course && courseEntry
+      ? [...course.videos]
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+          .findIndex((entry) => String(entry.video) === String(video._id))
+      : null;
+  // Older published copies of this lesson that a new upload replaces.
+  const stalePublishedRecords = (video.lessonVideos || []).filter(
+    (item) =>
+      item !== lesson &&
+      item.language === language &&
+      (item.source || "lesson") === source &&
+      item.youtubeVideoId,
+  );
+
   const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
   const channelId = req.body?.channelId ? String(req.body.channelId).trim() : (lesson.youtubeChannelId || null);
   // The token belongs to a Google account, not to a channel. The upload has
   // to run with the account that owns the target channel, otherwise a video
   // picked for another language lands on the default channel instead.
   const accessToken = await getValidYouTubeAccessToken(user, channelId || null);
+
+  // The course owns the playlist the lesson belongs to. A course without one
+  // gets it created now, so the lesson can be placed at its position.
+  let coursePlaylistId = course?.playlistId || null;
+  if (course && !coursePlaylistId && course.channelId) {
+    try {
+      coursePlaylistId = await ensureCoursePlaylist(course, accessToken);
+    } catch (error) {
+      console.warn("[publishLessonVideo] playlist creation failed:", error?.message);
+    }
+  }
 
   const title = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
   const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
@@ -1477,7 +1527,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     : (lesson.youtubeTags?.length ? lesson.youtubeTags : (video.aiMetadata?.tags || []));
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
   const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
-  const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || null);
+  const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || coursePlaylistId || null);
   // The YouTube Automation Form checklist fields for this language.
   const madeForKids = req.body?.madeForKids === undefined ? Boolean(lesson.youtubeMadeForKids) : Boolean(req.body.madeForKids);
   const selfDeclaredAiContent = req.body?.selfDeclaredAiContent === undefined ? Boolean(lesson.youtubeSelfDeclaredAiContent) : Boolean(req.body.selfDeclaredAiContent);
@@ -1540,29 +1590,31 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     });
   }
 
-  if (playlistId && playlistId !== (lesson.youtubePlaylistId || null)) {
-    if (lesson.youtubePlaylistItemId) {
-      try { await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId); } catch (e) {
-        console.warn("[publishLessonVideo] playlist item removal failed:", e?.message);
+  // The lesson belongs to exactly one playlist: the one picked on the form,
+  // the one it was published to before, or the playlist of its course.
+  if (playlistId) {
+    if (
+      lesson.youtubePlaylistItemId &&
+      playlistId !== (lesson.youtubePlaylistId || null)
+    ) {
+      try {
+        await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId);
+      } catch (error) {
+        console.warn("[publishLessonVideo] playlist item removal failed:", error?.message);
       }
+      lesson.youtubePlaylistItemId = null;
     }
-    try {
-      const added = await addVideoToPlaylist(accessToken, playlistId, youtubeVideoId);
-      lesson.youtubePlaylistId = playlistId;
-      lesson.youtubePlaylistItemId = added?.id || null;
-    } catch (error) {
-      console.warn("[publishLessonVideo] playlist add failed:", error?.message);
-    }
-  } else if (!playlistId && lesson.youtubePlaylistId) {
+    lesson.youtubePlaylistId = playlistId;
+  } else if (lesson.youtubePlaylistId) {
     if (lesson.youtubePlaylistItemId) {
-      try { await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId); } catch (e) {
-        console.warn("[publishLessonVideo] playlist item removal failed:", e?.message);
+      try {
+        await deletePlaylistItem(accessToken, lesson.youtubePlaylistItemId);
+      } catch (error) {
+        console.warn("[publishLessonVideo] playlist item removal failed:", error?.message);
       }
     }
     lesson.youtubePlaylistId = null;
     lesson.youtubePlaylistItemId = null;
-  } else {
-    lesson.youtubePlaylistId = playlistId || lesson.youtubePlaylistId || null;
   }
 
   if (thumbnailUrl) {
@@ -1578,6 +1630,64 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     } catch (error) {
       console.warn("[publishLessonVideo] thumbnail upload failed:", error?.message);
     }
+  }
+
+  // Do not remove a video that another lesson on the channel uses.
+  const protectedVideoIds = new Set();
+  if (course?.channelId) {
+    const channelCourses = await Course.find({
+      owner: req.user._id,
+      channelId: course.channelId,
+    })
+      .select('videos')
+      .lean();
+    for (const other of channelCourses) {
+      for (const entry of other.videos || []) {
+        if (String(entry.video) === String(video._id)) continue;
+        if (entry.youtubeVideoId) protectedVideoIds.add(entry.youtubeVideoId);
+      }
+    }
+  }
+  for (const stale of stalePublishedRecords) {
+    if (stale.youtubeVideoId) protectedVideoIds.delete(stale.youtubeVideoId);
+  }
+
+  // The channel is the source of truth: remove the older copies of this
+  // lesson, keep this upload in the playlist exactly once, and put it in the
+  // position of the lesson inside the course.
+  const reconcile = await reconcilePublishedLesson({
+    accessToken,
+    channelId: channel?.id || lesson.youtubeChannelId || null,
+    video,
+    language,
+    keepVideoId: youtubeVideoId,
+    title,
+    playlistId: lesson.youtubePlaylistId || null,
+    position: coursePosition,
+    deleteDuplicates: true,
+    protectedVideoIds,
+  });
+  if (reconcile.playlistItemId) {
+    lesson.youtubePlaylistItemId = reconcile.playlistItemId;
+  }
+  for (const warning of reconcile.warnings) {
+    console.warn("[publishLessonVideo] YouTube reconcile:", warning);
+  }
+
+  // A new upload (new voice) replaces the old video instead of leaving it on
+  // the channel as a second copy of the same lesson.
+  for (const stale of stalePublishedRecords) {
+    if (!stale.youtubeVideoId || stale.youtubeVideoId === youtubeVideoId) continue;
+    try {
+      await deleteYouTubeVideo(accessToken, stale.youtubeVideoId);
+    } catch (error) {
+      console.warn("[publishLessonVideo] old video removal failed:", error?.message);
+    }
+    stale.youtubeVideoId = null;
+    stale.youtubeUrl = null;
+    stale.youtubePublishedAt = null;
+    stale.youtubePlaylistId = null;
+    stale.youtubePlaylistItemId = null;
   }
 
   lesson.youtubeVideoId = youtubeVideoId;
@@ -1603,6 +1713,15 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   lesson.youtubeChannelTitle = channel?.snippet?.title || lesson.youtubeChannelTitle;
   await video.save();
 
+  // Keep the course in sync too, so its playlist view shows the same link.
+  if (course && courseEntry) {
+    courseEntry.youtubeVideoId = youtubeVideoId;
+    courseEntry.youtubeUrl = lesson.youtubeUrl;
+    courseEntry.youtubePlaylistItemId = lesson.youtubePlaylistItemId || null;
+    courseEntry.publishedAt = courseEntry.publishedAt || new Date();
+    await course.save();
+  }
+
   res.status(200).json({
     success: true,
     message: isUpdate
@@ -1615,8 +1734,16 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       youtubeUrl: lesson.youtubeUrl,
       channelTitle: lesson.youtubeChannelTitle,
       playlistId: lesson.youtubePlaylistId,
+      playlistPosition: coursePosition,
+      removedDuplicates: reconcile.deleted,
+      reconcileWarnings: reconcile.warnings,
     },
   });
+});
+
+export const getVideoYouTube = asyncHandler(async (req, res) => {
+  const state = await getVideoYouTubeState(req.params.id, req.user._id);
+  res.status(200).json({ success: true, data: state });
 });
 
 export const listYouTubeComments = asyncHandler(async (req, res) => {

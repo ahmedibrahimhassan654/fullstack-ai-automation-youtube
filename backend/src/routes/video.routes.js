@@ -34,6 +34,7 @@ router.post('/:id/dub/cancel', video.cancelDubbing);
 router.delete('/:id/dub', video.deleteDub);
 router.post('/:id/translate', video.translateVideo);
 router.get('/:id/publish-prefill', video.getPublishPrefill);
+router.get('/:id/youtube', video.getVideoYouTube);
 router.get('/:id', video.getVideo);
 router.delete('/:id', video.deleteVideo);
 

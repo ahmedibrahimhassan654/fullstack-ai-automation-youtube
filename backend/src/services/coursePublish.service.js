@@ -1,12 +1,12 @@
 import Course from '../models/Course.js';
 import Video from '../models/Video.js';
 import {
-  addVideoToPlaylist,
   createYouTubePlaylist,
   getValidYouTubeAccessToken,
   publishYouTubeVideo,
   updateYouTubeVideo,
 } from './youtubePublish.service.js';
+import { reconcilePublishedLesson } from './youtubeSync.service.js';
 
 const YOUTUBE_API_URL = 'https://www.googleapis.com/youtube/v3';
 
@@ -17,9 +17,14 @@ const YOUTUBE_API_URL = 'https://www.googleapis.com/youtube/v3';
  * dub keeps the original footage while a lesson render is a new video.
  */
 export const findRenderForLanguage = (video, language) => {
-  const dubs = (video.dubs || []).filter(
-    (item) => item.language === language && item.url,
-  );
+  const dubs = (video.dubs || [])
+    .filter((item) => item.language === language && item.url)
+    // The newest voice version is the one that should be on YouTube.
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt || 0).getTime() -
+        new Date(a.createdAt || 0).getTime(),
+    );
   const lesson = (video.lessonVideos || []).find(
     (item) =>
       item.language === language &&
@@ -128,14 +133,25 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
 
     if (youtubeVideoId) {
       // Already published: refresh the metadata instead of uploading again.
-      await updateYouTubeVideo(accessToken, youtubeVideoId, {
-        title,
-        description,
-        tags,
-        categoryId,
-        visibility,
-      });
-    } else {
+      // A video that was deleted from the channel falls back to a new upload.
+      try {
+        await updateYouTubeVideo(accessToken, youtubeVideoId, {
+          title,
+          description,
+          tags,
+          categoryId,
+          visibility,
+        });
+      } catch (error) {
+        if (error?.statusCode === 404 || /not found/i.test(error?.message || '')) {
+          youtubeVideoId = null;
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (!youtubeVideoId) {
       const mediaRes = await fetch(render.url);
       if (!mediaRes.ok) {
         const err = new Error(
@@ -160,17 +176,30 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
       youtubeVideoId = uploaded.id;
     }
 
-    // Put the lesson in the course playlist, once.
-    const alreadyInPlaylist = lesson.youtubePlaylistItemId;
-    if (!alreadyInPlaylist) {
-      const added = await addVideoToPlaylist(accessToken, course.playlistId, youtubeVideoId);
-      lesson.youtubePlaylistItemId = added?.id || null;
-    }
-
     lesson.youtubeVideoId = youtubeVideoId;
     lesson.youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
     lesson.language = language;
     lesson.publishedAt = lesson.publishedAt || new Date();
+
+    // Keep the lesson in the playlist once, at its position in the course,
+    // and remove any older copy of it from the channel.
+    const reconcile = await reconcilePublishedLesson({
+      accessToken,
+      channelId: course.channelId,
+      video,
+      language,
+      keepVideoId: youtubeVideoId,
+      title,
+      playlistId: course.playlistId,
+      position: index,
+      deleteDuplicates: true,
+    });
+    if (reconcile.playlistItemId) {
+      lesson.youtubePlaylistItemId = reconcile.playlistItemId;
+    }
+    for (const warning of reconcile.warnings) {
+      console.warn('[coursePublish] YouTube reconcile:', warning);
+    }
 
     // Keep the video page in sync so the lesson shows as published there too.
     const publishRecord = (video.lessonVideos || []).find(

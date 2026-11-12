@@ -14,6 +14,7 @@ import {
   PlayCircle,
   Plus,
   Radio,
+  RefreshCw,
   Trash2,
   Tv,
 } from "lucide-react";
@@ -77,6 +78,47 @@ type Course = {
 
 type VideoRow = { _id: string; title: string; status: string };
 
+type YouTubeLesson = {
+  videoId: string;
+  title: string;
+  order: number;
+  lessonNumber: number | null;
+  language: string;
+  published: boolean;
+  youtubeVideoId: string | null;
+  youtubeUrl: string | null;
+  youtubeTitle: string | null;
+  publishedAt: string | null;
+  inPlaylist: boolean;
+  playlistPosition: number | null;
+  duplicates: { videoId: string; title: string; publishedAt: string | null }[];
+  playlistItemDuplicates: { playlistItemId: string; videoId: string; position: number }[];
+};
+
+type YouTubeState = {
+  course: {
+    id: string;
+    title: string;
+    channelTitle?: string | null;
+    playlistId: string | null;
+    playlistUrl: string | null;
+  };
+  lessons: YouTubeLesson[];
+  unmatchedPlaylistItems: { videoId: string; title: string; position: number }[];
+  summary: {
+    lessons: number;
+    published: number;
+    inPlaylist: number;
+    duplicates: number;
+  };
+};
+
+const formatDate = (value: string | null | undefined) => {
+  if (!value) return "unknown date";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "unknown date" : date.toLocaleString();
+};
+
 const fieldClass =
   "h-9 w-full rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
 
@@ -96,6 +138,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
   const [imageUploading, setImageUploading] = useState(false);
+  const [youtube, setYoutube] = useState<YouTubeState | null>(null);
+  const [loadingYoutube, setLoadingYoutube] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -123,6 +168,23 @@ export default function CourseDetailClient({ id }: { id: string }) {
         if (res.success) setAllVideos(res.data?.items || []);
       });
   }, [load]);
+
+  // The real YouTube state is read separately: it is the source of truth for
+  // the published status and links shown on this page.
+  const loadYouTube = useCallback(async () => {
+    setLoadingYoutube(true);
+    const res = await api.get<{ youtube: YouTubeState }>(
+      `/api/courses/${id}/youtube`,
+    );
+    if (res.success && res.data?.youtube) {
+      setYoutube(res.data.youtube);
+    }
+    setLoadingYoutube(false);
+  }, [id]);
+
+  useEffect(() => {
+    loadYouTube();
+  }, [loadYouTube]);
 
   // Follow the publish run while it is working.
   useEffect(() => {
@@ -191,9 +253,56 @@ export default function CourseDetailClient({ id }: { id: string }) {
     if (res.success) {
       toast.success(res.message || "Publishing started.");
       await load();
+      await loadYouTube();
     } else {
       toast.error(res.message || "Failed to publish the course.");
     }
+  };
+
+  /**
+   * Writes the YouTube truth into the database. With `deleteDuplicates` the
+   * older copies of every lesson are removed from the channel and the
+   * playlist is put back in lesson order.
+   */
+  const syncYouTube = async (deleteDuplicates: boolean) => {
+    if (
+      deleteDuplicates &&
+      !window.confirm(
+        "Remove the older copies of the lessons from YouTube and reorder the playlist?",
+      )
+    ) {
+      return;
+    }
+    setSyncing(true);
+    const res = await api.post<{
+      state: YouTubeState;
+      actions: {
+        updated: string[];
+        deleted: string[];
+        playlistAdded: string[];
+        reordered: string[];
+        warnings: string[];
+      };
+    }>(`/api/courses/${id}/youtube/sync`, {
+      deleteDuplicates,
+      reorderPlaylist: true,
+    });
+    if (res.success) {
+      if (res.data?.state) setYoutube(res.data.state);
+      const actions = res.data?.actions;
+      toast.success(
+        deleteDuplicates
+          ? `Synced. Removed ${actions?.deleted.length || 0} duplicate(s).`
+          : "YouTube links saved to the database.",
+      );
+      if (actions?.warnings?.length) {
+        toast.error(actions.warnings[0]);
+      }
+      await load();
+    } else {
+      toast.error(res.message || "Failed to sync with YouTube.");
+    }
+    setSyncing(false);
   };
 
   /** Uploads the image of the course. It becomes the background of the
@@ -360,6 +469,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const available = allVideos.filter((video) => !inCourse.has(video._id));
   const publishing = course?.publishing;
   const isPublishing = publishing?.status === "processing";
+  const ytByVideo = new Map(
+    (youtube?.lessons || []).map((lesson) => [lesson.videoId, lesson]),
+  );
 
   return (
     <AuthGuard>
@@ -476,6 +588,144 @@ export default function CourseDetailClient({ id }: { id: string }) {
                       {course.status === "published" ? "Published" : "Draft"}
                     </Badge>
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Tv className="size-4" />
+                    YouTube status
+                  </CardTitle>
+                  <CardDescription>
+                    Read from the channel and the playlist itself, not from the
+                    database. This is what viewers see right now.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {loadingYoutube && !youtube ? (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Reading YouTube…
+                    </p>
+                  ) : !youtube ? (
+                    <p className="text-sm text-muted-foreground">
+                      Could not read the YouTube state.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <Badge>
+                          {youtube.summary.published} of {youtube.summary.lessons}{" "}
+                          published
+                        </Badge>
+                        <Badge variant="outline">
+                          {youtube.summary.inPlaylist} in the playlist
+                        </Badge>
+                        <Badge
+                          variant={
+                            youtube.summary.duplicates ? "destructive" : "secondary"
+                          }
+                        >
+                          {youtube.summary.duplicates} duplicate
+                          {youtube.summary.duplicates === 1 ? "" : "s"}
+                        </Badge>
+                        {youtube.course.playlistUrl && (
+                          <a
+                            href={youtube.course.playlistUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                          >
+                            <ExternalLink className="size-3" />
+                            Open playlist
+                          </a>
+                        )}
+                      </div>
+
+                      <ol className="space-y-2">
+                        {youtube.lessons.map((lesson) => (
+                          <li
+                            key={lesson.videoId}
+                            className="rounded-lg border p-3"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-secondary text-[11px] font-semibold">
+                                {lesson.lessonNumber ?? "?"}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                {lesson.title}
+                              </span>
+                              {lesson.published ? (
+                                <a
+                                  href={lesson.youtubeUrl || "#"}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                                >
+                                  <ExternalLink className="size-3" />
+                                  Watch on YouTube
+                                </a>
+                              ) : (
+                                <Badge variant="secondary" className="text-[10px]">
+                                  not on YouTube
+                                </Badge>
+                              )}
+                            </div>
+                            {lesson.published && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {lesson.youtubeTitle} · uploaded{" "}
+                                {formatDate(lesson.publishedAt)} ·{" "}
+                                {lesson.inPlaylist
+                                  ? `playlist position ${
+                                      (lesson.playlistPosition ?? 0) + 1
+                                    }`
+                                  : "not in the playlist"}
+                                {lesson.duplicates.length
+                                  ? ` · ${lesson.duplicates.length} older copy${
+                                      lesson.duplicates.length === 1 ? "" : "ies"
+                                    }`
+                                  : ""}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => loadYouTube()}
+                          disabled={loadingYoutube || syncing}
+                        >
+                          <RefreshCw
+                            className={cn(
+                              "mr-1 size-3.5",
+                              loadingYoutube && "animate-spin",
+                            )}
+                          />
+                          Refresh from YouTube
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => syncYouTube(false)}
+                          disabled={syncing}
+                        >
+                          Save YouTube links to the database
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => syncYouTube(true)}
+                          disabled={syncing || youtube.summary.duplicates === 0}
+                        >
+                          Remove duplicates & reorder
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -631,25 +881,35 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                 <span className="text-xs text-muted-foreground">
                                   {entry.video?.status}
                                 </span>
-                                {entry.youtubeUrl ? (
-                                  <a
-                                    href={entry.youtubeUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                                  >
-                                    <ExternalLink className="size-3" />
-                                    Published on YouTube
-                                  </a>
-                                ) : ready ? (
-                                  <Badge variant="outline" className="text-[10px]">
-                                    {language} ready
-                                  </Badge>
-                                ) : (
-                                  <Badge variant="secondary" className="text-[10px]">
-                                    needs {language} dub
-                                  </Badge>
-                                )}
+                                {(() => {
+                                  const ytLesson = ytByVideo.get(
+                                    entry.video?._id || "",
+                                  );
+                                  const link =
+                                    ytLesson?.youtubeUrl || entry.youtubeUrl;
+                                  if (link) {
+                                    return (
+                                      <a
+                                        href={link}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                                      >
+                                        <ExternalLink className="size-3" />
+                                        Published on YouTube
+                                      </a>
+                                    );
+                                  }
+                                  return ready ? (
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {language} ready
+                                    </Badge>
+                                  ) : (
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      needs {language} dub
+                                    </Badge>
+                                  );
+                                })()}
                               </div>
                             </div>
                             <Button

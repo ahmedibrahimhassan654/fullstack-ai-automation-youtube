@@ -256,6 +256,46 @@ export const deletePlaylistItem = async (accessToken, playlistItemId) => {
   return true;
 };
 
+/** Moves a playlist item to a zero-based position (requires manual ordering). */
+export const updatePlaylistItemPosition = async (
+  accessToken,
+  playlistItemId,
+  playlistId,
+  videoId,
+  position,
+) => {
+  return youtubeFetch(accessToken, `${API_URL}/playlistItems?part=snippet`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: playlistItemId,
+      snippet: {
+        playlistId,
+        resourceId: { kind: 'youtube#video', videoId },
+        position: Number(position) || 0,
+      },
+    }),
+  });
+};
+
+/** Deletes a video from the channel. A missing video is treated as deleted. */
+export const deleteYouTubeVideo = async (accessToken, videoId) => {
+  const res = await fetch(
+    `${API_URL}/videos?id=${encodeURIComponent(videoId)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  if (!res.ok && res.status !== 404) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(
+      data?.error?.message || `Failed to delete the video (${res.status})`,
+    );
+  }
+  return true;
+};
+
 export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) => {
   const body = {
     id: youtubeVideoId,

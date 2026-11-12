@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { api } from "@/lib/api";
@@ -348,6 +348,44 @@ type VideoDetail = {
   thumbnailUrl?: string | null;
 };
 
+type YouTubeLesson = {
+  videoId: string;
+  title: string;
+  order: number;
+  lessonNumber: number | null;
+  language: string;
+  published: boolean;
+  youtubeVideoId: string | null;
+  youtubeUrl: string | null;
+  youtubeTitle: string | null;
+  publishedAt: string | null;
+  inPlaylist: boolean;
+  playlistPosition: number | null;
+  duplicates: { videoId: string; title: string; publishedAt: string | null }[];
+};
+
+type VideoYouTubeCourse = {
+  course: {
+    id: string;
+    title: string;
+    language: string;
+    channelTitle?: string | null;
+    playlistId: string | null;
+    playlistUrl: string | null;
+  };
+  lesson: YouTubeLesson | null;
+  dubs: {
+    language: string;
+    voice: string | null;
+    createdAt: string | null;
+    published: boolean;
+    youtubeUrl: string | null;
+  }[];
+  error?: string;
+};
+
+type VideoYouTubeState = { videoId: string; courses: VideoYouTubeCourse[] };
+
 function PublishForm({ id, language, voice: voiceParam }: { id: string; language: string; voice?: string }) {
   const router = useRouter();
   const toast = useToast();
@@ -370,6 +408,8 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [courseImageUrl, setCourseImageUrl] = useState("");
   const [courseTitle, setCourseTitle] = useState("");
   const [courseId, setCourseId] = useState("");
+  const [youtubeState, setYoutubeState] = useState<VideoYouTubeState | null>(null);
+  const [loadingYoutube, setLoadingYoutube] = useState(false);
   const [lessonNumber, setLessonNumber] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   // The YouTube Automation Form checklist fields. They decide how the video
@@ -408,6 +448,25 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
       (source !== "dub" ||
         !dubForLanguage ||
         String(l.voice ?? "") === String(dubForLanguage.voice ?? "")),
+  );
+
+  // The YouTube truth for this lesson, read from the channel uploads.
+  const youtubeMatch =
+    (youtubeState?.courses || []).find(
+      (entry) =>
+        entry.lesson &&
+        String(entry.lesson.language).split("-")[0] ===
+          String(language).split("-")[0],
+    ) ||
+    (youtubeState?.courses || [])[0] ||
+    null;
+  const youtubeLesson = youtubeMatch?.lesson || null;
+  const currentVoicePublished = Boolean(
+    youtubeMatch?.dubs.find(
+      (dub) =>
+        String(dub.voice || "") === String(dubForLanguage?.voice || "") &&
+        dub.published,
+    ),
   );
 
   const load = async () => {
@@ -454,6 +513,18 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
       }
     } catch {
       // The course lookup must never stop the publish form.
+    }
+
+    // The published status and link come from YouTube itself, so a video that
+    // is already live is never shown as missing.
+    try {
+      setLoadingYoutube(true);
+      const yt = await api.get<VideoYouTubeState>(`/api/videos/${id}/youtube`);
+      if (yt.success && yt.data) setYoutubeState(yt.data);
+    } catch {
+      setYoutubeState(null);
+    } finally {
+      setLoadingYoutube(false);
     }
 
     if (res.success && res.data?.video) {
@@ -788,7 +859,93 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                     : "The study-journey video is a new render with an AI-written narration and burned-in subtitles."}
                 </p>
               </div>
-              {existingPublish?.youtubeVideoId && (
+              {youtubeLesson && (
+                <div
+                  className={`rounded-md border p-3 text-sm ${
+                    youtubeLesson.published
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-100"
+                      : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold">
+                      {youtubeLesson.published
+                        ? "Found on YouTube"
+                        : "Not found on YouTube for this language"}
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => load()}
+                      disabled={loadingYoutube}
+                    >
+                      {loadingYoutube ? (
+                        <Loader2 className="mr-1 size-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="mr-1 size-3.5" />
+                      )}
+                      Refresh
+                    </Button>
+                  </div>
+                  {youtubeLesson.published ? (
+                    <div className="mt-1 space-y-1">
+                      <p className="text-xs">{youtubeLesson.youtubeTitle}</p>
+                      <p className="text-xs">
+                        Uploaded{" "}
+                        {youtubeLesson.publishedAt
+                          ? new Date(youtubeLesson.publishedAt).toLocaleString()
+                          : "unknown"}{" "}
+                        ·{" "}
+                        {youtubeLesson.inPlaylist
+                          ? `in the playlist at position ${
+                              (youtubeLesson.playlistPosition ?? 0) + 1
+                            }`
+                          : "not in the course playlist"}
+                      </p>
+                      {youtubeLesson.duplicates.length > 0 && (
+                        <p className="text-xs">
+                          {youtubeLesson.duplicates.length} older copy
+                          {youtubeLesson.duplicates.length === 1 ? "" : "ies"}{" "}
+                          will be removed when this is published again.
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-3 pt-1">
+                        <a
+                          href={youtubeLesson.youtubeUrl || "#"}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                        >
+                          Open on YouTube
+                        </a>
+                        {youtubeMatch?.course.playlistUrl && (
+                          <a
+                            href={youtubeMatch.course.playlistUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            Open playlist
+                          </a>
+                        )}
+                      </div>
+                      {!currentVoicePublished && dubForLanguage?.voice && (
+                        <p className="text-xs">
+                          The voice on YouTube is not{" "}
+                          {dubForLanguage.voice}. Publishing now uploads this
+                          voice as a new video and removes the older copy.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-xs">
+                      Publishing now uploads this lesson and adds it to the
+                      course playlist at its lesson position.
+                    </p>
+                  )}
+                </div>
+              )}
+              {!youtubeLesson && existingPublish?.youtubeVideoId && (
                 <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-100">
                   <p className="font-semibold">This language is already published on YouTube.</p>
                   <p>Source: {existingPublish.source === "dub" ? "Dubbed original video" : "Study-journey lesson video"}</p>
@@ -1083,7 +1240,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
               </div>
               <div className="flex items-center gap-2">
                 <Button onClick={publish} disabled={publishing || !ytConnected || (!dubForLanguage && !lessonForLanguage)}>
-                  {publishing ? "Publishing…" : existingPublish?.youtubeVideoId ? "Update on YouTube" : "Publish to YouTube"}
+                  {publishing ? "Publishing…" : currentVoicePublished ? "Update on YouTube" : youtubeLesson?.published ? "Replace the YouTube version" : "Publish to YouTube"}
                 </Button>
                 {publishedUrl && (
                   <a href={publishedUrl} target="_blank" rel="noreferrer" className="text-sm underline">

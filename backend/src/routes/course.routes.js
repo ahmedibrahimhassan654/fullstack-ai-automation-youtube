@@ -12,6 +12,8 @@ router.post('/', course.createCourse);
 router.get('/destinations', course.listCourseDestinations);
 router.get('/channels', course.listChannelPlaylists);
 router.get('/:id', course.getCourse);
+router.get('/:id/youtube', course.getCourseYouTube);
+router.post('/:id/youtube/sync', course.syncCourseYouTube);
 router.patch('/:id', course.updateCourse);
 router.delete('/:id', course.deleteCourse);
 router.post('/:id/thumbnail', course.uploadCourseThumbnail);
