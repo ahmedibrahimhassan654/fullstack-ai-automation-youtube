@@ -26,7 +26,7 @@ const isReasoningModel = (model) => /gpt-oss/i.test(String(model || ''));
 
 const resolveProvider = () => {
   const p = String(env.aiProvider || 'groq').toLowerCase();
-  if (p === 'ollama' || p === 'gemini' || p === 'deepseek') return p;
+  if (p === 'ollama' || p === 'gemini' || p === 'deepseek' || p === 'crowllm') return p;
   return 'groq';
 };
 
@@ -98,6 +98,47 @@ const callDeepSeekCompletionOnce = async (messages, extra = {}) => {
   return data?.choices?.[0]?.message?.content || '';
 };
 
+const callCrowllmCompletionOnce = async (messages, extra = {}) => {
+  if (!env.crowllmApiKey) {
+    const err = new Error('CROWLLM_API_KEY is not configured');
+    err.statusCode = 500;
+    throw err;
+  }
+  const model =
+    extra.model ||
+    env.crowllmModel ||
+    (extra.fast ? 'gpt-4o-mini:free' : 'qwen-3.6-plus:free');
+
+  const response = await fetch(
+    `${String(env.crowllmBaseUrl || 'https://crowllm.com/v1').replace(/\/$/, '')}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.crowllmApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: extra.temperature ?? 0.2,
+        max_tokens: extra.maxTokens ?? 2048,
+        ...(extra.responseFormat ? { response_format: extra.responseFormat } : {}),
+      }),
+      signal: AbortSignal.timeout(300000),
+    },
+  );
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message =
+      data?.error?.message || data?.message || `CrowLLM chat failed (${response.status})`;
+    const err = new Error(message);
+    err.statusCode = response.status;
+    throw err;
+  }
+  return data?.choices?.[0]?.message?.content || '';
+};
+
 const callChatCompletionOnce = async (messages, extra = {}) => {
   const provider = extra?.provider || resolveProvider();
 
@@ -107,6 +148,10 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
 
   if (provider === 'deepseek') {
     return callDeepSeekCompletionOnce(messages, extra);
+  }
+
+  if (provider === 'crowllm') {
+    return callCrowllmCompletionOnce(messages, extra);
   }
 
   if (provider === 'gemini') {
@@ -286,6 +331,13 @@ const availableProviders = async () => {
   ) {
     list.push('deepseek');
   }
+  if (
+    env.crowllmApiKey &&
+    !disabledProviders.has('crowllm') &&
+    !isProviderCoolingDown('crowllm')
+  ) {
+    list.push('crowllm');
+  }
   // A local Ollama server is the last resort: it is slower than the hosted
   // providers but it has no quota at all, so a dub can always finish.
   if (!disabledProviders.has('ollama') && (await isOllamaRunning())) {
@@ -409,7 +461,7 @@ Strictly enforce:
     ],
     {
         responseFormat: { type: 'json_object' },
-        provider: 'groq',
+        provider: resolveProvider(),
         maxTokens: 2200,
     }
   );
@@ -703,9 +755,13 @@ const callQualityChat = async (messages, extra = {}) => {
           ? String(env.aiModelQuality || '').toLowerCase().includes('deepseek')
             ? env.aiModelQuality
             : 'deepseek-chat'
-          : extra.fast
-            ? env.aiModelFast || GROQ_MODEL_FAST
-            : env.aiModelQuality || GROQ_MODEL_QUALITY;
+          : provider === 'crowllm'
+            ? extra.fast
+              ? env.crowllmModel || 'gpt-4o-mini:free'
+              : env.crowllmModel || 'qwen-3.6-plus:free'
+            : extra.fast
+              ? env.aiModelFast || GROQ_MODEL_FAST
+              : env.aiModelQuality || GROQ_MODEL_QUALITY;
   return callChatCompletion(messages, { ...extra, model });
 };
 
@@ -1443,7 +1499,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       },
     ],
     {
-      provider: 'groq',
+      provider: resolveProvider(),
       fast: true,
       temperature: 0.4,
       maxTokens: 700,

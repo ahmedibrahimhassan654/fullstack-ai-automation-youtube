@@ -30,6 +30,10 @@ export const env = {
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
   deepseekBaseUrl:
     process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+  crowllmApiKey: process.env.CROWLLM_API_KEY || '',
+  crowllmBaseUrl:
+    process.env.CROWLLM_BASE_URL || 'https://crowllm.com/v1',
+  crowllmModel: process.env.CROWLLM_MODEL || '',
   googleTtsApiKey: process.env.GOOGLE_TTS_API_KEY || '',
   googleTtsVoice: process.env.GOOGLE_TTS_VOICE || '',
   // AI provider selection: 'groq' (default) or 'ollama'
