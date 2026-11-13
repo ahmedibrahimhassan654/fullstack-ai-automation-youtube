@@ -71,8 +71,10 @@ export default function NewVideoPage() {
     toast.success("Upload started…");
 
     const formData = new FormData();
+    const fileBaseName = file.name.replace(/\.[^.]+$/, "").trim();
     formData.append("video", file);
-    formData.append("title", title || file.name);
+    formData.append("title", (title || fileBaseName || file.name).trim());
+    formData.append("originalFilename", file.name);
     formData.append("description", description);
     formData.append("originalLanguage", originalLanguage);
     formData.append("targetLanguages", JSON.stringify(targetLanguages));

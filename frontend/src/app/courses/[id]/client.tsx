@@ -77,7 +77,21 @@ type Course = {
   };
 };
 
-type VideoRow = { _id: string; title: string; status: string };
+type VideoRow = {
+  _id: string;
+  title: string;
+  status: string;
+  dubs?: { language: string; voice?: string; url?: string }[];
+  lessonVideos?: { language: string; source?: string; youtubeVideoId?: string | null; youtubeUrl?: string | null }[];
+  translations?: { language: string }[];
+};
+
+type CourseSummary = {
+  _id: string;
+  title: string;
+  language?: string;
+  videos?: { video?: { _id: string } | string | null; videoId?: string | null }[];
+};
 
 type YouTubeLesson = {
   videoId: string;
@@ -135,6 +149,8 @@ export default function CourseDetailClient({
 
   const [course, setCourse] = useState<Course | null>(initialCourse);
   const [allVideos, setAllVideos] = useState<VideoRow[]>([]);
+  const [allCourses, setAllCourses] = useState<CourseSummary[]>([]);
+  const [lessonCourseFilter, setLessonCourseFilter] = useState<string>("all");
   const [title, setTitle] = useState(initialCourse?.title || "");
   const [description, setDescription] = useState(initialCourse?.description || "");
   const [language, setLanguage] = useState(initialCourse?.language || "en");
@@ -156,8 +172,16 @@ export default function CourseDetailClient({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
+  const loadCourses = useCallback(async () => {
+    const res = await api.get<{ items: CourseSummary[] }>("/api/courses");
+    if (res.success) setAllCourses(res.data?.items || []);
+  }, []);
+
   const load = useCallback(async () => {
-    const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
+    const [res] = await Promise.all([
+      api.get<{ course: Course }>(`/api/courses/${id}`),
+      loadCourses(),
+    ]);
     if (res.success && res.data?.course) {
       const value = res.data.course;
       setCourse(value);
@@ -168,19 +192,20 @@ export default function CourseDetailClient({
       toast.error(res.message || "Failed to load the course.");
     }
     setLoading(false);
-  }, [id, toast]);
+  }, [id, toast, loadCourses]);
 
   useEffect(() => {
     // When the server already provided the course (SSR), skip the initial
     // fetch and only load the supplementary video list.
     if (!initialCourse) load();
+    else void loadCourses();
     api
       .get<{ items: VideoRow[] }>("/api/videos?limit=100")
       .then((res) => {
         if (res.success) setAllVideos(res.data?.items || []);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load, initialCourse]);
+  }, [load, initialCourse, loadCourses]);
 
   // The real YouTube state is read separately: it is the source of truth for
   // the published status and links shown on this page.
@@ -447,8 +472,10 @@ export default function CourseDetailClient({
     toast.success("Upload started…");
 
     const formData = new FormData();
+    const fileBaseName = file.name.replace(/\.[^.]+$/, "").trim();
     formData.append("video", file);
-    formData.append("title", file.name.replace(/\.[^.]+$/, ""));
+    formData.append("title", fileBaseName || file.name);
+    formData.append("originalFilename", file.name);
     formData.append("description", "");
     formData.append("originalLanguage", newLessonLanguage);
     formData.append("targetLanguages", JSON.stringify([language]));
@@ -569,7 +596,29 @@ export default function CourseDetailClient({
   const inCourse = new Set(
     (course?.videos || []).map((entry) => entry.video?._id).filter(Boolean) as string[],
   );
-  const available = allVideos.filter((video) => !inCourse.has(video._id));
+  const videoToCourses = (() => {
+    const map = new Map<string, CourseSummary[]>();
+    for (const c of allCourses) {
+      for (const entry of c.videos || []) {
+        const vid =
+          typeof entry.video === "string"
+            ? entry.video
+            : entry.video?._id || entry.videoId || null;
+        if (!vid) continue;
+        const list = map.get(String(vid)) || [];
+        if (!list.some((x) => x._id === c._id)) list.push(c);
+        map.set(String(vid), list);
+      }
+    }
+    return map;
+  })();
+  const available = allVideos.filter((video) => {
+    if (inCourse.has(video._id)) return false;
+    if (lessonCourseFilter === "all") return true;
+    const owners = videoToCourses.get(video._id) || [];
+    if (lessonCourseFilter === "none") return owners.length === 0;
+    return owners.some((c) => c._id === lessonCourseFilter);
+  });
   const publishing = course?.publishing;
   const isPublishing = publishing?.status === "processing";
   const ytByVideo = new Map(
@@ -1087,30 +1136,113 @@ export default function CourseDetailClient({
                     </ol>
                   )}
 
-                  {available.length > 0 && (
+                  {(allVideos.some((v) => !inCourse.has(v._id)) || available.length > 0) && (
                     <div className="space-y-2 rounded-lg border border-dashed p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Add an existing lesson
-                      </p>
-                      <div className="space-y-1">
-                        {available.map((video) => (
-                          <div
-                            key={video._id}
-                            className="flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-muted/50"
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          Add an existing lesson
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor="lessonCourseFilter" className="text-xs text-muted-foreground whitespace-nowrap">
+                            Filter by course
+                          </Label>
+                          <select
+                            id="lessonCourseFilter"
+                            value={lessonCourseFilter}
+                            onChange={(e) => setLessonCourseFilter(e.target.value)}
+                            className={cn(fieldClass, "h-8 w-auto min-w-[180px] text-xs")}
                           >
-                            <span className="min-w-0 flex-1 truncate text-sm">
-                              {video.title}
-                            </span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => addVideo(video._id)}
-                            >
-                              <Plus className="mr-1 size-3.5" />
-                              Add
-                            </Button>
-                          </div>
-                        ))}
+                            <option value="all">All courses</option>
+                            <option value="none">Not in any course</option>
+                            {allCourses
+                              .filter((c) => c._id !== id)
+                              .map((c) => (
+                                <option key={c._id} value={c._id}>
+                                  {c.title}{c.language ? ` (${c.language})` : ""}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        {available.length === 0 ? (
+                          <p className="px-1 py-2 text-sm text-muted-foreground">
+                            No lessons match this filter.
+                          </p>
+                        ) : (
+                          available.map((video) => {
+                            const dubLangs = Array.from(
+                              new Set((video.dubs || []).map((d) => d.language).filter(Boolean)),
+                            );
+                            const publishedLangs = Array.from(
+                              new Set(
+                                (video.lessonVideos || [])
+                                  .filter((l) => l.youtubeVideoId || l.youtubeUrl)
+                                  .map((l) => l.language)
+                                  .filter(Boolean),
+                              ),
+                            );
+                            const owners = videoToCourses.get(video._id) || [];
+                            return (
+                              <div
+                                key={video._id}
+                                className="flex flex-col gap-2 rounded-md border border-transparent px-2 py-2 hover:border-border hover:bg-muted/50 sm:flex-row sm:items-center sm:gap-3"
+                              >
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <span className="block truncate text-sm font-medium">
+                                    {video.title}
+                                  </span>
+                                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                                    <span className="text-muted-foreground">Dubs:</span>
+                                    {dubLangs.length ? (
+                                      dubLangs.map((l) => (
+                                        <Badge key={l} variant="secondary" className="text-[10px]">
+                                          {l}
+                                        </Badge>
+                                      ))
+                                    ) : (
+                                      <span className="text-muted-foreground">none</span>
+                                    )}
+                                    <span className="ml-1 text-muted-foreground">• YouTube:</span>
+                                    {publishedLangs.length ? (
+                                      publishedLangs.map((l) => (
+                                        <Badge key={l} variant="default" className="text-[10px]">
+                                          {l} published
+                                        </Badge>
+                                      ))
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px]">
+                                        not published
+                                      </Badge>
+                                    )}
+                                    {owners.length > 0 && lessonCourseFilter === "all" && (
+                                      <>
+                                        <span className="ml-1 text-muted-foreground">• Courses:</span>
+                                        {owners.slice(0, 2).map((c) => (
+                                          <Badge key={c._id} variant="outline" className="text-[10px]">
+                                            {c.title}{c.language ? ` (${c.language})` : ""}
+                                          </Badge>
+                                        ))}
+                                        {owners.length > 2 && (
+                                          <span className="text-muted-foreground">+{owners.length - 2}</span>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => addVideo(video._id)}
+                                  className="shrink-0 self-start sm:self-center"
+                                >
+                                  <Plus className="mr-1 size-3.5" />
+                                  Add
+                                </Button>
+                              </div>
+                            );
+                          })
+                        )}
                       </div>
                     </div>
                   )}

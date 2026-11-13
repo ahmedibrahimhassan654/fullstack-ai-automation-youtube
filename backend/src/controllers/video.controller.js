@@ -191,10 +191,33 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const title = (req.body?.title || videoFile.originalname || "")
-    .toString()
-    .trim();
+  const stripExt = (name = "") => String(name || "").replace(/\.[^.]+$/, "").trim();
+  const isVagueUploadName = (name = "") => {
+    const n = String(name || "").trim();
+    if (!n) return true;
+    // Windows 8.3 short names, e.g. 13INST~1 / ABCDEF~2
+    if (/~\d/.test(n)) return true;
+    // Extremely short or extension-like leftovers
+    if (n.length <= 2) return true;
+    return false;
+  };
+  const providedTitle = (req.body?.title || "").toString().trim();
+  const originalBase = stripExt(videoFile.originalname || "");
+  const requestedOriginalName = (req.body?.originalFilename || "").toString().trim();
+  const requestedOriginalBase = stripExt(requestedOriginalName);
+  let title = providedTitle || originalBase || requestedOriginalBase || (videoFile.originalname || "").toString().trim();
+  // Prefer a clearer name if the provided one is a vague/8.3 short name.
+  if (isVagueUploadName(title)) {
+    const candidates = [originalBase, requestedOriginalBase, providedTitle].filter(Boolean);
+    const better = candidates.find((c) => !isVagueUploadName(c));
+    if (better) title = better;
+  }
+  title = String(title || "Untitled video").replace(/[<>]/g, "").trim().slice(0, 100);
   const description = (req.body?.description || "").toString().trim();
+  const originalFilename = [videoFile.originalname, requestedOriginalName].find((n) => n && !isVagueUploadName(stripExt(n)))
+    || videoFile.originalname
+    || requestedOriginalName
+    || "";
   const originalLanguage =
     (req.body?.originalLanguage || "en").toString().trim() || "en";
   const targetLanguages = normalizeLanguages(req.body?.targetLanguages);
@@ -223,16 +246,16 @@ export const uploadVideo = asyncHandler(async (req, res) => {
 
   // Hybrid storage: keep old Cloudinary videos as-is, but store new uploads
   // locally when Cloudinary is unavailable/at limit or STORAGE_PROVIDER=local.
-  // Save the file using the written lesson name (title) when provided.
-  const desiredVideoName = (title || videoFile.originalname || "video").toString().trim();
+  // Save the file using the written/actual lesson name when possible.
+  const desiredVideoName = (title || originalBase || requestedOriginalBase || "video").toString().trim();
   let videoResult;
   try {
     videoResult = await storeBuffer({
       buffer: videoFile.buffer,
       subdir: "videos",
-      originalName: videoFile.originalname,
+      originalName: originalFilename || videoFile.originalname,
       desiredName: desiredVideoName,
-      keepName: Boolean(title),
+      keepName: !isVagueUploadName(desiredVideoName),
       mimeType: videoFile.mimetype,
       preferLocal: env.storageProvider === "local",
       cloudinaryOptions: {
@@ -330,7 +353,7 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     user: req.user._id,
     title,
     description,
-    originalFilename: videoFile.originalname,
+    originalFilename: originalFilename || videoFile.originalname,
     mimeType: videoFile.mimetype,
     sizeBytes: videoFile.size,
     publicUrl: videoResult.url,
@@ -1508,16 +1531,95 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   }
 
   // The course decides the playlist and the position of the lesson in it.
-  const courses = await Course.find({
+  // When publishing to a selected playlist/channel, auto-attach the lesson to
+  // the matching target-language course so it appears in the correct course
+  // without manual steps.
+  const requestedPlaylistId = req.body?.playlistId
+    ? String(req.body.playlistId).trim()
+    : null;
+  const requestedChannelId = req.body?.channelId
+    ? String(req.body.channelId).trim()
+    : null;
+  const publishLangBase = String(language || "").toLowerCase().split("-")[0];
+
+  let targetCourse = null;
+  if (requestedPlaylistId) {
+    targetCourse = await Course.findOne({
+      owner: req.user._id,
+      $or: [
+        { playlistId: requestedPlaylistId },
+        { youtubePlaylistId: requestedPlaylistId },
+      ],
+    });
+  }
+  if (!targetCourse && requestedChannelId) {
+    targetCourse =
+      (await Course.findOne({
+        owner: req.user._id,
+        channelId: requestedChannelId,
+        language: publishLangBase,
+      })) ||
+      (await Course.findOne({
+        owner: req.user._id,
+        channelId: requestedChannelId,
+      }));
+  }
+
+  const coursesContaining = await Course.find({
     owner: req.user._id,
-    'videos.video': video._id,
+    "videos.video": video._id,
   });
-  const course =
-    courses.find((item) => item.language === language && item.playlistId) ||
-    courses.find((item) => item.language === language) ||
-    courses.find((item) => item.playlistId) ||
-    courses[0] ||
-    null;
+
+  const targetCourseInContaining = targetCourse
+    ? coursesContaining.find((c) => String(c._id) === String(targetCourse._id))
+    : null;
+  const targetCourseDoc = targetCourseInContaining || targetCourse || null;
+
+  let course = null;
+  if (requestedPlaylistId && targetCourseDoc) {
+    // Publishing to an explicitly selected playlist: use its course.
+    course = targetCourseDoc;
+  } else if (requestedChannelId && targetCourseDoc) {
+    course = targetCourseDoc;
+  } else {
+    course =
+      coursesContaining.find(
+        (item) =>
+          String(item.language || "").toLowerCase().split("-")[0] === publishLangBase &&
+          item.playlistId,
+      ) ||
+      coursesContaining.find(
+        (item) => String(item.language || "").toLowerCase().split("-")[0] === publishLangBase,
+      ) ||
+      targetCourseDoc ||
+      coursesContaining.find((item) => item.playlistId) ||
+      coursesContaining[0] ||
+      null;
+  }
+
+  // If the chosen publish course doesn't contain this lesson yet, add it (end
+  // of course, next order) so it appears in the course/playlist automatically.
+  let addedToCourse = false;
+  if (
+    course &&
+    !(course.videos || []).some((entry) => String(entry.video) === String(video._id))
+  ) {
+    const maxOrder = (course.videos || []).reduce(
+      (m, e) => Math.max(m, Number(e.order ?? 0)),
+      -1,
+    );
+    course.videos = [
+      ...(course.videos || []),
+      {
+        video: video._id,
+        order: maxOrder + 1,
+        addedAt: new Date(),
+        language,
+      },
+    ];
+    addedToCourse = true;
+  }
+
   const courseEntry = course
     ? (course.videos || []).find(
         (entry) => String(entry.video) === String(video._id),
@@ -1802,6 +1904,9 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       removedDuplicates: reconcile.deleted,
       reconcileWarnings: reconcile.warnings,
       commentWarnings,
+      addedToCourse,
+      courseId: course?._id ? String(course._id) : null,
+      courseTitle: course?.title || null,
     },
   });
 });
@@ -1929,19 +2034,36 @@ export const uploadCanvasThumbnail = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const result = await cloudinary.uploader.upload(dataUrl, {
-    folder: `${env.cloudinaryFolder}/thumbnails`,
-    resource_type: "image",
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    const err = new Error("A valid image data URL is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const mimeType = match[1];
+  const ext = mimeType.split("/")[1] === "jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
+  const buffer = Buffer.from(match[2], "base64");
+
+  const result = await storeBuffer({
+    buffer,
+    subdir: "thumbnails",
+    originalName: `${String(video._id)}-thumbnail.${ext}`,
+    mimeType,
+    cloudinaryOptions: {
+      folder: `${env.cloudinaryFolder}/thumbnails`,
+      resource_type: "image",
+    },
+    preferLocal: env.storageProvider === "local",
   });
 
-  video.thumbnailUrl = result.secure_url;
+  video.thumbnailUrl = result.url;
   await video.save();
   emitVideoProgress(video);
 
   res.status(200).json({
     success: true,
     message: "Thumbnail uploaded",
-    data: { thumbnailUrl: result.secure_url },
+    data: { thumbnailUrl: result.url },
   });
 });
 
