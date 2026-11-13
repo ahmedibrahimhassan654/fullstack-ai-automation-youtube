@@ -26,11 +26,17 @@ export const ensureUploadsDirs = () => {
   }
 };
 
-const safeName = (name = 'file') =>
-  String(name)
-    .replace(/[^a-zA-Z0-9._-]+/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 120) || 'file';
+const safeName = (name = 'file') => {
+  // Keep readable lesson names (including Unicode/Arabic and spaces) but strip
+  // characters that are unsafe on Windows filesystems and path separators.
+  let s = String(name || 'file')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  if (!s) s = 'file';
+  return s.slice(0, 180);
+};
 
 const extFrom = (originalName, mimeType, fallback = '') => {
   const fromName = path.extname(originalName || '').toLowerCase();
@@ -78,8 +84,11 @@ export const getLocalFilePath = (storagePath) => {
 const serverBaseUrl = () =>
   (env.serverUrl || `http://localhost:${env.port || 5000}`).replace(/\/+$/, '');
 
-export const localPublicUrl = (relativePath) =>
-  `${serverBaseUrl()}/uploads/${String(relativePath).replace(/^\/+/, '').replace(/\\/g, '/')}`;
+export const localPublicUrl = (relativePath) => {
+  const rel = String(relativePath).replace(/^\/+/, '').replace(/\\/g, '/');
+  const encoded = rel.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+  return `${serverBaseUrl()}/uploads/${encoded}`;
+};
 
 export const saveBufferLocally = async ({ buffer, subdir, originalName, mimeType, ext, desiredName, keepName = false }) => {
   ensureUploadsDirs();

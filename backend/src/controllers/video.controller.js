@@ -505,8 +505,10 @@ export const runPipeline = async (videoId) => {
       let mimeType = video.mimeType || "video/mp4";
 
       const local = await readSourceBuffer(video);
+      let inputPath = null;
       if (local) {
         buffer = local.buffer;
+        inputPath = local.path || null;
       } else {
         let fetchUrl = video.publicUrl;
         if (video.publicUrl.includes("/video/upload/")) {
@@ -534,6 +536,7 @@ export const runPipeline = async (videoId) => {
         buffer,
         filename,
         mimeType,
+        inputPath,
         language: video.originalLanguage || video.transcriptLanguage || "en",
       });
 
