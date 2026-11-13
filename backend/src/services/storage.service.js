@@ -81,13 +81,28 @@ const serverBaseUrl = () =>
 export const localPublicUrl = (relativePath) =>
   `${serverBaseUrl()}/uploads/${String(relativePath).replace(/^\/+/, '').replace(/\\/g, '/')}`;
 
-export const saveBufferLocally = async ({ buffer, subdir, originalName, mimeType, ext }) => {
+export const saveBufferLocally = async ({ buffer, subdir, originalName, mimeType, ext, desiredName, keepName = false }) => {
   ensureUploadsDirs();
   const dir = path.join(UPLOADS_ROOT, subdir);
   ensureDir(dir);
-  const extension = ext || extFrom(originalName, mimeType, '');
-  const base = safeName(path.basename(originalName || 'file', path.extname(originalName || '')));
-  const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${base}${extension}`;
+  const extension = ext || extFrom(originalName, mimeType, extFrom(desiredName, mimeType, ''));
+  const sourceName = desiredName || originalName || 'file';
+  const base = safeName(path.basename(sourceName, path.extname(sourceName)));
+  let filename;
+  if (keepName) {
+    filename = `${base}${extension}`;
+    let candidate = path.join(dir, filename);
+    if (fs.existsSync(candidate)) {
+      let i = 2;
+      while (fs.existsSync(candidate)) {
+        filename = `${base}-${i}${extension}`;
+        candidate = path.join(dir, filename);
+        i += 1;
+      }
+    }
+  } else {
+    filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${base}${extension}`;
+  }
   const relativePath = path.posix.join(subdir, filename);
   const fullPath = path.join(dir, filename);
   await fs.promises.writeFile(fullPath, buffer);
@@ -133,11 +148,17 @@ const uploadBufferToCloudinary = (buffer, options) =>
     stream.end(buffer);
   });
 
-export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mimeType, cloudinaryOptions = {}, preferLocal = false }) => {
+export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mimeType, cloudinaryOptions = {}, preferLocal = false, desiredName, keepName = false }) => {
   const canCloudinary = isCloudinaryConfigured();
   if (!preferLocal && env.storageProvider !== 'local' && canCloudinary) {
     try {
-      const result = await uploadBufferToCloudinary(buffer, cloudinaryOptions);
+      const opts = { ...cloudinaryOptions };
+      if (keepName && desiredName) {
+        opts.public_id = safeName(path.basename(desiredName, path.extname(desiredName)));
+        opts.use_filename = false;
+        opts.unique_filename = false;
+      }
+      const result = await uploadBufferToCloudinary(buffer, opts);
       return {
         provider: 'cloudinary',
         url: result.secure_url,
@@ -153,7 +174,7 @@ export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mim
     }
   }
   // Local fallback/storage.
-  const local = await saveBufferLocally({ buffer, subdir, originalName, mimeType });
+  const local = await saveBufferLocally({ buffer, subdir, originalName, mimeType, desiredName, keepName });
   return {
     provider: 'local',
     url: local.url,
@@ -164,9 +185,9 @@ export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mim
   };
 };
 
-export const storeFile = async ({ filePath, subdir = 'videos', originalName, mimeType, cloudinaryOptions = {}, preferLocal = false }) => {
+export const storeFile = async ({ filePath, subdir = 'videos', originalName, mimeType, cloudinaryOptions = {}, preferLocal = false, desiredName, keepName = false }) => {
   const buffer = await fs.promises.readFile(filePath);
-  return storeBuffer({ buffer, subdir, originalName: originalName || path.basename(filePath), mimeType, cloudinaryOptions, preferLocal });
+  return storeBuffer({ buffer, subdir, originalName: originalName || path.basename(filePath), mimeType, cloudinaryOptions, preferLocal, desiredName, keepName });
 };
 
 export const deleteStored = async ({ storagePath, storageProvider, resourceType = 'video', url }) => {

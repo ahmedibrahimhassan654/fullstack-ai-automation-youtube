@@ -223,12 +223,16 @@ export const uploadVideo = asyncHandler(async (req, res) => {
 
   // Hybrid storage: keep old Cloudinary videos as-is, but store new uploads
   // locally when Cloudinary is unavailable/at limit or STORAGE_PROVIDER=local.
+  // Save the file using the written lesson name (title) when provided.
+  const desiredVideoName = (title || videoFile.originalname || "video").toString().trim();
   let videoResult;
   try {
     videoResult = await storeBuffer({
       buffer: videoFile.buffer,
       subdir: "videos",
       originalName: videoFile.originalname,
+      desiredName: desiredVideoName,
+      keepName: Boolean(title),
       mimeType: videoFile.mimetype,
       preferLocal: env.storageProvider === "local",
       cloudinaryOptions: {
