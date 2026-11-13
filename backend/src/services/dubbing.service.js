@@ -62,7 +62,9 @@ const toSrt = (segments) =>
     .map((segment, index) => {
       const start = formatSrtTime(segment.start);
       const end = formatSrtTime(Math.max(segment.end, segment.start + 0.4));
-      return `${index + 1}\n${start} --> ${end}\n${segment.text}\n`;
+      // One spoken sentence/line per cue (no line breaks inside).
+      const text = String(segment.text || '').replace(/\s+/g, ' ').trim();
+      return `${index + 1}\n${start} --> ${end}\n${text}\n`;
     })
     .join('\n');
 

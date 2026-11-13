@@ -612,8 +612,8 @@ export const findUntranslatedSegments = ({
   return untranslated;
 };
 
-const QUALITY_THRESHOLD = 8;
-const MAX_TRANSLATION_ATTEMPTS = 3;
+const QUALITY_THRESHOLD = 9.5; // target >= 95% match
+const MAX_TRANSLATION_ATTEMPTS = 5;
 
 // --- Arabic number words -------------------------------------------------------
 // Numbers must be spoken as Arabic words, not read out digit by digit. This
@@ -971,6 +971,55 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
   return spoken;
 };
 
+/**
+ * Refines the spoken (TTS) text for clarity and meaning in the target language,
+ * so the dubbed voice sounds natural and understandable.
+ */
+const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
+  const input = (segments || [])
+    .map((segment, position) => ({
+      index: Number.isInteger(segment?.index) ? segment.index : position,
+      text: String(segment?.spokenText || segment?.text || '').trim(),
+      original: String(segment?.sourceText || segment?.original || '').trim(),
+    }))
+    .filter((s) => s.text);
+  const out = new Map();
+  if (!input.length) return out;
+
+  const target = languageBase(targetLanguage);
+  const languageName = { ar: 'Arabic', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese', ru: 'Russian', hi: 'Hindi', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', tr: 'Turkish', nl: 'Dutch', pl: 'Polish', en: 'English' }[target] || targetLanguage;
+  const system =
+    `You are a voice/dubbing script editor for ${languageName}. ` +
+    `Given each sentence and its original meaning, rewrite it as ONE clear, natural spoken sentence for TTS in ${languageName} ` +
+    `so pronunciation, meaning, and flow are easy to understand. Keep the meaning faithful to the original. ` +
+    `Use correct grammar and natural phrasing; for Arabic add/keep full tashkeel where helpful for pronunciation. ` +
+    `Return ONLY valid JSON: {"segments":["spoken sentence 1", ...]} in the same order and same count (${input.length}).`;
+
+  const batches = chunkArray(input, 10);
+  for (const batch of batches) {
+    try {
+      const content = await callQualityChat(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: `Target: ${targetLanguage}\n` + JSON.stringify(batch.map(b => ({ original: b.original, text: b.text }))) },
+        ],
+        { fast: true, temperature: 0.15, maxTokens: 4000, responseFormat: { type: 'json_object' } },
+      );
+      const parsed = parseJson(content);
+      const list = parsed?.segments;
+      if (Array.isArray(list) && list.length === batch.length) {
+        batch.forEach((seg, i) => {
+          const v = String(typeof list[i] === 'string' ? list[i] : list[i]?.text || '').trim();
+          if (v) out.set(seg.index, v.replace(/\s+/g, ' ').trim());
+        });
+      }
+    } catch (e) {
+      console.error('[refineSpokenForVoice] error:', e?.message);
+    }
+  }
+  return out;
+};
+
 const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [] }) => {
   const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
   let content = '';
@@ -1254,18 +1303,17 @@ export const translateTranscriptSegments = async ({
   );
 
 
-  // 3. Retry low-scoring segments with a high-quality pass.
-  //
-  // Arabic segments without tashkeel are retried as well: the diacritics are
-  // what let the neural voice pronounce the words correctly, and the bulk
-  // (fast) model does not add them consistently.
+  // 3. Iterative refinement: compare original vs translated, get edit
+  // suggestions from the evaluator, and retry until each segment reaches
+  // >= 95% match (score 9.5/10) or attempts are exhausted, always keeping
+  // the best-scoring version.
   const needsTashkeel = String(targetLanguage || '').toLowerCase().startsWith('ar');
   for (let attempt = 2; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt += 1) {
     const lowIndices = source
       .map((_, index) => index)
       .filter((index) => {
         const score = bestScores[index];
-        const lowScore = score !== null && score < QUALITY_THRESHOLD;
+        const lowScore = score === null || score < QUALITY_THRESHOLD;
         const missingTashkeel =
           needsTashkeel &&
           hasArabicLetters(currentSegments[index].text) &&
@@ -1412,6 +1460,27 @@ export const translateTranscriptSegments = async ({
     const spoken = String(segment.spokenText || segment.text || '').trim();
     segment.spokenText = isArabicTarget ? spellOutNumbersInArabic(spoken) : spoken;
   });
+
+  // Refine spoken text for voice clarity/meaning in the target language (best
+  // effort) so dubbing sounds natural and clear.
+  if (!fast) {
+    try {
+      const refined = await refineSpokenForVoice({
+        segments: currentSegments.map((s, i) => ({
+          index: i,
+          spokenText: s.spokenText,
+          text: s.text,
+          sourceText: source[i]?.text || '',
+        })),
+        targetLanguage,
+      });
+      refined.forEach((value, index) => {
+        if (value && currentSegments[index]) currentSegments[index].spokenText = value;
+      });
+    } catch (e) {
+      console.error('[translate] spoken refinement failed:', e?.message);
+    }
+  }
 
   // 5. Final evaluation for missing scores.
   const needsFinalEval = source
