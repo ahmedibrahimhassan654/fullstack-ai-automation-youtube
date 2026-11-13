@@ -554,6 +554,25 @@ const languageBase = (value) => String(value || '').toLowerCase().split(/[-_]/)[
  *   still identical to the source is only accepted when it is a short
  *   technical term rather than a whole sentence.
  */
+const isTechnicalLiteral = (text = '') => {
+  const v = String(text || '').trim();
+  if (!v) return false;
+  // Commands, shell/code snippets, paths, URLs, filenames, flags, etc. These
+  // often cannot/should not be translated into the target script and may be
+  // kept as-is by the model (or TTS should read them literally).
+  if (/https?:\/\/|www\.|[A-Za-z]:[\\/]|\.{1,2}[\\/]/.test(v)) return true;
+  if (/[`|<>$]/.test(v)) return true;
+  if (/(^|\s)(sudo|apt|apt-get|dnf|yum|pacman|brew|pip3?|npm|npx|pnpm|yarn|git|docker|kubectl|chmod|chown|chgrp|cd|ls|cat|echo|grep|sed|awk|curl|wget|ssh|scp|tar|zip|unzip|make|python3?|node|java|bash|sh|zsh|powershell|pwsh)\b/i.test(v)) return true;
+  if (/(^|\s)--?[A-Za-z][\w-]*/.test(v)) return true;
+  if (/\b[\w.-]+\.(?:run|sh|bash|zsh|ps1|bat|cmd|exe|msi|deb|rpm|AppImage|iso|img|tar|gz|zip|7z|py|js|ts|go|rs|c|cpp|h|java|kt|rb|php|pl|sql|conf|cfg|ini|yaml|yml|json|md|txt)\b/i.test(v)) return true;
+  if (/[\\/][\w.-]+/.test(v)) return true;
+  // Mostly symbols/digits/dots/colons (identifiers, IPs, versions) with few letters.
+  const letters = (v.match(/[A-Za-z]/g) || []).length;
+  const nonSpace = v.replace(/\s+/g, '').length;
+  if (nonSpace > 0 && letters / nonSpace < 0.45 && /[0-9./:_-]/.test(v)) return true;
+  return false;
+};
+
 export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sourceLanguage = '') => {
   const value = String(text || '').trim();
   if (!value) return false;
@@ -566,9 +585,9 @@ export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sour
   if (letters === 0) return true; // numbers and symbols only
 
   const scriptPattern = TARGET_SCRIPT_PATTERNS[target];
+  const sourceValue = String(sourceText || '').trim();
   if (scriptPattern) {
     const targetChars = countMatches(value, scriptPattern);
-    const sourceValue = String(sourceText || '').trim();
     const sourceTargetChars = countMatches(sourceValue, scriptPattern);
 
     // Written in the target script: a translation.
@@ -578,17 +597,20 @@ export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sour
     // segment was mangled or dropped.
     if (sourceTargetChars > 0) return false;
 
-    // Neither side uses the target script. That is only acceptable for a
-    // short label such as a product name ("Kali Linux"), never for a
-    // sentence that should have been translated.
-    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+    // Neither side uses the target script. Accept short labels (product names)
+    // and technical literals/commands that are legitimately kept as-is.
+    if (sourceValue.split(/\s+/).filter(Boolean).length <= 2) return true;
+    if (isTechnicalLiteral(sourceValue) || isTechnicalLiteral(value)) return true;
+    return false;
   }
 
-  const sourceValue = String(sourceText || '').trim();
   if (!sourceValue) return true;
   if (normalizeForCompare(value) === normalizeForCompare(sourceValue)) {
-    // Unchanged: acceptable for a short technical term, not for a sentence.
-    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+    // Unchanged: acceptable for a short technical term or a technical literal
+    // (command, path, URL, code) that should remain as-is.
+    if (sourceValue.split(/\s+/).filter(Boolean).length <= 2) return true;
+    if (isTechnicalLiteral(sourceValue) || isTechnicalLiteral(value)) return true;
+    return false;
   }
   return true;
 };

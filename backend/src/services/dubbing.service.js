@@ -62,16 +62,15 @@ const toSrt = (segments) =>
     .map((segment, index) => {
       const start = formatSrtTime(segment.start);
       const end = formatSrtTime(Math.max(segment.end, segment.start + 0.4));
-      // One spoken sentence/line per cue (no line breaks inside).
-      const text = String(segment.text || '').replace(/\s+/g, ' ').trim();
+      const text = String(segment.text || '').replace(/\r\n?/g, '\n').trim();
       return `${index + 1}\n${start} --> ${end}\n${text}\n`;
     })
     .join('\n');
 
-// White/yellow subtitles, compact: show the current spoken sentence/line,
-// placed near the bottom without taking over the screen.
+// Yellow subtitles, compact and readable: current spoken phrase in 1-2 short
+// lines near the bottom without covering the screen.
 const SUBTITLE_STYLE =
-  "FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,MarginV=28,Alignment=2,WrapStyle=2";
+  "FontName=Arial,FontSize=22,Bold=1,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=22,MarginL=40,MarginR=40,Alignment=2,WrapStyle=2";
 
 const uploadFile = (filePath, options) =>
   new Promise((resolve, reject) => {
@@ -110,6 +109,116 @@ const estimateSpeechSeconds = (text, language) => {
   const rates = { ar: 12, en: 14, default: 13 };
   const rate = rates[language] || rates.default;
   return Math.max(0.5, String(text || '').trim().length / rate);
+};
+
+const wrapSubtitleText = (text, maxCharsPerLine = 34, maxLines = 2) => {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const words = clean.split(' ');
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (candidate.length <= maxCharsPerLine) {
+      line = candidate;
+    } else {
+      if (line) lines.push(line);
+      // If a single word is very long, hard-wrap it.
+      if (word.length > maxCharsPerLine) {
+        let rest = word;
+        while (rest.length > maxCharsPerLine && lines.length < maxLines) {
+          lines.push(rest.slice(0, maxCharsPerLine));
+          rest = rest.slice(maxCharsPerLine);
+        }
+        line = rest;
+      } else {
+        line = word;
+      }
+      if (lines.length === maxLines) break;
+    }
+  }
+  if (lines.length < maxLines && line) lines.push(line);
+  return lines.slice(0, maxLines).join('\n');
+};
+
+const splitTextForSubtitles = (text, maxChunkChars = 70) => {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  if (clean.length <= maxChunkChars) return [clean];
+  // Prefer splitting at sentence/phrase boundaries, then by words.
+  const parts = clean
+    .split(/(?<=[.!?؟،,؛:])\s+|\s+[–—-]\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const units = parts.length > 1 ? parts : clean.split(/\s+/);
+  const chunks = [];
+  let current = '';
+  const pushCurrent = () => {
+    if (current.trim()) chunks.push(current.trim());
+    current = '';
+  };
+  for (const unit of units) {
+    if (!unit) continue;
+    const candidate = current ? `${current} ${unit}` : unit;
+    if (candidate.length <= maxChunkChars) {
+      current = candidate;
+      continue;
+    }
+    if (current) pushCurrent();
+    if (unit.length <= maxChunkChars) {
+      current = unit;
+    } else {
+      // Hard-split very long units by words.
+      const words = unit.split(/\s+/);
+      let buf = '';
+      for (const w of words) {
+        const cand = buf ? `${buf} ${w}` : w;
+        if (cand.length <= maxChunkChars) buf = cand;
+        else {
+          if (buf) chunks.push(buf.trim());
+          buf = w.length > maxChunkChars ? w.slice(0, maxChunkChars) : w;
+          if (w.length > maxChunkChars) {
+            chunks.push(buf);
+            buf = w.slice(maxChunkChars);
+          }
+        }
+      }
+      current = buf;
+    }
+  }
+  pushCurrent();
+  return chunks.length ? chunks : [clean];
+};
+
+const buildBurnSubtitleCues = (block, startAt, fittedDuration, videoDuration) => {
+  const text = String(block?.text || '').replace(/\s+/g, ' ').trim();
+  const blockStart = Math.max(0, Number(startAt) || 0);
+  const naturalEnd = blockStart + Math.max(0.4, Number(fittedDuration) || 0);
+  const blockEnd = videoDuration > 0 ? Math.min(naturalEnd, videoDuration) : naturalEnd;
+  const duration = Math.max(0.4, blockEnd - blockStart);
+  if (!text) return [];
+
+  const chunks = splitTextForSubtitles(text, 70);
+  if (chunks.length <= 1) {
+    return [{ start: blockStart, end: blockEnd, text: wrapSubtitleText(text) || text }];
+  }
+
+  const weights = chunks.map((c) => Math.max(1, c.replace(/\s+/g, '').length));
+  const total = weights.reduce((a, b) => a + b, 0) || chunks.length;
+  let cursor = blockStart;
+  const cues = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const isLast = i === chunks.length - 1;
+    const end = isLast
+      ? blockEnd
+      : Math.min(blockEnd, cursor + duration * (weights[i] / total));
+    const safeEnd = Math.max(cursor + 0.25, end);
+    cues.push({ start: cursor, end: safeEnd, text: wrapSubtitleText(chunks[i]) || chunks[i] });
+    cursor = safeEnd;
+  }
+  // Ensure last cue reaches block end.
+  if (cues.length) cues[cues.length - 1].end = Math.max(cues[cues.length - 1].end, blockEnd);
+  return cues;
 };
 
 const createSilenceWav = async (durationSeconds, filePath) => {
@@ -545,16 +654,14 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     const fittedDuration = await applyTempo(rawFile, fittedFile, tempo);
 
     clips.push(fittedFile);
-    burnSegments.push({
-      start: Number(startAt.toFixed(3)),
-      end: Number(
-        Math.max(
-          startAt + 0.6,
-          videoDuration > 0 ? Math.min(startAt + fittedDuration, videoDuration) : startAt + fittedDuration,
-        ).toFixed(3),
-      ),
-      text: block.text,
-    });
+    const cues = buildBurnSubtitleCues(block, startAt, fittedDuration, videoDuration);
+    for (const cue of cues) {
+      burnSegments.push({
+        start: Number(cue.start.toFixed(3)),
+        end: Number(cue.end.toFixed(3)),
+        text: cue.text,
+      });
+    }
     cursor += fittedDuration > 0 ? fittedDuration : Math.max(0.4, block.end - block.start);
 
     if (onProgress) {
