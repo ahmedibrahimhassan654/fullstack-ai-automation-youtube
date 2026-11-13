@@ -189,6 +189,7 @@ export default function VideoDetailClient({
   const [loading, setLoading] = useState(!initialVideo);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [startingProcess, setStartingProcess] = useState(false);
 
   const [editTitle, setEditTitle] = useState(initialVideo?.title || "");
   const [editDescription, setEditDescription] = useState(initialVideo?.description || "");
@@ -310,9 +311,22 @@ export default function VideoDetailClient({
     setSaving(false);
   };
 
+  const startProcessing = async () => {
+    if (!video) return;
+    setStartingProcess(true);
+    const res = await api.post(`/api/videos/${video._id}/process`);
+    if (res.success) {
+      toast.success(res.message || "Processing started.");
+      await load();
+    } else {
+      toast.error(res.message || "Failed to start processing.");
+    }
+    setStartingProcess(false);
+  };
+
   const deleteVideo = async () => {
     if (!video) return;
-    if (!window.confirm("Delete this video and its files from Cloudinary?")) return;
+    if (!window.confirm("Delete this video and its files from storage?")) return;
     setDeleting(true);
     const res = await api.delete(`/api/videos/${video._id}`);
     if (res.success) {
@@ -477,6 +491,21 @@ export default function VideoDetailClient({
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {video.status === "processing" && <Progress value={video.progress || 0} />}
+                  {(video.status === "pending" || video.status === "failed" || (!video.aiMetadata?.summary && video.status !== "processing")) && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="button" onClick={startProcessing} disabled={startingProcess}>
+                        {startingProcess ? "Starting…" : video.status === "failed" ? "Retry processing" : "Start processing"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        Runs transcription, AI metadata, and translation (needed for dubbing).
+                      </span>
+                    </div>
+                  )}
+                  {video.lastError?.message && video.status === "failed" && (
+                    <p className="text-sm text-destructive">
+                      Last error: {video.lastError.message} {video.lastError.stage ? `(stage: ${video.lastError.stage})` : ""}
+                    </p>
+                  )}
                   {video.publicUrl && (
                     <div className="space-y-2">
                       <video
