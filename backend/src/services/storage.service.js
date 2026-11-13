@@ -8,7 +8,13 @@ import { env } from '../config/env.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const UPLOADS_ROOT = path.resolve(__dirname, '../../uploads');
+const resolveUploadsRoot = () => {
+  const configured = String(env.uploadsDir || '').trim();
+  if (configured) return path.resolve(configured);
+  return path.resolve(__dirname, '../../uploads');
+};
+
+export const UPLOADS_ROOT = resolveUploadsRoot();
 
 const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

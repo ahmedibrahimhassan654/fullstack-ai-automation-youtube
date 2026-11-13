@@ -55,8 +55,10 @@ export const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'ai-youtube-automation',
-  // 'cloudinary' (default), 'local', or 'auto' (try cloudinary then local on limits)
+  // 'cloudinary', 'local', or 'auto' (try cloudinary then local on limits)
   storageProvider: (process.env.STORAGE_PROVIDER || 'auto').toLowerCase(),
+  // Absolute path for local uploads (e.g. D:\ai-youtube-uploads). Defaults to backend/uploads.
+  uploadsDir: process.env.UPLOADS_DIR || process.env.LOCAL_STORAGE_PATH || '',
   serverUrl: process.env.SERVER_URL || process.env.API_URL || '',
   backgroundMusicUrl: process.env.BACKGROUND_MUSIC_URL || '',
   elevenLabsApiKey: String(process.env.ELEVENLABS_API_KEY || '').trim().split(/\s+/)[0],
