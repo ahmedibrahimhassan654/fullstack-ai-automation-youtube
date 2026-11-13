@@ -7,6 +7,15 @@ const YOUTUBE_TOKEN_FIELDS =
 import Video from "../models/Video.js";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
+import fs from "fs";
+import {
+  storeBuffer,
+  storeFile,
+  deleteStored,
+  isLocalStorage,
+  readSourceBuffer,
+  resolveSourcePath,
+} from "../services/storage.service.js";
 import { transcribeAudio } from "../services/transcription.service.js";
 import { publishProgress, subscribeProgress } from "../lib/progressBus.js";
 import {
@@ -175,12 +184,6 @@ const normalizeLinks = (value) => {
 };
 
 export const uploadVideo = asyncHandler(async (req, res) => {
-  if (!isCloudinaryConfigured()) {
-    const err = new Error("Cloudinary is not configured on the server");
-    err.statusCode = 500;
-    throw err;
-  }
-
   const videoFile = req.files?.video?.[0];
   if (!videoFile) {
     const err = new Error('No video file provided (field name: "video")');
@@ -218,27 +221,27 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     }
   }
 
-  // Upload main video.
+  // Hybrid storage: keep old Cloudinary videos as-is, but store new uploads
+  // locally when Cloudinary is unavailable/at limit or STORAGE_PROVIDER=local.
   let videoResult;
   try {
-    videoResult = await uploadBuffer(videoFile.buffer, {
-      resource_type: "video",
-      folder: env.cloudinaryFolder,
-      use_filename: true,
-      unique_filename: true,
-      overwrite: false,
+    videoResult = await storeBuffer({
+      buffer: videoFile.buffer,
+      subdir: "videos",
+      originalName: videoFile.originalname,
+      mimeType: videoFile.mimetype,
+      preferLocal: env.storageProvider === "local",
+      cloudinaryOptions: {
+        resource_type: "video",
+        folder: env.cloudinaryFolder,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      },
     });
   } catch (error) {
-    const isTooLarge =
-      error?.http_code === 413 ||
-      /413/.test(String(error?.message || "")) ||
-      /too large/i.test(String(error?.message || ""));
-    const err = new Error(
-      isTooLarge
-        ? "Video is too large for Cloudinary (account upload limit exceeded). Please compress or trim the video (for example under ~100MB) and try again."
-        : error?.message || "Cloudinary video upload failed",
-    );
-    err.statusCode = isTooLarge ? 413 : 502;
+    const err = new Error(error?.message || "Video upload failed");
+    err.statusCode = 502;
     throw err;
   }
 
@@ -253,6 +256,7 @@ export const uploadVideo = asyncHandler(async (req, res) => {
       type: "link",
       url: link.url,
       publicId: null,
+      storageProvider: "cloudinary",
       sizeBytes: 0,
       mimeType: null,
     });
@@ -261,53 +265,57 @@ export const uploadVideo = asyncHandler(async (req, res) => {
   for (const file of attachmentFiles) {
     try {
       const resourceType = file.mimetype.startsWith("image/") ? "image" : "raw";
-      const result = await uploadBuffer(file.buffer, {
-        resource_type: resourceType,
-        folder: `${env.cloudinaryFolder}/attachments`,
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
+      const result = await storeBuffer({
+        buffer: file.buffer,
+        subdir: "attachments",
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        cloudinaryOptions: {
+          resource_type: resourceType,
+          folder: `${env.cloudinaryFolder}/attachments`,
+          use_filename: true,
+          unique_filename: true,
+          overwrite: false,
+        },
       });
       attachments.push({
         name: file.originalname,
         type: "file",
-        url: result.secure_url,
-        publicId: result.public_id,
+        url: result.url,
+        publicId: result.provider === "cloudinary" ? result.storagePath : null,
+        storageProvider: result.provider,
         sizeBytes: file.size,
         mimeType: file.mimetype,
       });
     } catch (error) {
-      // Skip failed attachments but keep the video; report in response.
-      attachments.push({
-        name: file.originalname,
-        type: "file",
-        url: null,
-        publicId: null,
-        sizeBytes: file.size,
-        mimeType: file.mimetype,
-        // store error in name? We'll just skip nulls later.
-      });
+      console.error("[uploadVideo] attachment upload failed:", error?.message);
     }
   }
 
-  // Filter out attachments that failed to upload (url null).
   const cleanAttachments = attachments.filter((a) => a.url);
 
   // Upload original subtitle (SRT/VTT) if provided.
   const subtitleEntries = [];
   if (subtitleFile) {
     try {
-      const result = await uploadBuffer(subtitleFile.buffer, {
-        resource_type: "raw",
-        folder: `${env.cloudinaryFolder}/subtitles`,
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
+      const result = await storeBuffer({
+        buffer: subtitleFile.buffer,
+        subdir: "subtitles",
+        originalName: subtitleFile.originalname,
+        mimeType: subtitleFile.mimetype,
+        cloudinaryOptions: {
+          resource_type: "raw",
+          folder: `${env.cloudinaryFolder}/subtitles`,
+          use_filename: true,
+          unique_filename: true,
+          overwrite: false,
+        },
       });
       subtitleEntries.push({
         language: originalLanguage,
-        url: result.secure_url,
-        path: result.public_id,
+        url: result.url,
+        path: result.storagePath,
+        storageProvider: result.provider,
       });
     } catch (error) {
       console.error("[uploadVideo] subtitle upload failed:", error?.message);
@@ -321,8 +329,9 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     originalFilename: videoFile.originalname,
     mimeType: videoFile.mimetype,
     sizeBytes: videoFile.size,
-    publicUrl: videoResult.secure_url,
-    storagePath: videoResult.public_id,
+    publicUrl: videoResult.url,
+    storagePath: videoResult.storagePath,
+    storageProvider: videoResult.provider,
     durationSeconds: Math.round(videoResult.duration || 0),
     thumbnailUrl: videoResult.eager?.[0]?.secure_url || null,
     originalLanguage,
@@ -398,38 +407,45 @@ export const deleteVideo = asyncHandler(async (req, res) => {
   }
 
   try {
-    if (video.storagePath) {
-      await cloudinary.uploader.destroy(video.storagePath, {
-        resource_type: "video",
+    await deleteStored({
+      storagePath: video.storagePath,
+      storageProvider: video.storageProvider,
+      resourceType: "video",
+      url: video.publicUrl,
+    });
+    for (const att of video.attachments || []) {
+      if (att.type === "link") continue;
+      const rt = att.mimeType?.startsWith("image/") ? "image" : "raw";
+      await deleteStored({
+        storagePath: att.publicId || att.path,
+        storageProvider: att.storageProvider,
+        resourceType: rt,
+        url: att.url,
       });
     }
-    for (const att of video.attachments || []) {
-      if (att.publicId) {
-        const rt = att.mimeType?.startsWith("image/") ? "image" : "raw";
-        await cloudinary.uploader.destroy(att.publicId, { resource_type: rt });
-      }
-    }
     for (const sub of video.subtitles || []) {
-      if (sub.path) {
-        await cloudinary.uploader.destroy(sub.path, { resource_type: "raw" });
-      }
+      await deleteStored({
+        storagePath: sub.path,
+        storageProvider: sub.storageProvider,
+        resourceType: "raw",
+        url: sub.url,
+      });
     }
     for (const dub of video.dubs || []) {
-      if (dub.storagePath) {
-        await cloudinary.uploader.destroy(dub.storagePath, {
-          resource_type: "video",
-        });
-      }
+      await deleteStored({
+        storagePath: dub.storagePath,
+        storageProvider: dub.storageProvider,
+        resourceType: "video",
+        url: dub.url,
+      });
     }
     for (const lesson of video.lessonVideos || []) {
-      if (lesson.storagePath) {
-        await cloudinary.uploader.destroy(lesson.storagePath, {
-          resource_type: "video",
-        });
-      }
-      if (lesson.subtitlesUrl) {
-        // Best effort: lesson VTT is raw, but public ID isn't stored; ignore.
-      }
+      await deleteStored({
+        storagePath: lesson.storagePath,
+        storageProvider: lesson.storageProvider,
+        resourceType: "video",
+        url: lesson.url,
+      });
     }
   } catch {
     // ignore
@@ -476,32 +492,44 @@ export const runPipeline = async (videoId) => {
     if (!hasTranscript) {
       await saveVideo("transcription", 10);
 
-      if (!video.publicUrl) {
-        throw new Error("No uploaded video URL available for transcription");
+      if (!video.publicUrl && !video.storagePath) {
+        throw new Error("No uploaded video available for transcription");
       }
 
-      let fetchUrl = video.publicUrl;
-      if (video.publicUrl.includes("/video/upload/")) {
-        fetchUrl = video.publicUrl
-          .replace("/video/upload/", "/video/upload/ac_mp3/")
-          .replace(/\.[^/.]+$/, ".mp3");
+      let buffer;
+      let filename = video.originalFilename || "video.mp4";
+      let mimeType = video.mimeType || "video/mp4";
+
+      const local = await readSourceBuffer(video);
+      if (local) {
+        buffer = local.buffer;
+      } else {
+        let fetchUrl = video.publicUrl;
+        if (video.publicUrl.includes("/video/upload/")) {
+          fetchUrl = video.publicUrl
+            .replace("/video/upload/", "/video/upload/ac_mp3/")
+            .replace(/\.[^/.]+$/, ".mp3");
+        }
+
+        let response = await fetch(fetchUrl, { signal: AbortSignal.timeout(300000) });
+        if (!response.ok && fetchUrl !== video.publicUrl) {
+          response = await fetch(video.publicUrl, { signal: AbortSignal.timeout(300000) });
+          fetchUrl = video.publicUrl;
+        }
+        if (!response.ok) {
+          throw new Error(`Failed to download video for transcription (${response.status})`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        buffer = Buffer.from(arrayBuffer);
+        filename = fetchUrl.endsWith(".mp3") ? "audio.mp3" : video.originalFilename || "video.mp4";
+        mimeType = fetchUrl.endsWith(".mp3") ? "audio/mpeg" : video.mimeType;
       }
 
-      let response = await fetch(fetchUrl, { signal: AbortSignal.timeout(300000) });
-      if (!response.ok && fetchUrl !== video.publicUrl) {
-        response = await fetch(video.publicUrl, { signal: AbortSignal.timeout(300000) });
-        fetchUrl = video.publicUrl;
-      }
-      if (!response.ok) {
-        throw new Error(`Failed to download video for transcription (${response.status})`);
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
       const result = await transcribeAudio({
         buffer,
-        filename: fetchUrl.endsWith(".mp3") ? "audio.mp3" : video.originalFilename || "video.mp4",
-        mimeType: fetchUrl.endsWith(".mp3") ? "audio/mpeg" : video.mimeType,
+        filename,
+        mimeType,
         language: video.originalLanguage || video.transcriptLanguage || "en",
       });
 

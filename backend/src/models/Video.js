@@ -86,6 +86,7 @@ const dubSchema = new mongoose.Schema(
     language: { type: String, required: true },
     url: { type: String, required: true },
     storagePath: { type: String, default: null },
+    storageProvider: { type: String, enum: ['cloudinary', 'local'], default: 'cloudinary' },
     durationSeconds: { type: Number, default: 0 },
     voice: { type: String, default: null },
     subtitlesBurned: { type: Boolean, default: false },
@@ -101,6 +102,7 @@ const lessonVideoSchema = new mongoose.Schema(
     source: { type: String, enum: ['lesson', 'dub'], default: 'lesson' },
     url: { type: String, required: true },
     storagePath: { type: String, default: null },
+    storageProvider: { type: String, enum: ['cloudinary', 'local'], default: 'cloudinary' },
     durationSeconds: { type: Number, default: 0 },
     voice: { type: String, default: null },
     script: { type: String, default: '' },
@@ -177,8 +179,9 @@ const videoSchema = new mongoose.Schema(
     originalFilename: { type: String, default: null },
     mimeType: { type: String, default: null },
     sizeBytes: { type: Number, default: 0 },
-    storagePath: { type: String, default: null }, // local path on server
-    publicUrl: { type: String, default: null }, // optional CDN/public URL
+    storagePath: { type: String, default: null }, // local path/public id
+    storageProvider: { type: String, enum: ['cloudinary', 'local'], default: 'cloudinary' },
+    publicUrl: { type: String, default: null }, // playable/public URL
     attachments: {
       type: [
         {

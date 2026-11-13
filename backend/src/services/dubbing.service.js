@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
+import { resolveSourcePath, storeFile, isLocalStorage } from './storage.service.js';
 import { synthesizeSpeech, VOICES } from './tts.service.js';
 import {
   translateTranscriptSegments,
@@ -653,10 +654,11 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
         ? `afade=t=out:st=${fadeStart.toFixed(3)}:d=0.6`
         : null;
 
+    const sourceInput = resolveSourcePath(video) || video.publicUrl;
     const args = [
       '-y',
       '-i',
-      video.publicUrl,
+      sourceInput,
       '-i',
       mergedAudio,
       '-map',
@@ -679,19 +681,28 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     await runFfmpeg(args, { cwd: TEMP_DIR });
 
-    const result = await uploadFile(outputFile, {
-      resource_type: 'video',
-      folder: `${env.cloudinaryFolder}/dubs`,
-      use_filename: true,
-      unique_filename: true,
-      overwrite: false,
+    const result = await storeFile({
+      filePath: outputFile,
+      subdir: 'dubs',
+      originalName: path.basename(outputFile),
+      mimeType: 'video/mp4',
+      // If the source is local (Cloudinary limit/quota case), keep outputs local too.
+      preferLocal: env.storageProvider === 'local' || isLocalStorage(video),
+      cloudinaryOptions: {
+        resource_type: 'video',
+        folder: `${env.cloudinaryFolder}/dubs`,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      },
     });
 
     return {
       language,
-      url: result.secure_url,
-      storagePath: result.public_id,
-      durationSeconds: Math.round(result.duration || videoDuration || 0),
+      url: result.url,
+      storagePath: result.storagePath,
+      storageProvider: result.provider,
+      durationSeconds: Math.round(result.duration || result.raw?.duration || videoDuration || 0),
       voice: selectedVoice,
       subtitlesBurned: Boolean(subtitleFile),
       segments: burnSegments,

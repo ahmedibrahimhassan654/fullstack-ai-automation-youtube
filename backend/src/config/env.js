@@ -55,6 +55,9 @@ export const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'ai-youtube-automation',
+  // 'cloudinary' (default), 'local', or 'auto' (try cloudinary then local on limits)
+  storageProvider: (process.env.STORAGE_PROVIDER || 'auto').toLowerCase(),
+  serverUrl: process.env.SERVER_URL || process.env.API_URL || '',
   backgroundMusicUrl: process.env.BACKGROUND_MUSIC_URL || '',
   elevenLabsApiKey: String(process.env.ELEVENLABS_API_KEY || '').trim().split(/\s+/)[0],
   elevenLabsDefaultVoiceId: String(process.env.ELEVENLABS_VOICE_ID || '').trim().split(/\s+/)[0],
