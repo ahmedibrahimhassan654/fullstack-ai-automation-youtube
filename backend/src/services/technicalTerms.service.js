@@ -1371,7 +1371,7 @@ export const repairTechnicalTerms = ({
     return { text: String(text || ""), spokenText: String(spokenText || "") };
   }
 
-  const repairedText = repairTextWithTerms(text, terms);
+  let repairedText = repairTextWithTerms(text, terms);
   let repairedSpoken = repairSpokenWithTerms(spokenText, terms, targetLanguage);
 
   if (String(spokenText || "").trim()) {
@@ -1395,6 +1395,26 @@ export const repairTechnicalTerms = ({
     // it with English pronunciation, which is exactly what "erminal" was.
     if (!usesLatinScript(targetLanguage) && /[A-Za-z]/.test(repairedSpoken)) {
       repairedSpoken = transliterateRemainingLatin(repairedSpoken);
+    }
+
+    // The burned subtitles must show the sentence that is actually spoken, so
+    // technical terms stay in the same (Arabic) form in text and narration.
+    // For an Arabic dub no Latin word may remain in the subtitle text.
+    if (!usesLatinScript(targetLanguage) && /[A-Za-z]/.test(repairedText)) {
+      for (const term of sortByLength(terms)) {
+        const spokenForm = getSpokenForm(term, targetLanguage);
+        if (!spokenForm) continue;
+        if (termRegex(term.canonical, "i").test(repairedText)) {
+          repairedText = repairedText.replace(
+            termRegex(term.canonical, "gi"),
+            spokenForm,
+          );
+        }
+      }
+      repairedText = repairedText
+        .replace(/\s*\u0627\u0644\u0640\s*/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
     }
   }
 
