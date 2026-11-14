@@ -38,6 +38,17 @@ const safeName = (name = 'file') => {
   return s.slice(0, 180);
 };
 
+const KNOWN_EXT =
+  /\.(mp4|mov|mkv|webm|avi|mpe?g|mp3|wav|m4a|aac|ogg|srt|vtt|ass|pdf|docx?|pptx?|xlsx?|txt|zip|rar|7z|png|jpe?g|gif|webp|svg|json|html?|js|ts|py)$/i;
+
+// Titles such as "13. Install Anonsurf" contain a dot, so only a real file
+// extension may be stripped - path.extname alone would reduce the name to "13".
+const baseNameWithoutExt = (name = '') => {
+  const s = String(name || '').trim();
+  if (!s) return '';
+  return KNOWN_EXT.test(s) ? path.basename(s, path.extname(s)) : path.basename(s);
+};
+
 const extFrom = (originalName, mimeType, fallback = '') => {
   const fromName = path.extname(originalName || '').toLowerCase();
   if (fromName) return fromName;
@@ -96,7 +107,7 @@ export const saveBufferLocally = async ({ buffer, subdir, originalName, mimeType
   ensureDir(dir);
   const extension = ext || extFrom(originalName, mimeType, extFrom(desiredName, mimeType, ''));
   const sourceName = desiredName || originalName || 'file';
-  const base = safeName(path.basename(sourceName, path.extname(sourceName)));
+  const base = safeName(baseNameWithoutExt(sourceName));
   let filename;
   if (keepName) {
     filename = `${base}${extension}`;
@@ -163,7 +174,7 @@ export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mim
     try {
       const opts = { ...cloudinaryOptions };
       if (keepName && desiredName) {
-        opts.public_id = safeName(path.basename(desiredName, path.extname(desiredName)));
+        opts.public_id = safeName(baseNameWithoutExt(desiredName));
         opts.use_filename = false;
         opts.unique_filename = false;
       }
@@ -232,4 +243,36 @@ export const readSourceBuffer = async (video) => {
     return { buffer, path: p };
   }
   return null;
+};
+
+/**
+ * Renames a locally stored file to a readable name (used when a vague upload
+ * name is replaced by the AI title). Keeps the extension and de-duplicates.
+ */
+export const renameLocalStoredFile = async (storagePath, desiredName) => {
+  if (!String(storagePath || '').startsWith('local:')) return null;
+  const full = getLocalFilePath(storagePath);
+  if (!full || !fs.existsSync(full)) return null;
+  const ext = path.extname(full) || '';
+  const base = safeName(baseNameWithoutExt(String(desiredName || 'file')));
+  let filename = `${base}${ext}`;
+  let candidate = path.join(path.dirname(full), filename);
+  let i = 2;
+  while (fs.existsSync(candidate) && candidate.toLowerCase() !== full.toLowerCase()) {
+    filename = `${base}-${i}${ext}`;
+    candidate = path.join(path.dirname(full), filename);
+    i += 1;
+  }
+  if (candidate.toLowerCase() !== full.toLowerCase()) {
+    await fs.promises.rename(full, candidate);
+  }
+  const rel = String(storagePath).slice('local:'.length);
+  const dir = path.posix.dirname(rel);
+  const relativePath = path.posix.join(dir, filename);
+  return {
+    storagePath: `local:${relativePath}`,
+    url: localPublicUrl(relativePath),
+    relativePath,
+    fullPath: candidate,
+  };
 };

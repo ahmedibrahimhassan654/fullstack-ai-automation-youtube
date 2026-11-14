@@ -202,6 +202,7 @@ export default function VideoDetailClient({
   const [dubLanguage, setDubLanguage] = useState("");
   const [generatingDub, setGeneratingDub] = useState(false);
   const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
+  const [googleVoiceOptionsByLang, setGoogleVoiceOptionsByLang] = useState<Record<string, string[]>>({});
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
   const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
   const [youtubeState, setYoutubeState] = useState<VideoYouTubeState | null>(null);
@@ -281,13 +282,23 @@ export default function VideoDetailClient({
   }, []);
 
   useEffect(() => {
+    api.get<{ voices: Record<string, string[]> }>("/api/videos/google-voices").then((res) => {
+      if (res.success && res.data?.voices) setGoogleVoiceOptionsByLang(res.data.voices);
+    });
+  }, []);
+
+  useEffect(() => {
     const opts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    if (opts.length && !opts.includes(dubEdgeVoice)) setDubEdgeVoice(opts[0]);
+    const langBase = String(dubLanguage || "").toLowerCase().split("-")[0];
+    const belongsToLang = dubEdgeVoice.toLowerCase().startsWith(langBase);
+    if (opts.length && (!dubEdgeVoice || !belongsToLang)) setDubEdgeVoice(opts[0]);
   }, [dubLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   useEffect(() => {
     const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    if (opts.length && !opts.includes(lessonEdgeVoice)) setLessonEdgeVoice(opts[0]);
+    const langBase = String(lessonLanguage || "").toLowerCase().split("-")[0];
+    const belongsToLang = lessonEdgeVoice.toLowerCase().startsWith(langBase);
+    if (opts.length && (!lessonEdgeVoice || !belongsToLang)) setLessonEdgeVoice(opts[0]);
   }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
@@ -818,7 +829,13 @@ export default function VideoDetailClient({
                         className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
                         {(edgeVoiceOptionsByLang[dubLanguage] || []).map((v) => (
-                          <option key={v} value={v}>{v}</option>
+                          <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
+                        ))}
+                        {(googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
+                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
+                        ))}
+                        {elevenVoices.map((v) => (
+                          <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
                     </div>
@@ -1057,7 +1074,13 @@ export default function VideoDetailClient({
                         className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
                         {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
-                          <option key={v} value={v}>{v}</option>
+                          <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
+                        ))}
+                        {(googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
+                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
+                        ))}
+                        {elevenVoices.map((v) => (
+                          <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
                       <Label htmlFor="lessonVoiceId">ElevenLabs voice ID (optional)</Label>

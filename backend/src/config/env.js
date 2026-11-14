@@ -63,6 +63,17 @@ export const env = {
   backgroundMusicUrl: process.env.BACKGROUND_MUSIC_URL || '',
   elevenLabsApiKey: String(process.env.ELEVENLABS_API_KEY || '').trim().split(/\s+/)[0],
   elevenLabsDefaultVoiceId: String(process.env.ELEVENLABS_VOICE_ID || '').trim().split(/\s+/)[0],
+  // Scheduled publishing queue. '1' enables the background worker.
+  publishQueueEnabled: process.env.PUBLISH_QUEUE_ENABLED ?? '1',
+  publishQueueIntervalMs: Number(process.env.PUBLISH_QUEUE_INTERVAL_MS) || 5 * 60 * 1000,
+  // Either a per-day target (2-3 videos/day) or an explicit gap in hours.
+  publishVideosPerDay: Number(process.env.PUBLISH_VIDEOS_PER_DAY) || 0,
+  publishGapHours: Number(process.env.PUBLISH_GAP_HOURS) || 7,
+  publishStartHour: process.env.PUBLISH_START_HOUR ?? '9',
+  publishRetryHour: process.env.PUBLISH_RETRY_HOUR ?? '10',
+  publishMinLeadMinutes: Number(process.env.PUBLISH_MIN_LEAD_MINUTES) || 30,
+  publishSchedulingMode: (process.env.PUBLISH_SCHEDULING_MODE || 'youtube').toLowerCase(),
+  publishMaxAttempts: Number(process.env.PUBLISH_MAX_ATTEMPTS) || 5,
 };
 
 export const validateEnv = () => {

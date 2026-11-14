@@ -7,6 +7,13 @@ import {
   updateYouTubeVideo,
 } from './youtubePublish.service.js';
 import { reconcilePublishedLesson } from './youtubeSync.service.js';
+import {
+  buildPublishDescription,
+  buildSlotTimes,
+  getPublishSettings,
+  toYouTubePublishAt,
+} from './publishScheduler.service.js';
+import { nextAvailableSlot, recordScheduledUpload } from './publishQueue.service.js';
 
 const YOUTUBE_API_URL = 'https://www.googleapis.com/youtube/v3';
 
@@ -52,7 +59,14 @@ export const findRenderForLanguage = (video, language) => {
  * Runs in the background: uploading a course means uploading every lesson,
  * which takes far longer than a request may last.
  */
-export const publishCourseToYouTube = async ({ courseId, userId, onProgress = null }) => {
+export const publishCourseToYouTube = async ({
+  courseId,
+  userId,
+  schedule = false,
+  startAt = null,
+  gapHours = null,
+  onProgress = null,
+}) => {
   const course = await Course.findById(courseId);
   if (!course) {
     const err = new Error('Course not found');
@@ -103,6 +117,21 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
   const lessons = [...(course.videos || [])].sort((a, b) => a.order - b.order);
   let published = 0;
 
+  // Scheduled publishing: the whole course is uploaded as private videos with
+  // a publishAt slot (2-3 lessons a day by default) instead of going public at
+  // once, which is what throttles notifications and the algorithm.
+  const settings = getPublishSettings();
+  const slotGap = Number(gapHours) > 0 ? Number(gapHours) : settings.gapHours;
+  const scheduling = Boolean(schedule);
+  let slots = [];
+  if (scheduling) {
+    const firstSlot =
+      startAt && !Number.isNaN(new Date(startAt).getTime())
+        ? new Date(startAt)
+        : await nextAvailableSlot({ ownerId: userId, gapHours: slotGap });
+    slots = buildSlotTimes({ count: lessons.length, startAt: firstSlot, gapHours: slotGap });
+  }
+
   for (let index = 0; index < lessons.length; index += 1) {
     const lesson = lessons[index];
     const video = await Video.findById(lesson.video);
@@ -122,14 +151,27 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
     }
 
     const title = `${video.title} (${language})`;
-    const description = String(
+    const baseDescription = String(
       video.aiMetadata?.summary || video.description || '',
     ).trim();
     const tags = Array.isArray(video.aiMetadata?.tags) ? video.aiMetadata.tags : [];
     const categoryId = String(video.youtubeCategoryId || '27');
-    const visibility = String(video.youtubeVisibility || 'private');
+    const slot = scheduling ? slots[index] : null;
+    const publishAt = slot ? toYouTubePublishAt(slot) : null;
+    // The retention block (playlist + subscribe links) is appended once and
+    // rebuilt on every publish, so it never stacks.
+    const description = buildPublishDescription({
+      description: baseDescription,
+      playlistId: course.playlistId,
+      channelId: course.channelId,
+      courseTitle: course.title,
+    });
+    const visibility = scheduling ? 'private' : String(video.youtubeVisibility || 'private');
 
     let youtubeVideoId = lesson.youtubeVideoId;
+    // A lesson that is already live keeps its public status: only a new
+    // upload can be scheduled.
+    const alreadyLive = Boolean(youtubeVideoId) && Boolean(lesson.publishedAt);
 
     if (youtubeVideoId) {
       // Already published: refresh the metadata instead of uploading again.
@@ -140,7 +182,8 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
           description,
           tags,
           categoryId,
-          visibility,
+          visibility: alreadyLive ? lesson.youtubeVisibility || 'public' : visibility,
+          publishAt: alreadyLive ? undefined : publishAt || undefined,
         });
       } catch (error) {
         if (error?.statusCode === 404 || /not found/i.test(error?.message || '')) {
@@ -169,6 +212,7 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
           tags,
           categoryId,
           visibility,
+          publishAt: publishAt || undefined,
           mimeType: 'video/mp4',
         },
         mediaBuffer,
@@ -179,7 +223,10 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
     lesson.youtubeVideoId = youtubeVideoId;
     lesson.youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
     lesson.language = language;
-    lesson.publishedAt = lesson.publishedAt || new Date();
+    lesson.youtubeScheduledPublishAt = publishAt ? slot : null;
+    if (!publishAt) {
+      lesson.publishedAt = lesson.publishedAt || new Date();
+    }
 
     // Keep the lesson in the playlist once, at its position in the course,
     // and remove any older copy of it from the channel.
@@ -199,6 +246,39 @@ export const publishCourseToYouTube = async ({ courseId, userId, onProgress = nu
     }
     for (const warning of reconcile.warnings) {
       console.warn('[coursePublish] YouTube reconcile:', warning);
+    }
+
+    // For a scheduled course, record the upload in the publish queue so the
+    // worker can verify the YouTube publishAt result and retry failures.
+    if (scheduling && publishAt && !alreadyLive) {
+      try {
+        await recordScheduledUpload({
+          ownerId: userId,
+          video: video._id,
+          course: course._id,
+          language,
+          source: render.source,
+          voice: render.voice || null,
+          mediaUrl: render.url,
+          mediaDurationSeconds: render.durationSeconds,
+          playlistId: course.playlistId,
+          channelId: course.channelId,
+          playlistPosition: index,
+          title,
+          description,
+          tags,
+          categoryId,
+          thumbnailUrl: video.thumbnailUrl || null,
+          visibility: 'public',
+          madeForKids: false,
+          videoLanguage: language,
+          youtubeVideoId,
+          youtubePlaylistItemId: lesson.youtubePlaylistItemId || null,
+          scheduledPublishAt: slot,
+        });
+      } catch (error) {
+        console.warn('[coursePublish] queue record failed:', error?.message);
+      }
     }
 
     // Keep the video page in sync so the lesson shows as published there too.

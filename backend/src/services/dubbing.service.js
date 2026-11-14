@@ -1,4 +1,4 @@
-import fs from 'fs';
+﻿import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
@@ -6,6 +6,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { resolveSourcePath, storeFile, isLocalStorage } from './storage.service.js';
+import { repairTranslationSegments } from './technicalTerms.service.js';
 import { synthesizeSpeech, VOICES } from './tts.service.js';
 import {
   translateTranscriptSegments,
@@ -70,7 +71,13 @@ const toSrt = (segments) =>
 // Yellow subtitles, compact and readable: current spoken phrase in 1-2 short
 // lines near the bottom without covering the screen.
 const SUBTITLE_STYLE =
-  "FontName=Arial,FontSize=22,Bold=1,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=22,MarginL=40,MarginR=40,Alignment=2,WrapStyle=2";
+  "FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=20,MarginL=60,MarginR=60,Alignment=2,WrapStyle=2";
+
+// Arabic diacritics (tashkeel) overlap badly in burned-in subtitles and add
+// nothing for reading, so they are removed from the subtitle text only. The
+// spoken text keeps them for a correct TTS pronunciation.
+const stripArabicTashkeel = (text = '') =>
+  String(text || '').replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, '');
 
 const uploadFile = (filePath, options) =>
   new Promise((resolve, reject) => {
@@ -112,7 +119,7 @@ const estimateSpeechSeconds = (text, language) => {
 };
 
 const wrapSubtitleText = (text, maxCharsPerLine = 34, maxLines = 2) => {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  const clean = stripArabicTashkeel(text).replace(/\s+/g, ' ').trim();
   if (!clean) return '';
   const words = clean.split(' ');
   const lines = [];
@@ -147,7 +154,7 @@ const splitTextForSubtitles = (text, maxChunkChars = 70) => {
   if (clean.length <= maxChunkChars) return [clean];
   // Prefer splitting at sentence/phrase boundaries, then by words.
   const parts = clean
-    .split(/(?<=[.!?؟،,؛:])\s+|\s+[–—-]\s+/)
+    .split(/(?<=[.!?ØŸØŒ,Ø›:])\s+|\s+[â€“â€”-]\s+/)
     .map((p) => p.trim())
     .filter(Boolean);
   const units = parts.length > 1 ? parts : clean.split(/\s+/);
@@ -191,7 +198,7 @@ const splitTextForSubtitles = (text, maxChunkChars = 70) => {
 };
 
 const buildBurnSubtitleCues = (block, startAt, fittedDuration, videoDuration) => {
-  const text = String(block?.text || '').replace(/\s+/g, ' ').trim();
+  const text = stripArabicTashkeel(block?.text).replace(/\s+/g, ' ').trim();
   const blockStart = Math.max(0, Number(startAt) || 0);
   const naturalEnd = blockStart + Math.max(0.4, Number(fittedDuration) || 0);
   const blockEnd = videoDuration > 0 ? Math.min(naturalEnd, videoDuration) : naturalEnd;
@@ -257,7 +264,7 @@ const normalizeToWav = async (inputPath, outputPath) => {
   ]);
 };
 
-const getTranslationSegments = async (video, language, onProgress = null) => {
+export const getTranslationSegments = async (video, language, onProgress = null) => {
   const originalLanguage = video.originalLanguage || video.transcriptLanguage || 'en';
   const toSegment = (s) => ({
     start: Number(s.start) || 0,
@@ -274,7 +281,14 @@ const getTranslationSegments = async (video, language, onProgress = null) => {
     (t) => String(t.language).toLowerCase() === String(language).toLowerCase(),
   );
   if (existing?.segments?.length) {
-    const segments = existing.segments.map(toSegment);
+    // Stored translations were produced before the technical-term glossary
+    // existed, so they can still say "erminal" or "gues edition". Repairing
+    // them here fixes an already saved dub without another model call.
+    const segments = repairTranslationSegments({
+      segments: existing.segments,
+      sourceSegments: video.transcriptSegments || [],
+      targetLanguage: language,
+    }).map(toSegment);
 
     // A stored translation can be stale, or it can have been saved while the
     // AI provider was rate limited and still contain the source language.
@@ -296,7 +310,6 @@ const getTranslationSegments = async (video, language, onProgress = null) => {
     if (untranslated.length === 0 && missingSpoken === 0) {
       return segments;
     }
-
     console.warn(
       `[dubbing] stored translation for ${language} needs regenerating (${untranslated.length} untranslated, ${missingSpoken} without a spoken version) - re-translating`,
     );
@@ -367,6 +380,7 @@ const normalizeSegmentTiming = (segments, totalDuration) => {
 // dub sounded rushed and the pronunciation came out wrong, so the tempo is
 // kept close to natural and the remaining overflow is left as a short pause
 // instead of being crammed into the next sentence.
+const DUB_AUDIO_LEAD_OFFSET = Number(process.env.DUB_AUDIO_LEAD_OFFSET) || 0.5;
 const MAX_TEMPO = 1.3;
 
 /**
@@ -393,7 +407,7 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
     }
     const gap = segment.start - current.end;
     const combined = `${current.texts.join(" ")} ${segment.text}`.replace(/\s+/g, " ");
-    const endsSentence = /[.!?؟۔…]["'”’)\]]?\s*$/.test(current.texts[current.texts.length - 1]);
+    const endsSentence = /[.!?ØŸÛ”â€¦]["'â€â€™)\]]?\s*$/.test(current.texts[current.texts.length - 1]);
     if (gap <= 0.9 && combined.length <= 320 && !endsSentence) {
       current.end = segment.end;
       current.texts.push(segment.text);
@@ -434,26 +448,24 @@ export const mergeCuesIntoSentences = (segments, videoDuration) => {
  * sound rushed while others stayed natural.
  */
 const applyTempo = async (inputPath, outputPath, tempo) => {
-  if (tempo <= 1.02) {
+  if (tempo > 1.02 || tempo < 0.98) {
+    await runFfmpeg([
+      '-y',
+      '-i',
+      inputPath,
+      '-filter:a',
+      `atempo=${tempo.toFixed(4)}`,
+      '-acodec',
+      'pcm_s16le',
+      '-ar',
+      '24000',
+      '-ac',
+      '1',
+      outputPath,
+    ]);
+  } else {
     await normalizeToWav(inputPath, outputPath);
-    return (await getAudioDurationSeconds(outputPath)) || 0;
   }
-
-  await runFfmpeg([
-    '-y',
-    '-i',
-    inputPath,
-    '-filter:a',
-    `atempo=${tempo.toFixed(4)}`,
-    '-acodec',
-    'pcm_s16le',
-    '-ar',
-    '24000',
-    '-ac',
-    '1',
-    outputPath,
-  ]);
-
   return (await getAudioDurationSeconds(outputPath)) || 0;
 };
 
@@ -517,21 +529,33 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
   }
 
   const selectedVoice = voice || VOICES[language] || VOICES.en;
-  // A chosen Edge speaker must be used verbatim, even if an ElevenLabs /
-  // Google voice is configured in the environment.
-  const useEdge = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(selectedVoice));
-  const ttsOptions = useEdge
-    ? {
-        provider: 'edge',
-        // A slightly brisker delivery than the default (-3%) buys back tempo
-        // budget, so the whole dub fits the video without sounding rushed.
-        rate: '+2%',
-        // One voice for the whole narration. Switching to an English voice for
-        // the technical names interrupts the lesson, so the spoken version
-        // already renders them in Arabic script.
-        mixedScript: false,
-      }
-    : { provider: 'elevenlabs', voiceId: elevenLabsVoiceId };
+  // Detect the provider of the chosen voice so the comparison below only
+  // tries providers that actually match it. An Edge voice name always ends in
+  // "Neural"; a Google voice name looks like "ar-XA-Wavenet-A"; anything else
+  // is treated as an ElevenLabs voice id.
+  const looksLikeEdgeVoice = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(selectedVoice));
+  const looksLikeGoogleVoice =
+    !looksLikeEdgeVoice &&
+    /^[a-z]{2,3}-[A-Z]{2}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(String(selectedVoice));
+
+  // One voice for the whole dub. Mixing providers per sentence produced an
+  // incoherent narration that did not match the video. The provider is chosen
+  // once, from the voice the user picked, and used for every sentence.
+  const providerForDub = looksLikeEdgeVoice
+    ? 'edge'
+    : looksLikeGoogleVoice
+      ? 'google'
+      : env.elevenLabsApiKey && env.elevenLabsDefaultVoiceId
+        ? 'elevenlabs'
+        : env.googleTtsApiKey && env.googleTtsVoice
+          ? 'google'
+          : 'edge';
+  const voiceForDub =
+    providerForDub === 'edge'
+      ? (looksLikeEdgeVoice ? selectedVoice : (VOICES[language] || VOICES.en))
+      : providerForDub === 'google'
+        ? (looksLikeGoogleVoice ? selectedVoice : env.googleTtsVoice)
+        : env.elevenLabsDefaultVoiceId;
 
   const blocks = mergeCuesIntoSentences(segments, videoDuration);
 
@@ -562,44 +586,101 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     const slot = Math.max(0.4, slotEnd - block.start);
 
     const synthesize = async (text) => {
-      const tts = await synthesizeSpeech(text, selectedVoice, ttsOptions);
-      if (!tts?.buffer?.length) return null;
-      const f = path.join(
-        TEMP_DIR,
-        `dub-tts-${video._id}-${language}-${i}-${Date.now()}.mp3`,
-      );
-      tempFiles.push(f);
-      fs.writeFileSync(f, tts.buffer);
-      let d = await getAudioDurationSeconds(f);
-      if (!d) d = estimateSpeechSeconds(text, language);
-      return { file: f, duration: d };
+      const candidates = [];
+
+      if (providerForDub === 'edge') {
+        try {
+        const tts = await synthesizeSpeech(text, selectedVoice, {
+          provider: 'edge',
+          rate: '+2%',
+          mixedScript: false,
+        });
+        if (tts?.buffer?.length) {
+          const f = path.join(
+            TEMP_DIR,
+            `dub-tts-${video._id}-${language}-${i}-${Date.now()}.mp3`,
+          );
+          tempFiles.push(f);
+          fs.writeFileSync(f, tts.buffer);
+          let d = await getAudioDurationSeconds(f);
+          if (!d) d = estimateSpeechSeconds(text, language);
+          candidates.push({ provider: 'edge', file: f, duration: d });
+        }
+      } catch (error) {
+        console.warn('[dubbing] Edge TTS failed for sentence', i + 1, error?.message);
+      }
+      } // end if (looksLikeEdgeVoice)
+
+      // Second opinion: ElevenLabs, when configured, so the two voices can be
+      // compared and the better fit kept (target >= 95% intelligibility).
+      if (providerForDub === 'elevenlabs' && env.elevenLabsApiKey && env.elevenLabsDefaultVoiceId) {
+        try {
+          const tts = await synthesizeSpeech(
+            text,
+            env.elevenLabsDefaultVoiceId,
+            { provider: 'elevenlabs', voiceId: env.elevenLabsDefaultVoiceId },
+          );
+          if (tts?.buffer?.length) {
+            const f = path.join(
+              TEMP_DIR,
+              `dub-tts-${video._id}-${language}-${i}-${Date.now()}-el.mp3`,
+            );
+            tempFiles.push(f);
+            fs.writeFileSync(f, tts.buffer);
+            let d = await getAudioDurationSeconds(f);
+            if (!d) d = estimateSpeechSeconds(text, language);
+            candidates.push({ provider: 'elevenlabs', file: f, duration: d });
+          }
+        } catch (error) {
+          console.warn('[dubbing] ElevenLabs TTS failed for sentence', i + 1, error?.message);
+        }
+      }
+
+      // Third option: Google Cloud TTS (when configured). Use the user's
+      // selected Google voice if it is one, otherwise the env default, but only
+      // when it matches the language being dubbed.
+      const googleVoiceToTry = looksLikeGoogleVoice
+        ? selectedVoice
+        : env.googleTtsVoice;
+      if (
+        providerForDub === 'google' &&
+        env.googleTtsApiKey &&
+        googleVoiceToTry &&
+        String(googleVoiceToTry).toLowerCase().startsWith(String(language || '').toLowerCase().split('-')[0])
+      ) {
+        try {
+          const tts = await synthesizeSpeech(
+            text,
+            googleVoiceToTry,
+            { provider: 'google', googleVoice: googleVoiceToTry },
+          );
+          if (tts?.buffer?.length) {
+            const f = path.join(
+              TEMP_DIR,
+              `dub-tts-${video._id}-${language}-${i}-${Date.now()}-gcp.mp3`,
+            );
+            tempFiles.push(f);
+            fs.writeFileSync(f, tts.buffer);
+            let d = await getAudioDurationSeconds(f);
+            if (!d) d = estimateSpeechSeconds(text, language);
+            candidates.push({ provider: 'google', file: f, duration: d });
+          }
+        } catch (error) {
+          console.warn('[dubbing] Google TTS failed for sentence', i + 1, error?.message);
+        }
+      }
+
+      // Single voice for the whole dub: return the (only) candidate.
+      if (candidates.length === 0) return null;
+      const chosen = candidates[0];
+      return { file: chosen.file, duration: chosen.duration };
     };
 
     let synth = await synthesize(spokenText);
     if (!synth) throw new Error(`TTS returned no audio for sentence ${i + 1}`);
 
-    // Condense only when the natural speech overflows its slot by more than
-    // 5%, and only once, to keep the API cost bounded.
-    if (videoDuration > 0 && synth.duration > slot * 1.05) {
-      const targetChars = Math.max(40, Math.floor(slot * 12));
-      try {
-        const condensed = await condenseTranslationForDuration({
-          text: spokenText,
-          targetLanguage: language,
-          maxChars: targetChars,
-        });
-        if (condensed && condensed !== spokenText) {
-          const synth2 = await synthesize(condensed);
-          if (synth2) {
-            synth = synth2;
-            spokenText = condensed;
-          }
-        }
-      } catch {
-        // keep the original synthesis
-      }
-    }
-
+    // Condensing via AI sometimes produced incomprehensible text, so it is
+    // disabled. Overflow is handled by the uniform tempo (MAX_TEMPO) instead.
     prepared.push({ block, index: i, rawFile: synth.file, duration: synth.duration, spokenText });
 
     await reportProgress(
@@ -611,15 +692,18 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     throw new Error('Audio timeline assembly produced no clips');
   }
 
-  // Phase 2 - one tempo for the whole narration so the voice stays even.
+  // Phase 2 - per-block tempo so each sentence fills its slot: short sentences
+  // are stretched (down to 0.85x) instead of leaving a silence gap, and long
+  // ones are compressed (up to MAX_TEMPO). This keeps the narration aligned
+  // with the original video instead of drifting or going silent.
   const totalSpeech = prepared.reduce((sum, item) => sum + item.duration, 0);
-  const tempo = planDubTiming({
+  const uniformTempo = planDubTiming({
     totalSpeechSeconds: totalSpeech,
     videoDuration,
   });
-  if (tempo > 1.02) {
+  if (uniformTempo > 1.02) {
     console.log(
-      `[dubbing] compressing narration from ${totalSpeech.toFixed(1)}s to fit ${videoDuration}s (tempo ${tempo.toFixed(3)})`,
+      `[dubbing] compressing narration from ${totalSpeech.toFixed(1)}s to fit ${videoDuration}s (tempo ${uniformTempo.toFixed(3)})`,
     );
   }
 
@@ -631,6 +715,12 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     // If the previous sentence overflowed we simply continue from the cursor
     // instead of cutting the audio short.
+    const slotEnd = Number(block.nextStart) > block.start
+      ? Number(block.nextStart)
+      : (videoDuration > 0 ? videoDuration : block.end);
+    // Place the narration at its original segment start (preserving the
+    // original timing). A previous overflow still pushes the next sentence
+    // forward so nothing overlaps.
     const startAt = Math.max(block.start, cursor);
     const leadingGap = startAt - cursor;
     if (leadingGap > 0.02) {
@@ -651,7 +741,7 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     );
     tempFiles.push(fittedFile);
 
-    const fittedDuration = await applyTempo(rawFile, fittedFile, tempo);
+    const fittedDuration = await applyTempo(rawFile, fittedFile, uniformTempo);
 
     clips.push(fittedFile);
     const cues = buildBurnSubtitleCues(block, startAt, fittedDuration, videoDuration);

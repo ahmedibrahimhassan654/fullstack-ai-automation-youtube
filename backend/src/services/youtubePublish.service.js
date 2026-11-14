@@ -164,7 +164,10 @@ export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) =>
           defaultCaptionLanguage: metadata.videoLanguage || undefined,
         },
         status: {
+          // YouTube has no "scheduled" privacy status: a private video with a
+          // publishAt timestamp is what YouTube Studio calls scheduled.
           privacyStatus: metadata.visibility || 'private',
+          ...(metadata.publishAt ? { publishAt: metadata.publishAt } : {}),
           selfDeclaredMadeForKids: metadata.madeForKids ?? false,
         },
       }),
@@ -326,6 +329,7 @@ export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) 
     },
     status: {
       privacyStatus: metadata.visibility || 'private',
+      ...(metadata.publishAt ? { publishAt: metadata.publishAt } : {}),
       selfDeclaredMadeForKids: metadata.madeForKids ?? false,
     },
   };
@@ -338,6 +342,21 @@ export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) 
       body: JSON.stringify(body),
     },
   );
+};
+
+/** Reads the live status of an uploaded video (used to confirm publishAt). */
+export const fetchYouTubeVideoStatus = async (accessToken, videoId) => {
+  const data = await youtubeFetch(
+    accessToken,
+    `${API_URL}/videos?part=status,snippet&id=${encodeURIComponent(videoId)}`,
+  );
+  const item = (data.items || [])[0];
+  if (!item) {
+    const err = new Error('YouTube video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return item;
 };
 
 export const setYouTubeThumbnail = async (accessToken, videoId, imageBuffer, mimeType) => {

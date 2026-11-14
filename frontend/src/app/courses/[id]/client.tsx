@@ -979,6 +979,59 @@ export default function CourseDetailClient({
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {/* Upload a brand new video straight into the course */}
+                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Upload a new lesson
+                    </p>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="newLessonLanguage">
+                          Spoken language of the new video
+                        </Label>
+                        <select
+                          id="newLessonLanguage"
+                          value={newLessonLanguage}
+                          onChange={(e) => setNewLessonLanguage(e.target.value)}
+                          className={fieldClass}
+                        >
+                          {LANGUAGES.map((option) => (
+                            <option key={option.code} value={option.code}>
+                              {option.label} ({option.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <Label htmlFor="newLessonFile">Video file</Label>
+                        <input
+                          ref={fileInputRef}
+                          id="newLessonFile"
+                          type="file"
+                          accept="video/*"
+                          disabled={uploading}
+                          onChange={(e) => uploadLesson(e.target.files?.[0])}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          The lesson keeps the name of the file you select.
+                        </p>
+                      </div>
+                    </div>
+                    {uploading && (
+                      <div className="space-y-1">
+                        <Progress value={uploadProgress} />
+                        <p className="text-xs text-muted-foreground">
+                          Uploading… {uploadProgress}%
+                        </p>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      The video is uploaded, transcribed and added as the last
+                      lesson. Use the dub button above to dub it into{" "}
+                      {language}.
+                    </p>
+                  </div>
                   {course.videos.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       No lessons yet. Add one from the list below.
@@ -1247,56 +1300,6 @@ export default function CourseDetailClient({
                     </div>
                   )}
 
-                  {/* Upload a brand new video straight into the course */}
-                  <div className="space-y-2 rounded-lg border border-dashed p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Upload a new lesson
-                    </p>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                      <div className="space-y-1.5">
-                        <Label htmlFor="newLessonLanguage">
-                          Spoken language of the new video
-                        </Label>
-                        <select
-                          id="newLessonLanguage"
-                          value={newLessonLanguage}
-                          onChange={(e) => setNewLessonLanguage(e.target.value)}
-                          className={fieldClass}
-                        >
-                          {LANGUAGES.map((option) => (
-                            <option key={option.code} value={option.code}>
-                              {option.label} ({option.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="min-w-0 flex-1 space-y-1.5">
-                        <Label htmlFor="newLessonFile">Video file</Label>
-                        <input
-                          ref={fileInputRef}
-                          id="newLessonFile"
-                          type="file"
-                          accept="video/*"
-                          disabled={uploading}
-                          onChange={(e) => uploadLesson(e.target.files?.[0])}
-                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
-                        />
-                      </div>
-                    </div>
-                    {uploading && (
-                      <div className="space-y-1">
-                        <Progress value={uploadProgress} />
-                        <p className="text-xs text-muted-foreground">
-                          Uploading… {uploadProgress}%
-                        </p>
-                      </div>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into{" "}
-                      {language}.
-                    </p>
-                  </div>
                 </CardContent>
               </Card>
 

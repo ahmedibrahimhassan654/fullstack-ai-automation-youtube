@@ -8,6 +8,7 @@ import Video from "../models/Video.js";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
 import fs from "fs";
+import path from "path";
 import {
   storeBuffer,
   storeFile,
@@ -15,6 +16,7 @@ import {
   isLocalStorage,
   readSourceBuffer,
   resolveSourcePath,
+  renameLocalStoredFile,
 } from "../services/storage.service.js";
 import { transcribeAudio } from "../services/transcription.service.js";
 import { publishProgress, subscribeProgress } from "../lib/progressBus.js";
@@ -50,6 +52,7 @@ import {
   getVideoYouTubeState,
   reconcilePublishedLesson,
 } from "../services/youtubeSync.service.js";
+import { buildPublishDescription } from "../services/publishScheduler.service.js";
 
 const emitVideoProgress = (video) => {
   if (!video) return;
@@ -183,6 +186,18 @@ const normalizeLinks = (value) => {
     .filter(Boolean);
 };
 
+const stripExt = (name = "") => String(name || "").replace(/\.[^.]+$/, "").trim();
+
+// Windows 8.3 short names (13INST~1) and one/two letter leftovers are not a
+// usable lesson name, so a clearer name is preferred whenever one exists.
+export const isVagueUploadName = (name = "") => {
+  const n = String(name || "").trim();
+  if (!n) return true;
+  if (/~\d/.test(n)) return true;
+  if (n.length <= 2) return true;
+  return false;
+};
+
 export const uploadVideo = asyncHandler(async (req, res) => {
   const videoFile = req.files?.video?.[0];
   if (!videoFile) {
@@ -191,16 +206,6 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const stripExt = (name = "") => String(name || "").replace(/\.[^.]+$/, "").trim();
-  const isVagueUploadName = (name = "") => {
-    const n = String(name || "").trim();
-    if (!n) return true;
-    // Windows 8.3 short names, e.g. 13INST~1 / ABCDEF~2
-    if (/~\d/.test(n)) return true;
-    // Extremely short or extension-like leftovers
-    if (n.length <= 2) return true;
-    return false;
-  };
   const providedTitle = (req.body?.title || "").toString().trim();
   const originalBase = stripExt(videoFile.originalname || "");
   const requestedOriginalName = (req.body?.originalFilename || "").toString().trim();
@@ -607,6 +612,37 @@ export const runPipeline = async (videoId) => {
         model: ai.model,
         generatedAt: new Date(),
       };
+
+      // A vague upload name (Windows 8.3 short name such as 13INST~1) is
+      // replaced by the first AI title so the lesson is always identifiable,
+      // and the local file is renamed to match.
+      if (isVagueUploadName(video.title)) {
+        const aiTitle = Array.isArray(video.aiMetadata?.titles)
+          ? video.aiMetadata.titles[0]
+          : null;
+        if (aiTitle) {
+          const nextTitle = String(aiTitle).replace(/[<>]/g, "").trim().slice(0, 100);
+          if (nextTitle) {
+            video.title = nextTitle;
+            if (isLocalStorage(video)) {
+              try {
+                const renamed = await renameLocalStoredFile(video.storagePath, nextTitle);
+                if (renamed) {
+                  video.storagePath = renamed.storagePath;
+                  video.publicUrl = renamed.url;
+                  video.originalFilename = path.basename(renamed.relativePath);
+                }
+              } catch (renameError) {
+                console.warn(
+                  "[processVideo] could not rename the local file:",
+                  renameError?.message,
+                );
+              }
+            }
+          }
+        }
+      }
+
       await saveVideo("analyzed", 70);
     }
 
@@ -1407,6 +1443,45 @@ export const listElevenLabsVoices = asyncHandler(async (req, res) => {
   }
 });
 
+export const listGoogleVoices = asyncHandler(async (req, res) => {
+  if (!env.googleTtsApiKey) {
+    return res.status(200).json({ success: true, data: { voices: {}, provider: "google" } });
+  }
+
+  const language = String(req.query.language || "").trim().toLowerCase();
+  const baseToCode = {
+    ar: "ar-XA", de: "de-DE", en: "en-US", es: "es-ES", fr: "fr-FR",
+    hi: "hi-IN", it: "it-IT", ja: "ja-JP", ko: "ko-KR", nl: "nl-NL",
+    pl: "pl-PL", pt: "pt-BR", ru: "ru-RU", tr: "tr-TR", zh: "cmn-CN",
+    cmn: "cmn-CN",
+  };
+
+  const codes = language
+    ? [baseToCode[language] || language]
+    : Object.values(baseToCode);
+
+  const data = {};
+  for (const code of codes) {
+    if (!code) continue;
+    try {
+      const r = await fetch(
+        `https://texttospeech.googleapis.com/v1/voices?languageCode=${encodeURIComponent(code)}&key=${encodeURIComponent(env.googleTtsApiKey)}`,
+      );
+      const json = await r.json().catch(() => ({}));
+      const names = (json.voices || []).map((v) => v.name).filter(Boolean);
+      const base = code.split("-")[0].toLowerCase();
+      data[base] = Array.from(new Set([...(data[base] || []), ...names]));
+    } catch (error) {
+      console.warn("[listGoogleVoices] failed for", code, error?.message);
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Google voices",
+    data: { voices: data, provider: "google" },
+  });
+});
 export const listYouTubePlaylists = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
   // The playlists belong to a channel, and every channel can sit on another
@@ -1665,12 +1740,32 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     .replace(/[<>]/g, "")
     .slice(0, 100)
     .trim() || `${String(video.title || "Lesson").trim()} (${language})`.slice(0, 100).trim();
-  const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
+  const description = buildPublishDescription({
+    description: String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim(),
+    playlistId: req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || coursePlaylistId || null),
+    channelId: String(req.body?.channelId || lesson.youtubeChannelId || "").trim() || null,
+    courseTitle: course?.title || "",
+  });
   const tags = Array.isArray(req.body?.tags)
     ? req.body.tags
     : (lesson.youtubeTags?.length ? lesson.youtubeTags : (video.aiMetadata?.tags || []));
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
-  const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
+  const requestedScheduleRaw = req.body?.scheduledPublishAt;
+  const scheduledPublishAt = requestedScheduleRaw
+    ? new Date(requestedScheduleRaw)
+    : null;
+  if (scheduledPublishAt && Number.isNaN(scheduledPublishAt.getTime())) {
+    const err = new Error("scheduledPublishAt is not a valid date");
+    err.statusCode = 400;
+    throw err;
+  }
+  const publishAt =
+    scheduledPublishAt && scheduledPublishAt.getTime() > Date.now() + 60_000
+      ? scheduledPublishAt.toISOString()
+      : null;
+  const visibility = publishAt
+    ? "private"
+    : String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
   const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || coursePlaylistId || null);
   // The YouTube Automation Form checklist fields for this language.
   const madeForKids = req.body?.madeForKids === undefined ? Boolean(lesson.youtubeMadeForKids) : Boolean(req.body.madeForKids);
@@ -1715,6 +1810,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
         tags,
         categoryId,
         visibility,
+        publishAt,
         madeForKids,
         videoLanguage,
         mimeType: "video/mp4",
@@ -1729,6 +1825,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       tags,
       categoryId,
       visibility,
+      publishAt,
       madeForKids,
       videoLanguage,
     });
@@ -1836,8 +1933,9 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 
   lesson.youtubeVideoId = youtubeVideoId;
   lesson.youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
-  lesson.youtubePublishedAt = lesson.youtubePublishedAt || new Date();
+  lesson.youtubePublishedAt = publishAt ? lesson.youtubePublishedAt : (lesson.youtubePublishedAt || new Date());
   lesson.youtubeVisibility = visibility;
+  lesson.youtubeScheduledPublishAt = publishAt ? scheduledPublishAt : null;
   lesson.youtubeCategoryId = categoryId;
   lesson.youtubeTitle = title;
   lesson.youtubeDescription = description;

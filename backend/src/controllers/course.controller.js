@@ -375,6 +375,9 @@ export const publishCourse = asyncHandler(async (req, res) => {
   publishCourseToYouTube({
     courseId: course._id,
     userId: req.user._id,
+    schedule: req.body?.schedule === undefined ? false : Boolean(req.body.schedule),
+    startAt: req.body?.startAt || null,
+    gapHours: req.body?.gapHours || null,
     onProgress: async (progress) => {
       const fresh = await Course.findById(course._id);
       if (!fresh) return;

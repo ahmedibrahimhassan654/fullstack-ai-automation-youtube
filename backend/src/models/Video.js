@@ -112,6 +112,8 @@ const lessonVideoSchema = new mongoose.Schema(
     youtubeVideoId: { type: String, default: null },
     youtubeUrl: { type: String, default: null },
     youtubePublishedAt: { type: Date, default: null },
+    // When the scheduled publish queue will (or did) put this video live.
+    youtubeScheduledPublishAt: { type: Date, default: null },
     youtubeChannelId: { type: String, default: null },
     youtubeChannelTitle: { type: String, default: null },
     youtubePlaylistId: { type: String, default: null },

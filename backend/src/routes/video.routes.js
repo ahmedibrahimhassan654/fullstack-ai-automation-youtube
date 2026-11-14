@@ -13,6 +13,7 @@ router.get('/voices', video.listElevenLabsVoices);
 router.get('/edge-voices', video.listEdgeVoices);
 router.get('/youtube/channels', video.listYouTubeChannels);
 router.get('/youtube/playlists', video.listYouTubePlaylists);
+router.get('/google-voices', video.listGoogleVoices);
 router.get('/youtube/videos/:youtubeVideoId/comments', video.listYouTubeComments);
 router.post('/youtube/comments/:commentId/reply', video.replyYouTubeComment);
 router.post('/upload', (req, res, next) => {

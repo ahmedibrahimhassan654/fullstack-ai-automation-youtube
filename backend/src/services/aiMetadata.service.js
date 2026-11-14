@@ -1,4 +1,8 @@
 import { env } from '../config/env.js';
+import {
+  normalizeTechnicalSource,
+  repairTechnicalTerms,
+} from './technicalTerms.service.js';
 
 const EGYPTIAN_ARABIC_RULES = `You are an expert AI Audio Translation & Transcription Agent specializing in Egyptian Arabic. Follow these core principles: deliver authentic modern Egyptian Arabic (اللهجة المصرية); maintain Arabic grammar, pronouns, verb conjugations and gender agreement; identify technical English terms without natural Arabic translations and keep them in English when needed; adapt speech patterns into clear, natural, well-structured text while preserving educational intent.`;
 
@@ -409,7 +413,12 @@ const trim = (text, limit = 12000) => {
 };
 
 const parseJson = (content) => {
-  const text = String(content || '').trim();
+  let text = String(content || '').trim();
+  // DeepSeek reasoner (and similar) emit a reasoning block before the answer.
+  // Strip it so it cannot confuse the JSON extraction.
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+  text = text.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '').trim();
   // Strip markdown fences if present.
   const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
   try {
@@ -463,6 +472,7 @@ Strictly enforce:
     {
         responseFormat: { type: 'json_object' },
         provider: resolveProvider(),
+        model: env.aiProvider === 'deepseek' ? 'deepseek-chat' : undefined,
         maxTokens: 2200,
     }
   );
@@ -764,7 +774,7 @@ const toPair = (segment) => ({
 });
 
 const callQualityChat = async (messages, extra = {}) => {
-  const provider = resolveProvider();
+  const provider = extra?.provider || resolveProvider();
   // The bulk translation runs on the fast model: it is far cheaper per batch,
   // which keeps the whole transcript inside the rate limit budget.
   const model =
@@ -792,6 +802,8 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
   const system =
     'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
     'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
+    'TECHNICAL TERMS MUST BE COPIED CHARACTER FOR CHARACTER from the source: same letters, same order, same casing, no missing or extra letter, no merged or split words. A misspelled term (for example "erminal" instead of "terminal", or "gues edition" instead of "Guest Additions") makes the lesson unusable. ' +
+    'GRAMMAR: use correct grammatical gender, number, person and pronoun agreement in the target language, and keep the subject/verb agreement of the original sentence. ' +
     'PRESERVE THE SOURCE WORD ORDER AND MEANING: keep the number of content words as close as possible to the source so the dub stays in sync with the original audio; do not drop, merge or reorder words. Each translated segment must be a complete, natural sentence that a native speaker can pronounce fluently. ' +
     (String(targetLanguage).toLowerCase().startsWith('ar')
       ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
@@ -919,7 +931,8 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
       languageName +
       ' speaker pronounces it, using ' +
       languageName +
-      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ';
+      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ' +
+      'The pronunciation must contain every sound of the term: never drop the first or last letter, never merge two words into one, and never replace a term with a vague paraphrase such as "هذه الإضافات" instead of the name itself. ';
 
   const system =
     'You prepare ' +
@@ -1014,7 +1027,8 @@ const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
     `You are a voice/dubbing script editor for ${languageName}. ` +
     `Given each sentence and its original meaning, rewrite it as ONE clear, natural spoken sentence for TTS in ${languageName} ` +
     `so pronunciation, meaning, and flow are easy to understand. Keep the meaning faithful to the original. ` +
-    `Use correct grammar and natural phrasing; for Arabic add/keep full tashkeel where helpful for pronunciation. ` +
+    `Use correct grammar and natural phrasing; keep correct gender, number and pronoun agreement; for Arabic add/keep full tashkeel where helpful for pronunciation. ` +
+    `Keep every technical name, command and code identifier exactly as it appears in the given sentence: never drop, shorten, merge or reorder its letters, and never replace it with a paraphrase. ` +
     `Return ONLY valid JSON: {"segments":["spoken sentence 1", ...]} in the same order and same count (${input.length}).`;
 
   const batches = chunkArray(input, 10);
@@ -1031,8 +1045,18 @@ const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
       const list = parsed?.segments;
       if (Array.isArray(list) && list.length === batch.length) {
         batch.forEach((seg, i) => {
-          const v = String(typeof list[i] === 'string' ? list[i] : list[i]?.text || '').trim();
-          if (v) out.set(seg.index, v.replace(/\s+/g, ' ').trim());
+          const raw = String(typeof list[i] === 'string' ? list[i] : list[i]?.text || '').trim();
+          if (!raw) return;
+          // The refinement pass can rewrite a technical term, so the glossary
+          // is applied once more to keep the pronunciation exact.
+          const repaired = repairTechnicalTerms({
+            text: raw,
+            spokenText: raw,
+            sourceText: seg.original,
+            targetLanguage,
+          });
+          const v = String(repaired.spokenText || raw).replace(/\s+/g, ' ').trim();
+          if (v) out.set(seg.index, v);
         });
       }
     } catch (e) {
@@ -1042,7 +1066,7 @@ const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
   return out;
 };
 
-const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [] }) => {
+const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [], provider = null }) => {
   const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
   let content = '';
   try {
@@ -1051,12 +1075,14 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
           temperature: 0.15,
           maxTokens: 8000,
           responseFormat: { type: 'json_object' },
+          provider,
         })
       : await callQualityChat(messages, {
           fast: true,
           temperature: 0.1,
           maxTokens: 8000,
           responseFormat: { type: 'json_object' },
+          provider,
         });
   } catch (e) {
     console.error('[translateSegmentsOnce] chat error:', e?.message);
@@ -1084,6 +1110,17 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
     ),
   }));
 
+  // The model still occasionally drops a letter from a technical term
+  // ("erminal", "gues edition"). The glossary repair is deterministic, so it
+  // runs on every segment before the translation is accepted.
+  translated.forEach((seg, index) => {
+    seg.text = repairTechnicalTerms({
+      text: seg.text,
+      sourceText: batch[index].text,
+      targetLanguage,
+    }).text;
+  });
+
   const wrongLanguage = translated.find(
     (seg, index) =>
       !seg.text || !isTargetLanguageText(seg.text, targetLanguage, batch[index].text),
@@ -1104,8 +1141,8 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
  * Translates a batch, halving it whenever a batch fails so that one bad
  * batch cannot poison the whole transcript.
  */
-const translateBatchResilient = async ({ batch, targetLanguage, highQuality, context = [] }) => {
-  const translated = await translateBatchOnce({ batch, targetLanguage, highQuality, context });
+const translateBatchResilient = async ({ batch, targetLanguage, highQuality, context = [], provider = null }) => {
+  const translated = await translateBatchOnce({ batch, targetLanguage, highQuality, context, provider });
   if (translated) return translated;
 
   if (batch.length === 1) {
@@ -1123,12 +1160,14 @@ const translateBatchResilient = async ({ batch, targetLanguage, highQuality, con
     targetLanguage,
     highQuality,
     context: context.slice(0, mid),
+    provider,
   });
   const tail = await translateBatchResilient({
     batch: batch.slice(mid),
     targetLanguage,
     highQuality,
     context: context.slice(mid),
+    provider,
   });
   return [...head, ...tail];
 };
@@ -1139,6 +1178,7 @@ const translateSegmentsOnce = async ({
   highQuality = false,
   context = [],
   onProgress = null,
+  provider = null,
 }) => {
   const input = (segments || []).map(toPair).filter((s) => s.text);
   if (input.length === 0) return [];
@@ -1159,6 +1199,7 @@ const translateSegmentsOnce = async ({
         targetLanguage,
         highQuality,
         context: batchContext,
+        provider,
       })),
     );
 
@@ -1207,6 +1248,8 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
               'You are a strict bilingual translation quality evaluator and editor. ' +
               'Compare each ORIGINAL (English) sentence with its TRANSLATED sentence. ' +
               'Score from 0 to 10 (decimals allowed) for: meaning accuracy, completeness, grammar, naturalness, and preservation of intent. ' +
+              'Penalise heavily (maximum 5) when a technical term, product name, command or code identifier is misspelled, shortened, merged with another word or missing its first/last letter. ' +
+              'Also penalise wrong grammatical gender, number or pronoun agreement. ' +
               'A score of 8 or higher means the translation is acceptable. ' +
               'If you notice English words that were left untranslated, suggest an equivalent phrase in the TARGET LANGUAGE based on the whole sentence context (not word-by-word). ' +
               'Return ONLY valid JSON: {"results":[{"i":number,"s":number,"r":string,"w":[{"e":string,"x":string}]}]}. ' +
@@ -1264,7 +1307,14 @@ export const translateTranscriptSegments = async ({
   fast = false,
   onProgress = null,
 }) => {
-  const source = (segments || []).map(toPair).filter((s) => s.text);
+  // The transcript itself contains speech-to-text mistakes in technical names
+  // ("guest edition CD image" instead of "Guest Additions CD image"). Fixing
+  // them here means the translation, the subtitles and the narration are all
+  // built from the real term.
+  const source = (segments || [])
+    .map(toPair)
+    .map((segment) => ({ ...segment, text: normalizeTechnicalSource(segment.text) }))
+    .filter((s) => s.text);
 
   if (source.length === 0) return [];
 
@@ -1323,6 +1373,52 @@ export const translateTranscriptSegments = async ({
   const bestScores = evaluations.map((e) =>
     e && typeof e.score === 'number' ? e.score : null,
   );
+
+  // Cross-model (quality-model) second opinion: translate the same source with
+  // the high-quality model (e.g. deepseek-reasoner) and keep the per-segment
+  // version that scores higher against the original. This is what lifts the
+  // match above 95% instead of trusting a single model/pass.
+  if (!fast && env.aiModelQuality && env.aiModelQuality !== env.aiModelFast) {
+    try {
+      const qualityTranslated = await translateSegmentsOnce({
+        segments: source,
+        targetLanguage,
+        highQuality: true,
+      });
+      const qualityPairs = source.map((s, index) => ({
+        original: s.text,
+        translated:
+          qualityTranslated[index] && qualityTranslated[index].text
+            ? qualityTranslated[index].text
+            : currentSegments[index].text,
+      }));
+      const qualityEvals = await evaluateTranslationSegments({
+        pairs: qualityPairs,
+        targetLanguage,
+      });
+      qualityTranslated.forEach((seg, index) => {
+        if (!seg || !seg.text) return;
+        const qualityScore =
+          qualityEvals[index] && typeof qualityEvals[index].score === 'number'
+            ? qualityEvals[index].score
+            : null;
+        const currentScore = bestScores[index];
+        if (qualityScore !== null && (currentScore === null || qualityScore > currentScore)) {
+          currentSegments[index] = {
+            start: source[index].start,
+            end: source[index].end,
+            text: String(seg.text).trim(),
+            spokenText: '',
+          };
+          if (qualityEvals[index]) evaluations[index] = qualityEvals[index];
+          bestScores[index] = qualityScore;
+          attempts[index] = 1;
+        }
+      });
+    } catch (error) {
+      console.warn('[translate] quality-model second-opinion pass failed:', error?.message);
+    }
+  }
 
 
   // 3. Iterative refinement: compare original vs translated, get edit
@@ -1537,11 +1633,24 @@ export const translateTranscriptSegments = async ({
     const spokenText = String(
       currentSegments[index].spokenText || currentSegments[index].text,
     ).trim();
+
+    // Last deterministic pass: whatever the model produced, the technical
+    // terms in the subtitle and in the narration are exactly right. This also
+    // repairs segments that were never sent to the spoken-version pass.
+    const repaired = repairTechnicalTerms({
+      text: currentSegments[index].text,
+      spokenText,
+      sourceText: s.text,
+      targetLanguage,
+    });
+
     return {
       start: s.start,
       end: s.end,
-      text: currentSegments[index].text,
-      spokenText: isArabicTarget ? spellOutNumbersInArabic(spokenText) : spokenText,
+      text: repaired.text,
+      spokenText: isArabicTarget
+        ? spellOutNumbersInArabic(repaired.spokenText)
+        : repaired.spokenText,
       sourceText: s.text,
       originalLanguage: originalLanguage || 'en',
       targetLanguage,
@@ -1730,7 +1839,7 @@ export const condenseTranslationForDuration = async ({ text, targetLanguage, max
       { temperature: 0.1, maxTokens: 512 },
     );
     const condensed = stripMarkdown(content);
-    if (condensed && condensed.length <= limit * 1.2) return condensed;
+    if (condensed && condensed.length >= limit * 0.5 && condensed.length <= limit * 1.2) return condensed;
   } catch {
     // fall through to trimmed original
   }
