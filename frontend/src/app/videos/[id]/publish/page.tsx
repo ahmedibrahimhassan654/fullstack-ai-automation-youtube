@@ -705,22 +705,23 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           .filter((c) => c?.title)
           .map((c) => `${c.time || "00:00"} - ${c.title}`)
           .join("\n");
-        const keyPoints = (meta.keyPoints || []).map((p) => `- ${p}`).join("\n");
+        const keyPointItems = (meta.keyPoints || [])
+          .map((p) => String(p || "").trim())
+          .filter(Boolean);
         const questions = (meta.openQuestions || []).map((q) => `- ${q}`).join("\n");
         const hashtags = (meta.tags || [])
           .map((tag) => `#${String(tag).trim().replace(/\s+/g, "")}`)
           .filter((tag) => tag !== "#")
           .join(" ");
         const opening = (descriptionText || summary || "").trim();
-        const pointLines = (meta.keyPoints || [])
-          .map((p) => `🔹 ${String(p).trim()}`)
-          .filter(Boolean)
-          .join("\n");
+        const keyPointsBlock = keyPointItems.length
+          ? `${labels.keyPoints}\n${keyPointItems.map((p) => `- ${p}`).join("\n")}`
+          : "";
         const chapterLines = (meta.chapters || [])
           .filter((c) => c?.title)
           .map((c) => `${c.time || "00:00"} — ${c.title}`)
           .join("\n");
-        const body = [opening, pointLines].filter(Boolean).join("\n");
+        const body = [opening, keyPointsBlock].filter(Boolean).join("\n\n");
         const resourceLinks = (v.attachments || [])
           .filter((a) => a?.url)
           .map((a) => `- ${a?.name || a.url}: ${a.url}`)
@@ -739,7 +740,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           resourceLinks ? `🔗 Resources, commands, and links:\n${resourceLinks}` : "",
           questionsBlock,
           `📣 ${shareCta}`,
-          hashtags ? `🏷️ ${hashtags}` : "",
+          hashtags || "",
         ]
           .filter(Boolean)
           .join("\n\n");
