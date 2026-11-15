@@ -8,13 +8,13 @@ import ffmpegStatic from "ffmpeg-static";
 
 export const VOICES = {
   en: "en-US-AriaNeural",
-  es: "es-ES-ElviraNeural",
+  es: "es-ES-Standard-A",
   fr: "fr-FR-DeniseNeural",
   de: "de-DE-KatjaNeural",
   it: "it-IT-ElsaNeural",
   pt: "pt-BR-FranciscaNeural",
   ru: "ru-RU-SvetlanaNeural",
-  ar: "ar-EG-SalmaNeural",
+  ar: "ar-XA-Standard-B",
   hi: "hi-IN-SwaraNeural",
   zh: "zh-CN-XiaoxiaoNeural",
   ja: "ja-JP-NanamiNeural",

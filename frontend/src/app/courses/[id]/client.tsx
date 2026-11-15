@@ -21,7 +21,7 @@ import {
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { useToast } from "@/components/toast-provider";
-import { api, API_BASE } from "@/lib/api";
+import { api } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
@@ -263,101 +263,126 @@ export default function CourseDetailClient({
     setSaving(false);
   };
 
-  /** Dubs every lesson that has no version in the course language yet. */
+  /** Dubs every lesson that has no version in the course language yet, one by one. */
   const generateMissingDubs = async () => {
-    if (!missing.length) {
+    const toDub = (course?.videos || []).filter(
+      (entry) => entry.video && !hasVersion(entry, language),
+    );
+    if (!toDub.length) {
       toast.success("Every lesson already has a version in this language.");
       return;
     }
+
     setDubbing(true);
     setDubProgress({});
 
-    const token = api.getToken();
-    let remaining = missing.length;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     let done = 0;
     let failed = 0;
 
-    const finishAll = async () => {
-      if (remaining > 0) return;
-      setDubbing(false);
-      toast.success(
-        failed === 0
-          ? `Finished ${done} dub${done === 1 ? "" : "s"}.`
-          : `Finished ${done} of ${missing.length} dubs (${failed} failed).`,
-      );
-      await load();
-      // Clear progress after a short delay so the user sees 100%.
-      setTimeout(() => setDubProgress({}), 4000);
-    };
-
-    for (const entry of missing) {
+    for (const entry of toDub) {
       const videoId = String(entry.video?._id || "");
       if (!videoId) {
-        remaining -= 1;
         failed += 1;
-        void finishAll();
         continue;
       }
 
-      // Track this video's progress via SSE.
       setDubProgress((prev) => ({
         ...prev,
         [videoId]: { status: "processing", progress: 0 },
       }));
 
-      if (token) {
-        const es = new EventSource(
-          `${API_BASE}/api/videos/${videoId}/events?token=${encodeURIComponent(token)}`,
-        );
-        es.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "connected") return;
-            const dubbingState = data.dubbing;
-            if (dubbingState) {
-              setDubProgress((prev) => ({
-                ...prev,
-                [videoId]: {
-                  status: dubbingState.status || "processing",
-                  progress:
-                    typeof dubbingState.progress === "number"
-                      ? dubbingState.progress
-                      : prev[videoId]?.progress ?? 0,
-                  error: dubbingState.error ?? null,
-                },
-              }));
-              if (dubbingState.status === "completed") {
-                done += 1;
-                remaining -= 1;
-                es.close();
-                void finishAll();
-              } else if (dubbingState.status === "failed") {
-                failed += 1;
-                remaining -= 1;
-                es.close();
-                void finishAll();
-              }
-            }
-          } catch {
-            // ignore parse errors
-          }
-        };
-        es.onerror = () => {
-          // Fall back: close; the POST below already kicked it off.
-        };
-      }
+      const startRes = await api.post<{ video?: { dubbing?: { status?: string; progress?: number; error?: string | null } } }>(
+        `/api/videos/${videoId}/dub`,
+        { language },
+      );
 
-      const res = await api.post(`/api/videos/${videoId}/dub`, { language });
-      if (!res.success) {
+      if (!startRes.success) {
+        failed += 1;
         setDubProgress((prev) => ({
           ...prev,
-          [videoId]: { status: "failed", progress: 0, error: res.message || "Failed to start" },
+          [videoId]: {
+            status: "failed",
+            progress: 0,
+            error: startRes.message || "Failed to start",
+          },
         }));
-        failed += 1;
-        remaining -= 1;
-        void finishAll();
+        continue;
+      }
+
+      // Wait for this dub to finish before starting the next one.
+      for (;;) {
+        await sleep(4000);
+        const statusRes = await api.get<{
+          video?: {
+            dubbing?: { status?: string; progress?: number; error?: string | null; language?: string | null };
+            dubs?: { language?: string; url?: string }[];
+          };
+        }>(`/api/videos/${videoId}`);
+
+        const v = statusRes.data?.video;
+        const dubbingState = v?.dubbing;
+        const progress =
+          typeof dubbingState?.progress === "number" ? dubbingState.progress : 0;
+        const status = String(dubbingState?.status || "");
+        const hasDub = (v?.dubs || []).some(
+          (d) => d.language === language && d.url,
+        );
+
+        if (status === "completed" || (status !== "processing" && hasDub)) {
+          done += 1;
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: { status: "completed", progress: 100 },
+          }));
+          break;
+        }
+
+        if (status === "failed") {
+          failed += 1;
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: {
+              status: "failed",
+              progress,
+              error: dubbingState?.error || "Dubbing failed",
+            },
+          }));
+          break;
+        }
+
+        if (!statusRes.success) {
+          // Transient fetch issue: keep waiting/polling.
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: {
+              status: prev[videoId]?.status || "processing",
+              progress: prev[videoId]?.progress ?? 0,
+              error: statusRes.message || prev[videoId]?.error || null,
+            },
+          }));
+          continue;
+        }
+
+        setDubProgress((prev) => ({
+          ...prev,
+          [videoId]: {
+            status: status || "processing",
+            progress,
+            error: dubbingState?.error ?? null,
+          },
+        }));
       }
     }
+
+    setDubbing(false);
+    toast.success(
+      failed === 0
+        ? `Finished ${done} dub${done === 1 ? "" : "s"}.`
+        : `Finished ${done} of ${toDub.length} dubs (${failed} failed).`,
+    );
+    await load();
+    setTimeout(() => setDubProgress({}), 4000);
   };
 
   const publishCourse = async () => {

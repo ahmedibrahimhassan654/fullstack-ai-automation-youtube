@@ -288,18 +288,36 @@ export default function VideoDetailClient({
   }, []);
 
   useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
     const langBase = String(dubLanguage || "").toLowerCase().split("-")[0];
+    const edgeOpts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const googleOpts = googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const allOpts = [...googleOpts, ...edgeOpts];
+    const preferredDefault =
+      langBase === "ar"
+        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        : langBase === "es"
+          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
+          : (edgeOpts[0] || googleOpts[0] || "");
     const belongsToLang = dubEdgeVoice.toLowerCase().startsWith(langBase);
-    if (opts.length && (!dubEdgeVoice || !belongsToLang)) setDubEdgeVoice(opts[0]);
-  }, [dubLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+    const isAvailable = !dubEdgeVoice || allOpts.includes(dubEdgeVoice);
+    if (preferredDefault && (!dubEdgeVoice || !belongsToLang || !isAvailable)) setDubEdgeVoice(preferredDefault);
+  }, [dubLanguage, edgeVoiceOptionsByLang, googleVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
     const langBase = String(lessonLanguage || "").toLowerCase().split("-")[0];
+    const edgeOpts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const googleOpts = googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const allOpts = [...googleOpts, ...edgeOpts];
+    const preferredDefault =
+      langBase === "ar"
+        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        : langBase === "es"
+          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
+          : (edgeOpts[0] || googleOpts[0] || "");
     const belongsToLang = lessonEdgeVoice.toLowerCase().startsWith(langBase);
-    if (opts.length && (!lessonEdgeVoice || !belongsToLang)) setLessonEdgeVoice(opts[0]);
-  }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+    const isAvailable = !lessonEdgeVoice || allOpts.includes(lessonEdgeVoice);
+    if (preferredDefault && (!lessonEdgeVoice || !belongsToLang || !isAvailable)) setLessonEdgeVoice(preferredDefault);
+  }, [lessonLanguage, edgeVoiceOptionsByLang, googleVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
     if (!video) return;
