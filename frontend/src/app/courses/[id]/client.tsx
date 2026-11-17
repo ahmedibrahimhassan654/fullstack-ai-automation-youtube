@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -12,7 +13,6 @@ import {
   ListVideo,
   Loader2,
   PlayCircle,
-  Plus,
   Radio,
   RefreshCw,
   Trash2,
@@ -76,8 +76,6 @@ type Course = {
   };
 };
 
-type VideoRow = { _id: string; title: string; status: string };
-
 type YouTubeLesson = {
   videoId: string;
   title: string;
@@ -92,7 +90,11 @@ type YouTubeLesson = {
   inPlaylist: boolean;
   playlistPosition: number | null;
   duplicates: { videoId: string; title: string; publishedAt: string | null }[];
-  playlistItemDuplicates: { playlistItemId: string; videoId: string; position: number }[];
+  playlistItemDuplicates: {
+    playlistItemId: string;
+    videoId: string;
+    position: number;
+  }[];
 };
 
 type YouTubeState = {
@@ -104,7 +106,11 @@ type YouTubeState = {
     playlistUrl: string | null;
   };
   lessons: YouTubeLesson[];
-  unmatchedPlaylistItems: { videoId: string; title: string; position: number }[];
+  unmatchedPlaylistItems: {
+    videoId: string;
+    title: string;
+    position: number;
+  }[];
   summary: {
     lessons: number;
     published: number;
@@ -127,7 +133,6 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const toast = useToast();
 
   const [course, setCourse] = useState<Course | null>(null);
-  const [allVideos, setAllVideos] = useState<VideoRow[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState("en");
@@ -147,26 +152,26 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
-    const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
-    if (res.success && res.data?.course) {
-      const value = res.data.course;
-      setCourse(value);
-      setTitle(value.title || "");
-      setDescription(value.description || "");
-      setLanguage(value.language || "en");
-    } else {
-      toast.error(res.message || "Failed to load the course.");
+    try {
+      const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
+      if (res.success && res.data?.course) {
+        const value = res.data.course;
+        setCourse(value);
+        setTitle(value.title || "");
+        setDescription(value.description || "");
+        setLanguage(value.language || "en");
+      } else {
+        toast.error(res.message || "Failed to load the course.");
+      }
+    } catch {
+      toast.error("Failed to load the course.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [id, toast]);
 
   useEffect(() => {
-    load();
-    api
-      .get<{ items: VideoRow[] }>("/api/videos?limit=100")
-      .then((res) => {
-        if (res.success) setAllVideos(res.data?.items || []);
-      });
+    void Promise.resolve().then(() => load());
   }, [load]);
 
   // The real YouTube state is read separately: it is the source of truth for
@@ -183,8 +188,27 @@ export default function CourseDetailClient({ id }: { id: string }) {
   }, [id]);
 
   useEffect(() => {
-    loadYouTube();
-  }, [loadYouTube]);
+    let cancelled = false;
+    void (async () => {
+      setLoadingYoutube(true);
+      try {
+        const res = await api.get<{ youtube: YouTubeState }>(
+          `/api/courses/${id}/youtube`,
+        );
+        if (cancelled) return;
+        if (res.success && res.data?.youtube) {
+          setYoutube(res.data.youtube);
+        }
+      } catch {
+        // Request failed; loading state is reset below.
+      } finally {
+        if (!cancelled) setLoadingYoutube(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   // Follow the publish run while it is working.
   useEffect(() => {
@@ -196,12 +220,12 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const hasVersion = (entry: CourseVideo, lang: string) =>
     Boolean(
       entry.video?.dubs?.some((dub) => dub.language === lang && dub.url) ||
-        entry.video?.lessonVideos?.some(
-          (lesson) =>
-            lesson.language === lang &&
-            (lesson.source || "lesson") === "lesson" &&
-            lesson.url,
-        ),
+      entry.video?.lessonVideos?.some(
+        (lesson) =>
+          lesson.language === lang &&
+          (lesson.source || "lesson") === "lesson" &&
+          lesson.url,
+      ),
     );
 
   const missing = (course?.videos || []).filter(
@@ -338,16 +362,6 @@ export default function CourseDetailClient({ id }: { id: string }) {
     reader.readAsDataURL(file);
   };
 
-  const addVideo = async (videoId: string) => {
-    const res = await api.post(`/api/courses/${id}/videos`, { videoIds: [videoId] });
-    if (res.success) {
-      toast.success(res.message || "Video added.");
-      await load();
-    } else {
-      toast.error(res.message || "Failed to add the video.");
-    }
-  };
-
   /**
    * Uploads a brand new video and makes it a lesson of this course. The
    * course language is the target, so the lesson is dubbed into it.
@@ -387,7 +401,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
       // Processing can also be started later from the video page.
     }
 
-    const added = await api.post(`/api/courses/${id}/videos`, { videoIds: [videoId] });
+    const added = await api.post(`/api/courses/${id}/videos`, {
+      videoIds: [videoId],
+    });
     if (added.success) {
       toast.success("Lesson uploaded and added to the course.");
     } else {
@@ -423,7 +439,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
     if (target < 0 || target >= ids.length) return;
     [ids[index], ids[target]] = [ids[target], ids[index]];
 
-    const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: ids });
+    const res = await api.put(`/api/courses/${id}/videos/order`, {
+      videoIds: ids,
+    });
     if (res.success) {
       await load();
     } else {
@@ -443,7 +461,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
     let toIndex = to;
     if (from < to) toIndex = to - 1;
     next.splice(toIndex, 0, moved);
-    const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: next });
+    const res = await api.put(`/api/courses/${id}/videos/order`, {
+      videoIds: next,
+    });
     if (res.success) {
       await load();
     } else {
@@ -462,11 +482,6 @@ export default function CourseDetailClient({ id }: { id: string }) {
       toast.error(res.message || "Failed to delete the course.");
     }
   };
-
-  const inCourse = new Set(
-    (course?.videos || []).map((entry) => entry.video?._id).filter(Boolean) as string[],
-  );
-  const available = allVideos.filter((video) => !inCourse.has(video._id));
   const publishing = course?.publishing;
   const isPublishing = publishing?.status === "processing";
   const ytByVideo = new Map(
@@ -582,7 +597,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
                       Publish course to YouTube
                     </Button>
                     <Badge
-                      variant={course.status === "published" ? "default" : "secondary"}
+                      variant={
+                        course.status === "published" ? "default" : "secondary"
+                      }
                       className="ml-auto"
                     >
                       {course.status === "published" ? "Published" : "Draft"}
@@ -616,15 +633,17 @@ export default function CourseDetailClient({ id }: { id: string }) {
                     <>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
                         <Badge>
-                          {youtube.summary.published} of {youtube.summary.lessons}{" "}
-                          published
+                          {youtube.summary.published} of{" "}
+                          {youtube.summary.lessons} published
                         </Badge>
                         <Badge variant="outline">
                           {youtube.summary.inPlaylist} in the playlist
                         </Badge>
                         <Badge
                           variant={
-                            youtube.summary.duplicates ? "destructive" : "secondary"
+                            youtube.summary.duplicates
+                              ? "destructive"
+                              : "secondary"
                           }
                         >
                           {youtube.summary.duplicates} duplicate
@@ -667,7 +686,10 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                   Watch on YouTube
                                 </a>
                               ) : (
-                                <Badge variant="secondary" className="text-[10px]">
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px]"
+                                >
                                   not on YouTube
                                 </Badge>
                               )}
@@ -683,7 +705,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                   : "not in the playlist"}
                                 {lesson.duplicates.length
                                   ? ` · ${lesson.duplicates.length} older copy${
-                                      lesson.duplicates.length === 1 ? "" : "ies"
+                                      lesson.duplicates.length === 1
+                                        ? ""
+                                        : "ies"
                                     }`
                                   : ""}
                               </p>
@@ -741,12 +765,14 @@ export default function CourseDetailClient({ id }: { id: string }) {
                     <div className="space-y-1.5">
                       <Label htmlFor="courseImage">Course image</Label>
                       <div className="flex items-start gap-3">
-                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted">
+                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted relative">
                           {course.thumbnailUrl ? (
-                            <img
+                            <Image
                               src={course.thumbnailUrl}
                               alt="Course image"
+                              fill
                               className="size-full object-cover"
+                              style={{ objectFit: "cover" }}
                             />
                           ) : (
                             <ImageIcon className="size-6 text-muted-foreground" />
@@ -837,20 +863,25 @@ export default function CourseDetailClient({ id }: { id: string }) {
                             onDragStart={(e) => {
                               setDragIndex(index);
                               e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", String(index));
+                              e.dataTransfer.setData(
+                                "text/plain",
+                                String(index),
+                              );
                             }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               setDragOverIndex(index);
                             }}
                             onDragLeave={() => {
-                              if (dragOverIndex === index) setDragOverIndex(null);
+                              if (dragOverIndex === index)
+                                setDragOverIndex(null);
                             }}
                             onDrop={(e) => {
                               e.preventDefault();
                               setDragOverIndex(null);
                               setDragIndex(null);
-                              if (dragIndex !== null) reorderByDrop(dragIndex, index);
+                              if (dragIndex !== null)
+                                reorderByDrop(dragIndex, index);
                             }}
                             onDragEnd={() => {
                               setDragIndex(null);
@@ -901,11 +932,17 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                     );
                                   }
                                   return ready ? (
-                                    <Badge variant="outline" className="text-[10px]">
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px]"
+                                    >
                                       {language} ready
                                     </Badge>
                                   ) : (
-                                    <Badge variant="secondary" className="text-[10px]">
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-[10px]"
+                                    >
                                       needs {language} dub
                                     </Badge>
                                   );
@@ -925,7 +962,10 @@ export default function CourseDetailClient({ id }: { id: string }) {
                               variant="ghost"
                               size="icon-xs"
                               onClick={() => move(index, 1)}
-                              disabled={index === course.videos.length - 1 || isPublishing}
+                              disabled={
+                                index === course.videos.length - 1 ||
+                                isPublishing
+                              }
                               aria-label="Move lesson down"
                             >
                               ↓
@@ -933,7 +973,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
                             <Button
                               variant="ghost"
                               size="icon-xs"
-                              onClick={() => removeVideo(entry.video?._id || "")}
+                              onClick={() =>
+                                removeVideo(entry.video?._id || "")
+                              }
                               disabled={isPublishing}
                               aria-label="Remove lesson"
                               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -944,34 +986,6 @@ export default function CourseDetailClient({ id }: { id: string }) {
                         );
                       })}
                     </ol>
-                  )}
-
-                  {available.length > 0 && (
-                    <div className="space-y-2 rounded-lg border border-dashed p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Add an existing lesson
-                      </p>
-                      <div className="space-y-1">
-                        {available.map((video) => (
-                          <div
-                            key={video._id}
-                            className="flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-muted/50"
-                          >
-                            <span className="min-w-0 flex-1 truncate text-sm">
-                              {video.title}
-                            </span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => addVideo(video._id)}
-                            >
-                              <Plus className="mr-1 size-3.5" />
-                              Add
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
                   )}
 
                   {/* Upload a brand new video straight into the course */}
@@ -1020,8 +1034,8 @@ export default function CourseDetailClient({ id }: { id: string }) {
                     )}
                     <p className="text-xs text-muted-foreground">
                       The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into{" "}
-                      {language}.
+                      lesson. Use the dub button above to dub it into {language}
+                      .
                     </p>
                   </div>
                 </CardContent>
@@ -1030,7 +1044,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
               <div className="flex flex-wrap justify-between gap-2">
                 <Link
                   href="/videos"
-                  className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
+                  className={cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                  )}
                 >
                   <ArrowLeft className="mr-1 size-4" />
                   Back to videos
@@ -1044,7 +1060,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
               <div className="flex justify-center">
                 <Link
                   href="/courses/new"
-                  className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
+                  className={cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                  )}
                 >
                   <BookOpen className="mr-1 size-4" />
                   All courses
