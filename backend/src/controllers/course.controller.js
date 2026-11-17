@@ -218,43 +218,51 @@ export const createCourse = asyncHandler(async (req, res) => {
 
 // ---------- Courses: read ----------
 export const getCourse = asyncHandler(async (req, res) => {
-  const course = await Course.findOne({ _id: req.params.id, owner: req.user._id })
-    .populate({
-      path: 'videos.video',
-      select: 'title status durationSeconds thumbnailUrl targetLanguages lessonVideos dubs',
-    })
-    .lean();
-  if (!course) {
+  // Load raw first so we keep the video id even when the referenced Video
+  // document is missing (populate would replace it with null and lose the id).
+  const raw = await Course.findOne({ _id: req.params.id, owner: req.user._id }).lean();
+  if (!raw) {
     const err = new Error('Course not found');
     err.statusCode = 404;
     throw err;
   }
+
+  const course = await Course.populate(raw, {
+    path: 'videos.video',
+    select: 'title status durationSeconds thumbnailUrl targetLanguages lessonVideos dubs',
+  });
 
   res.status(200).json({
     success: true,
     data: {
       course: {
         ...course,
-        videos: (course.videos || []).map((entry) => ({
-          order: entry.order,
-          addedAt: entry.addedAt,
-          language: entry.language,
-          youtubeVideoId: entry.youtubeVideoId,
-          youtubeUrl: entry.youtubeUrl,
-          publishedAt: entry.publishedAt,
-          video: entry.video
-            ? {
-                _id: entry.video._id,
-                title: entry.video.title,
-                status: entry.video.status,
-                durationSeconds: entry.video.durationSeconds,
-                thumbnailUrl: entry.video.thumbnailUrl,
-                targetLanguages: entry.video.targetLanguages,
-                lessonVideos: entry.video.lessonVideos,
-                dubs: entry.video.dubs,
-              }
-            : null,
-        })),
+        videos: (course.videos || []).map((entry, index) => {
+          const rawVideoId = raw.videos?.[index]?.video || null;
+          const populated = entry.video && typeof entry.video === 'object' && entry.video._id ? entry.video : null;
+          const videoId = populated?._id || rawVideoId || null;
+          return {
+            videoId: videoId ? String(videoId) : null,
+            order: entry.order,
+            addedAt: entry.addedAt,
+            language: entry.language,
+            youtubeVideoId: entry.youtubeVideoId,
+            youtubeUrl: entry.youtubeUrl,
+            publishedAt: entry.publishedAt,
+            video: populated
+              ? {
+                  _id: populated._id,
+                  title: populated.title,
+                  status: populated.status,
+                  durationSeconds: populated.durationSeconds,
+                  thumbnailUrl: populated.thumbnailUrl,
+                  targetLanguages: populated.targetLanguages,
+                  lessonVideos: populated.lessonVideos,
+                  dubs: populated.dubs,
+                }
+              : null,
+          };
+        }),
       },
     },
   });
@@ -367,6 +375,9 @@ export const publishCourse = asyncHandler(async (req, res) => {
   publishCourseToYouTube({
     courseId: course._id,
     userId: req.user._id,
+    schedule: req.body?.schedule === undefined ? false : Boolean(req.body.schedule),
+    startAt: req.body?.startAt || null,
+    gapHours: req.body?.gapHours || null,
     onProgress: async (progress) => {
       const fresh = await Course.findById(course._id);
       if (!fresh) return;
@@ -610,9 +621,35 @@ export const removeCourseVideo = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  course.videos = (course.videos || []).filter(
-    (entry) => String(entry.video) !== String(req.params.videoId),
-  );
+  const videoId = String(req.params.videoId || '').trim();
+  const orderParam = req.query?.order ?? req.body?.order;
+  const order = orderParam !== undefined && orderParam !== null && orderParam !== ''
+    ? Number(orderParam)
+    : null;
+
+  const before = (course.videos || []).length;
+  if (videoId && videoId !== 'null' && videoId !== 'undefined' && videoId !== 'entry') {
+    course.videos = (course.videos || []).filter(
+      (entry) => String(entry.video || '') !== videoId,
+    );
+  } else if (Number.isFinite(order)) {
+    // Remove by position/order when the entry has no video reference (e.g. a
+    // missing/orphan lesson slot). Match by stored order, else by array index.
+    const idxByOrder = (course.videos || []).findIndex((e) => Number(e.order) === order);
+    const idx = idxByOrder >= 0 ? idxByOrder : order;
+    if (idx >= 0 && idx < course.videos.length) {
+      course.videos.splice(idx, 1);
+    }
+  } else {
+    const err = new Error('A video id or lesson order is required to remove this lesson.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if ((course.videos || []).length === before) {
+    // Nothing matched — still normalize order and report clearly.
+  }
+
   course.videos.forEach((entry, index) => {
     entry.order = index;
   });
@@ -620,7 +657,9 @@ export const removeCourseVideo = asyncHandler(async (req, res) => {
   await course.save();
   res.status(200).json({
     success: true,
-    message: 'Video removed from the course',
+    message: (course.videos || []).length === before
+      ? 'Lesson not found in the course (order refreshed).'
+      : 'Lesson removed from the course.',
     data: { course: withSummary(course.toObject()) },
   });
 });

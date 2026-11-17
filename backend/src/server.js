@@ -6,6 +6,10 @@ import {
   markInterruptedJobsAsFailed,
   resumeStuckVideoPipelines,
 } from "./controllers/video.controller.js";
+import {
+  recoverInterruptedPublishJobs,
+  runPublishQueueTick,
+} from "./services/publishQueue.service.js";
 
 validateEnv();
 
@@ -15,14 +19,21 @@ const start = async () => {
   const server = app.listen(env.port, () => {
     console.log(`[server] Running in ${env.nodeEnv} mode on port ${env.port}`);
 
-    process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
-    process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
+    process.on("uncaughtException", (err) =>
+      console.error("[uncaughtException]", err),
+    );
+    process.on("unhandledRejection", (err) =>
+      console.error("[unhandledRejection]", err),
+    );
 
     // A job that was running when the server stopped can never finish, so it
     // is marked as failed instead of staying "processing" forever.
     setImmediate(() => {
       markInterruptedJobsAsFailed().catch((err) =>
-        console.error("[server] markInterruptedJobsAsFailed failed:", err?.message || err),
+        console.error(
+          "[server] markInterruptedJobsAsFailed failed:",
+          err?.message || err,
+        ),
       );
     });
 
@@ -30,11 +41,44 @@ const start = async () => {
     if (process.env.ENABLE_STARTUP_RESUME === "1") {
       setImmediate(() => {
         resumeStuckVideoPipelines().catch((err) =>
-          console.error("[server] resumeStuckVideoPipelines failed:", err?.message || err),
+          console.error(
+            "[server] resumeStuckVideoPipelines failed:",
+            err?.message || err,
+          ),
         );
       });
     } else {
       console.log("[server] startup auto-resume disabled");
+    }
+
+    // Scheduled publishing queue. It confirms the uploads YouTube publishes
+    // on their publishAt slot and retries quota-failed jobs the next day.
+    if (String(env.publishQueueEnabled ?? "1") !== "0") {
+      const intervalMs = Number(env.publishQueueIntervalMs) || 5 * 60 * 1000;
+      setImmediate(() => {
+        recoverInterruptedPublishJobs()
+          .then(() => runPublishQueueTick())
+          .catch((err) =>
+            console.error(
+              "[server] publish queue start failed:",
+              err?.message || err,
+            ),
+          );
+      });
+      const queueTimer = setInterval(() => {
+        runPublishQueueTick().catch((err) =>
+          console.error(
+            "[server] publish queue tick failed:",
+            err?.message || err,
+          ),
+        );
+      }, intervalMs);
+      queueTimer.unref?.();
+      console.log(
+        `[server] publish queue enabled (every ${Math.round(intervalMs / 1000)}s)`,
+      );
+    } else {
+      console.log("[server] publish queue disabled");
     }
   });
 

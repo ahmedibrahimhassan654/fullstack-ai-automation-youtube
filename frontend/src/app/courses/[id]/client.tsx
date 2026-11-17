@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 
 type CourseVideo = {
   order: number;
+  videoId?: string | null;
   language?: string | null;
   youtubeVideoId?: string | null;
   youtubeUrl?: string | null;
@@ -75,6 +76,8 @@ type Course = {
     error?: string | null;
   };
 };
+
+type VideoRow = { _id: string; title: string; status: string };
 
 type YouTubeLesson = {
   videoId: string;
@@ -128,11 +131,18 @@ const formatDate = (value: string | null | undefined) => {
 const fieldClass =
   "h-9 w-full rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
 
-export default function CourseDetailClient({ id }: { id: string }) {
+export default function CourseDetailClient({
+  id,
+  initialCourse = null,
+}: {
+  id: string;
+  initialCourse?: Course | null;
+}) {
   const router = useRouter();
   const toast = useToast();
 
   const [course, setCourse] = useState<Course | null>(null);
+  const [allVideos, setAllVideos] = useState<VideoRow[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState("en");
@@ -141,6 +151,9 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const [dubbing, setDubbing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [dubProgress, setDubProgress] = useState<
+    Record<string, { status: string; progress: number; error?: string | null }>
+  >({});
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
   const [imageUploading, setImageUploading] = useState(false);
   const [youtube, setYoutube] = useState<YouTubeState | null>(null);
@@ -151,27 +164,32 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
+  const loadCourses = useCallback(async () => {
+    const res = await api.get<{ items: CourseSummary[] }>("/api/courses");
+    if (res.success) setAllCourses(res.data?.items || []);
+  }, []);
+
   const load = useCallback(async () => {
-    try {
-      const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
-      if (res.success && res.data?.course) {
-        const value = res.data.course;
-        setCourse(value);
-        setTitle(value.title || "");
-        setDescription(value.description || "");
-        setLanguage(value.language || "en");
-      } else {
-        toast.error(res.message || "Failed to load the course.");
-      }
-    } catch {
-      toast.error("Failed to load the course.");
-    } finally {
-      setLoading(false);
+    const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
+    if (res.success && res.data?.course) {
+      const value = res.data.course;
+      setCourse(value);
+      setTitle(value.title || "");
+      setDescription(value.description || "");
+      setLanguage(value.language || "en");
+    } else {
+      toast.error(res.message || "Failed to load the course.");
     }
+    setLoading(false);
   }, [id, toast]);
 
   useEffect(() => {
-    void Promise.resolve().then(() => load());
+    load();
+    api
+      .get<{ items: VideoRow[] }>("/api/videos?limit=100")
+      .then((res) => {
+        if (res.success) setAllVideos(res.data?.items || []);
+      });
   }, [load]);
 
   // The real YouTube state is read separately: it is the source of truth for
@@ -249,27 +267,126 @@ export default function CourseDetailClient({ id }: { id: string }) {
     setSaving(false);
   };
 
-  /** Dubs every lesson that has no version in the course language yet. */
+  /** Dubs every lesson that has no version in the course language yet, one by one. */
   const generateMissingDubs = async () => {
-    if (!missing.length) {
+    const toDub = (course?.videos || []).filter(
+      (entry) => entry.video && !hasVersion(entry, language),
+    );
+    if (!toDub.length) {
       toast.success("Every lesson already has a version in this language.");
       return;
     }
+
     setDubbing(true);
+    setDubProgress({});
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     let done = 0;
-    for (const entry of missing) {
-      const res = await api.post(`/api/videos/${entry.video?._id}/dub`, {
-        language,
-      });
-      if (res.success) done += 1;
+    let failed = 0;
+
+    for (const entry of toDub) {
+      const videoId = String(entry.video?._id || "");
+      if (!videoId) {
+        failed += 1;
+        continue;
+      }
+
+      setDubProgress((prev) => ({
+        ...prev,
+        [videoId]: { status: "processing", progress: 0 },
+      }));
+
+      const startRes = await api.post<{ video?: { dubbing?: { status?: string; progress?: number; error?: string | null } } }>(
+        `/api/videos/${videoId}/dub`,
+        { language },
+      );
+
+      if (!startRes.success) {
+        failed += 1;
+        setDubProgress((prev) => ({
+          ...prev,
+          [videoId]: {
+            status: "failed",
+            progress: 0,
+            error: startRes.message || "Failed to start",
+          },
+        }));
+        continue;
+      }
+
+      // Wait for this dub to finish before starting the next one.
+      for (;;) {
+        await sleep(4000);
+        const statusRes = await api.get<{
+          video?: {
+            dubbing?: { status?: string; progress?: number; error?: string | null; language?: string | null };
+            dubs?: { language?: string; url?: string }[];
+          };
+        }>(`/api/videos/${videoId}`);
+
+        const v = statusRes.data?.video;
+        const dubbingState = v?.dubbing;
+        const progress =
+          typeof dubbingState?.progress === "number" ? dubbingState.progress : 0;
+        const status = String(dubbingState?.status || "");
+        const hasDub = (v?.dubs || []).some(
+          (d) => d.language === language && d.url,
+        );
+
+        if (status === "completed" || (status !== "processing" && hasDub)) {
+          done += 1;
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: { status: "completed", progress: 100 },
+          }));
+          break;
+        }
+
+        if (status === "failed") {
+          failed += 1;
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: {
+              status: "failed",
+              progress,
+              error: dubbingState?.error || "Dubbing failed",
+            },
+          }));
+          break;
+        }
+
+        if (!statusRes.success) {
+          // Transient fetch issue: keep waiting/polling.
+          setDubProgress((prev) => ({
+            ...prev,
+            [videoId]: {
+              status: prev[videoId]?.status || "processing",
+              progress: prev[videoId]?.progress ?? 0,
+              error: statusRes.message || prev[videoId]?.error || null,
+            },
+          }));
+          continue;
+        }
+
+        setDubProgress((prev) => ({
+          ...prev,
+          [videoId]: {
+            status: status || "processing",
+            progress,
+            error: dubbingState?.error ?? null,
+          },
+        }));
+      }
     }
-    toast.success(
-      done === missing.length
-        ? `Started ${done} dub${done === 1 ? "" : "s"}. They appear on the lesson once ready.`
-        : `Started ${done} of ${missing.length} dubs.`,
-    );
+
     setDubbing(false);
+    toast.success(
+      failed === 0
+        ? `Finished ${done} dub${done === 1 ? "" : "s"}.`
+        : `Finished ${done} of ${toDub.length} dubs (${failed} failed).`,
+    );
     await load();
+    setTimeout(() => setDubProgress({}), 4000);
   };
 
   const publishCourse = async () => {
@@ -374,8 +491,10 @@ export default function CourseDetailClient({ id }: { id: string }) {
     toast.success("Upload started…");
 
     const formData = new FormData();
+    const fileBaseName = file.name.replace(/\.[^.]+$/, "").trim();
     formData.append("video", file);
-    formData.append("title", file.name.replace(/\.[^.]+$/, ""));
+    formData.append("title", fileBaseName || file.name);
+    formData.append("originalFilename", file.name);
     formData.append("description", "");
     formData.append("originalLanguage", newLessonLanguage);
     formData.append("targetLanguages", JSON.stringify([language]));
@@ -416,24 +535,40 @@ export default function CourseDetailClient({ id }: { id: string }) {
     await load();
   };
 
-  const removeVideo = async (videoId: string) => {
-    if (!videoId) {
+  const removeVideo = async (
+    videoId: string,
+    opts?: { missing?: boolean; published?: boolean; order?: number },
+  ) => {
+    const hasId = Boolean(videoId);
+    const hasOrder = Number.isFinite(opts?.order);
+    if (!hasId && !hasOrder) {
       toast.error("This lesson has no video to remove.");
       return;
     }
-    const res = await api.delete(`/api/courses/${id}/videos/${videoId}`);
+    const notes = [
+      "This removes the lesson from this course list only (it does not delete the video file or your YouTube views).",
+      opts?.published
+        ? "The lesson is published on YouTube — removing it here will not delete/unpublish the YouTube video or remove it from the playlist."
+        : opts?.missing || !hasId
+          ? "This lesson's video record is missing or it was removed from the YouTube playlist — you can safely remove it from this course to free its slot/order."
+          : "If it is already on a YouTube playlist, remove or reorder it there via YouTube sync if needed.",
+    ].join("\n\n");
+    if (!confirm(`Remove this lesson from the course?\n\n${notes}`)) return;
+    const target = hasId ? videoId : "entry";
+    const query = !hasId && hasOrder ? `?order=${opts!.order}` : "";
+    const res = await api.delete(`/api/courses/${id}/videos/${target}${query}`);
     if (res.success) {
-      toast.success(res.message || "Video removed.");
+      toast.success(res.message || "Lesson removed from the course.");
       await load();
     } else {
-      toast.error(res.message || "Failed to remove the video.");
+      toast.error(res.message || "Failed to remove the lesson.");
     }
   };
 
   const move = async (index: number, direction: -1 | 1) => {
     if (!course) return;
     const ids = course.videos
-      .map((entry) => entry.video?._id)
+      .map((entry) => entry.video?._id || entry.videoId)
       .filter(Boolean) as string[];
     const target = index + direction;
     if (target < 0 || target >= ids.length) return;
@@ -453,7 +588,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
   const reorderByDrop = async (from: number, to: number) => {
     if (!course) return;
     const ids = course.videos
-      .map((entry) => entry.video?._id)
+      .map((entry) => entry.video?._id || entry.videoId)
       .filter(Boolean) as string[];
     if (from < 0 || from >= ids.length) return;
     const next = [...ids];
@@ -482,6 +617,11 @@ export default function CourseDetailClient({ id }: { id: string }) {
       toast.error(res.message || "Failed to delete the course.");
     }
   };
+
+  const inCourse = new Set(
+    (course?.videos || []).map((entry) => entry.video?._id).filter(Boolean) as string[],
+  );
+  const available = allVideos.filter((video) => !inCourse.has(video._id));
   const publishing = course?.publishing;
   const isPublishing = publishing?.status === "processing";
   const ytByVideo = new Map(
@@ -649,9 +789,14 @@ export default function CourseDetailClient({ id }: { id: string }) {
                           {youtube.summary.duplicates} duplicate
                           {youtube.summary.duplicates === 1 ? "" : "s"}
                         </Badge>
-                        {youtube.course.playlistUrl && (
+                        {(youtube.course.playlistUrl || course?.playlistId) && (
                           <a
-                            href={youtube.course.playlistUrl}
+                            href={
+                              youtube.course.playlistUrl ||
+                              (course?.playlistId
+                                ? `https://www.youtube.com/playlist?list=${course.playlistId}`
+                                : "")
+                            }
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
@@ -848,6 +993,59 @@ export default function CourseDetailClient({ id }: { id: string }) {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {/* Upload a brand new video straight into the course */}
+                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Upload a new lesson
+                    </p>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="newLessonLanguage">
+                          Spoken language of the new video
+                        </Label>
+                        <select
+                          id="newLessonLanguage"
+                          value={newLessonLanguage}
+                          onChange={(e) => setNewLessonLanguage(e.target.value)}
+                          className={fieldClass}
+                        >
+                          {LANGUAGES.map((option) => (
+                            <option key={option.code} value={option.code}>
+                              {option.label} ({option.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <Label htmlFor="newLessonFile">Video file</Label>
+                        <input
+                          ref={fileInputRef}
+                          id="newLessonFile"
+                          type="file"
+                          accept="video/*"
+                          disabled={uploading}
+                          onChange={(e) => uploadLesson(e.target.files?.[0])}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          The lesson keeps the name of the file you select.
+                        </p>
+                      </div>
+                    </div>
+                    {uploading && (
+                      <div className="space-y-1">
+                        <Progress value={uploadProgress} />
+                        <p className="text-xs text-muted-foreground">
+                          Uploading… {uploadProgress}%
+                        </p>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      The video is uploaded, transcribed and added as the last
+                      lesson. Use the dub button above to dub it into{" "}
+                      {language}.
+                    </p>
+                  </div>
                   {course.videos.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       No lessons yet. Add one from the list below.
@@ -858,7 +1056,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
                         const ready = hasVersion(entry, language);
                         return (
                           <li
-                            key={entry.video?._id || index}
+                            key={entry.video?._id || entry.videoId || index}
                             draggable={!isPublishing}
                             onDragStart={(e) => {
                               setDragIndex(index);
@@ -899,25 +1097,34 @@ export default function CourseDetailClient({ id }: { id: string }) {
                               {index + 1}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <Link
-                                href={`/videos/${entry.video?._id}`}
-                                className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
-                              >
-                                <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
-                                <span className="truncate">
-                                  {entry.video?.title || "Removed video"}
-                                </span>
-                              </Link>
+                              {entry.video?._id ? (
+                                <Link
+                                  href={`/videos/${entry.video._id}`}
+                                  className="flex items-center gap-1.5 truncate text-sm font-medium hover:underline"
+                                >
+                                  <PlayCircle className="size-4 shrink-0 text-muted-foreground" />
+                                  <span className="truncate">{entry.video.title}</span>
+                                </Link>
+                              ) : (
+                                <div className="flex items-center gap-1.5 truncate text-sm font-medium text-muted-foreground">
+                                  <PlayCircle className="size-4 shrink-0" />
+                                  <span className="truncate">Removed / missing lesson</span>
+                                  <span className="shrink-0 text-xs font-normal">(can be removed from course)</span>
+                                </div>
+                              )}
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className="text-xs text-muted-foreground">
-                                  {entry.video?.status}
+                                  {entry.video?.status || "missing"}
                                 </span>
+                                {!entry.video && (
+                                  <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">
+                                    Not in library{entry.youtubeVideoId ? "" : " / not on YouTube"}
+                                  </Badge>
+                                )}
                                 {(() => {
-                                  const ytLesson = ytByVideo.get(
-                                    entry.video?._id || "",
-                                  );
-                                  const link =
-                                    ytLesson?.youtubeUrl || entry.youtubeUrl;
+                                  const vidId = entry.video?._id || entry.videoId || "";
+                                  const ytLesson = vidId ? ytByVideo.get(vidId) : null;
+                                  const link = ytLesson?.youtubeUrl || entry.youtubeUrl;
                                   if (link) {
                                     return (
                                       <a
@@ -948,6 +1155,22 @@ export default function CourseDetailClient({ id }: { id: string }) {
                                   );
                                 })()}
                               </div>
+                              {entry.video?._id && dubProgress[entry.video._id] && (
+                                <div className="mt-2 space-y-1">
+                                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                    <span>
+                                      Dubbing… {dubProgress[entry.video._id].status}
+                                    </span>
+                                    <span>{dubProgress[entry.video._id].progress}%</span>
+                                  </div>
+                                  <Progress value={dubProgress[entry.video._id].progress} />
+                                  {dubProgress[entry.video._id].error && (
+                                    <p className="text-xs text-destructive">
+                                      {dubProgress[entry.video._id].error}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             <Button
                               variant="ghost"
@@ -973,9 +1196,7 @@ export default function CourseDetailClient({ id }: { id: string }) {
                             <Button
                               variant="ghost"
                               size="icon-xs"
-                              onClick={() =>
-                                removeVideo(entry.video?._id || "")
-                              }
+                              onClick={() => removeVideo(entry.video?._id || "")}
                               disabled={isPublishing}
                               aria-label="Remove lesson"
                               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -986,6 +1207,34 @@ export default function CourseDetailClient({ id }: { id: string }) {
                         );
                       })}
                     </ol>
+                  )}
+
+                  {available.length > 0 && (
+                    <div className="space-y-2 rounded-lg border border-dashed p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Add an existing lesson
+                      </p>
+                      <div className="space-y-1">
+                        {available.map((video) => (
+                          <div
+                            key={video._id}
+                            className="flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-muted/50"
+                          >
+                            <span className="min-w-0 flex-1 truncate text-sm">
+                              {video.title}
+                            </span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => addVideo(video._id)}
+                            >
+                              <Plus className="mr-1 size-3.5" />
+                              Add
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
                   {/* Upload a brand new video straight into the course */}
@@ -1034,8 +1283,8 @@ export default function CourseDetailClient({ id }: { id: string }) {
                     )}
                     <p className="text-xs text-muted-foreground">
                       The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into {language}
-                      .
+                      lesson. Use the dub button above to dub it into{" "}
+                      {language}.
                     </p>
                   </div>
                 </CardContent>

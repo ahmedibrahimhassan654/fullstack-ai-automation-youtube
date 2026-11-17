@@ -1,4 +1,8 @@
 import { env } from '../config/env.js';
+import {
+  normalizeTechnicalSource,
+  repairTechnicalTerms,
+} from './technicalTerms.service.js';
 
 const EGYPTIAN_ARABIC_RULES = `You are an expert AI Audio Translation & Transcription Agent specializing in Egyptian Arabic. Follow these core principles: deliver authentic modern Egyptian Arabic (اللهجة المصرية); maintain Arabic grammar, pronouns, verb conjugations and gender agreement; identify technical English terms without natural Arabic translations and keep them in English when needed; adapt speech patterns into clear, natural, well-structured text while preserving educational intent.`;
 
@@ -26,7 +30,7 @@ const isReasoningModel = (model) => /gpt-oss/i.test(String(model || ''));
 
 const resolveProvider = () => {
   const p = String(env.aiProvider || 'groq').toLowerCase();
-  if (p === 'ollama' || p === 'gemini' || p === 'deepseek') return p;
+  if (p === 'ollama' || p === 'gemini' || p === 'deepseek' || p === 'crowllm') return p;
   return 'groq';
 };
 
@@ -98,6 +102,47 @@ const callDeepSeekCompletionOnce = async (messages, extra = {}) => {
   return data?.choices?.[0]?.message?.content || '';
 };
 
+const callCrowllmCompletionOnce = async (messages, extra = {}) => {
+  if (!env.crowllmApiKey) {
+    const err = new Error('CROWLLM_API_KEY is not configured');
+    err.statusCode = 500;
+    throw err;
+  }
+  const model =
+    extra.model ||
+    env.crowllmModel ||
+    (extra.fast ? 'gpt-4o-mini:free' : 'qwen-3.6-plus:free');
+
+  const response = await fetch(
+    `${String(env.crowllmBaseUrl || 'https://crowllm.com/v1').replace(/\/$/, '')}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.crowllmApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: extra.temperature ?? 0.2,
+        max_tokens: extra.maxTokens ?? 2048,
+        ...(extra.responseFormat ? { response_format: extra.responseFormat } : {}),
+      }),
+      signal: AbortSignal.timeout(300000),
+    },
+  );
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message =
+      data?.error?.message || data?.message || `CrowLLM chat failed (${response.status})`;
+    const err = new Error(message);
+    err.statusCode = response.status;
+    throw err;
+  }
+  return data?.choices?.[0]?.message?.content || '';
+};
+
 const callChatCompletionOnce = async (messages, extra = {}) => {
   const provider = extra?.provider || resolveProvider();
 
@@ -107,6 +152,10 @@ const callChatCompletionOnce = async (messages, extra = {}) => {
 
   if (provider === 'deepseek') {
     return callDeepSeekCompletionOnce(messages, extra);
+  }
+
+  if (provider === 'crowllm') {
+    return callCrowllmCompletionOnce(messages, extra);
   }
 
   if (provider === 'gemini') {
@@ -286,6 +335,13 @@ const availableProviders = async () => {
   ) {
     list.push('deepseek');
   }
+  if (
+    env.crowllmApiKey &&
+    !disabledProviders.has('crowllm') &&
+    !isProviderCoolingDown('crowllm')
+  ) {
+    list.push('crowllm');
+  }
   // A local Ollama server is the last resort: it is slower than the hosted
   // providers but it has no quota at all, so a dub can always finish.
   if (!disabledProviders.has('ollama') && (await isOllamaRunning())) {
@@ -357,7 +413,12 @@ const trim = (text, limit = 12000) => {
 };
 
 const parseJson = (content) => {
-  const text = String(content || '').trim();
+  let text = String(content || '').trim();
+  // DeepSeek reasoner (and similar) emit a reasoning block before the answer.
+  // Strip it so it cannot confuse the JSON extraction.
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+  text = text.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '').trim();
   // Strip markdown fences if present.
   const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
   try {
@@ -389,7 +450,7 @@ Analyze the transcript and return ONLY valid JSON with these fields:
   "keyPoints": ["5-8 practical key points that a viewer can apply"],
   "actionItems": ["actionable tasks mentioned or implied"],
   "decisions": ["decisions made in the content"],
-  "openQuestions": ["unanswered questions raised"]
+  "openQuestions": ["3 clear, separate questions a viewer might ask after watching, each a single well-formed question ending with a question mark"]
 }
 
 Strictly enforce:
@@ -397,6 +458,7 @@ Strictly enforce:
 - Never use placeholders or outdated syntax.
 - Include sequential chapter titles based on real transcript timestamps.
 - Descriptions should be concise, practical, and include what the viewer will do, learn, and troubleshoot.
+- openQuestions: generate exactly 3 separate, well-formed questions in the target language, each ending with a question mark. Do not merge multiple questions into one. Each question must be clear and answerable by viewers.
 - If a field has no items, return an empty array. Do not include markdown outside JSON.`;
 
   const content = await callChatCompletion(
@@ -409,7 +471,8 @@ Strictly enforce:
     ],
     {
         responseFormat: { type: 'json_object' },
-        provider: 'groq',
+        provider: resolveProvider(),
+        model: env.aiProvider === 'deepseek' ? 'deepseek-chat' : undefined,
         maxTokens: 2200,
     }
   );
@@ -501,6 +564,25 @@ const languageBase = (value) => String(value || '').toLowerCase().split(/[-_]/)[
  *   still identical to the source is only accepted when it is a short
  *   technical term rather than a whole sentence.
  */
+const isTechnicalLiteral = (text = '') => {
+  const v = String(text || '').trim();
+  if (!v) return false;
+  // Commands, shell/code snippets, paths, URLs, filenames, flags, etc. These
+  // often cannot/should not be translated into the target script and may be
+  // kept as-is by the model (or TTS should read them literally).
+  if (/https?:\/\/|www\.|[A-Za-z]:[\\/]|\.{1,2}[\\/]/.test(v)) return true;
+  if (/[`|<>$]/.test(v)) return true;
+  if (/(^|\s)(sudo|apt|apt-get|dnf|yum|pacman|brew|pip3?|npm|npx|pnpm|yarn|git|docker|kubectl|chmod|chown|chgrp|cd|ls|cat|echo|grep|sed|awk|curl|wget|ssh|scp|tar|zip|unzip|make|python3?|node|java|bash|sh|zsh|powershell|pwsh)\b/i.test(v)) return true;
+  if (/(^|\s)--?[A-Za-z][\w-]*/.test(v)) return true;
+  if (/\b[\w.-]+\.(?:run|sh|bash|zsh|ps1|bat|cmd|exe|msi|deb|rpm|AppImage|iso|img|tar|gz|zip|7z|py|js|ts|go|rs|c|cpp|h|java|kt|rb|php|pl|sql|conf|cfg|ini|yaml|yml|json|md|txt)\b/i.test(v)) return true;
+  if (/[\\/][\w.-]+/.test(v)) return true;
+  // Mostly symbols/digits/dots/colons (identifiers, IPs, versions) with few letters.
+  const letters = (v.match(/[A-Za-z]/g) || []).length;
+  const nonSpace = v.replace(/\s+/g, '').length;
+  if (nonSpace > 0 && letters / nonSpace < 0.45 && /[0-9./:_-]/.test(v)) return true;
+  return false;
+};
+
 export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sourceLanguage = '') => {
   const value = String(text || '').trim();
   if (!value) return false;
@@ -513,9 +595,9 @@ export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sour
   if (letters === 0) return true; // numbers and symbols only
 
   const scriptPattern = TARGET_SCRIPT_PATTERNS[target];
+  const sourceValue = String(sourceText || '').trim();
   if (scriptPattern) {
     const targetChars = countMatches(value, scriptPattern);
-    const sourceValue = String(sourceText || '').trim();
     const sourceTargetChars = countMatches(sourceValue, scriptPattern);
 
     // Written in the target script: a translation.
@@ -525,17 +607,20 @@ export const isTargetLanguageText = (text, targetLanguage, sourceText = '', sour
     // segment was mangled or dropped.
     if (sourceTargetChars > 0) return false;
 
-    // Neither side uses the target script. That is only acceptable for a
-    // short label such as a product name ("Kali Linux"), never for a
-    // sentence that should have been translated.
-    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+    // Neither side uses the target script. Accept short labels (product names)
+    // and technical literals/commands that are legitimately kept as-is.
+    if (sourceValue.split(/\s+/).filter(Boolean).length <= 2) return true;
+    if (isTechnicalLiteral(sourceValue) || isTechnicalLiteral(value)) return true;
+    return false;
   }
 
-  const sourceValue = String(sourceText || '').trim();
   if (!sourceValue) return true;
   if (normalizeForCompare(value) === normalizeForCompare(sourceValue)) {
-    // Unchanged: acceptable for a short technical term, not for a sentence.
-    return sourceValue.split(/\s+/).filter(Boolean).length <= 2;
+    // Unchanged: acceptable for a short technical term or a technical literal
+    // (command, path, URL, code) that should remain as-is.
+    if (sourceValue.split(/\s+/).filter(Boolean).length <= 2) return true;
+    if (isTechnicalLiteral(sourceValue) || isTechnicalLiteral(value)) return true;
+    return false;
   }
   return true;
 };
@@ -559,8 +644,8 @@ export const findUntranslatedSegments = ({
   return untranslated;
 };
 
-const QUALITY_THRESHOLD = 8;
-const MAX_TRANSLATION_ATTEMPTS = 3;
+const QUALITY_THRESHOLD = 9.5; // target >= 95% match
+const MAX_TRANSLATION_ATTEMPTS = 5;
 
 // --- Arabic number words -------------------------------------------------------
 // Numbers must be spoken as Arabic words, not read out digit by digit. This
@@ -689,7 +774,7 @@ const toPair = (segment) => ({
 });
 
 const callQualityChat = async (messages, extra = {}) => {
-  const provider = resolveProvider();
+  const provider = extra?.provider || resolveProvider();
   // The bulk translation runs on the fast model: it is far cheaper per batch,
   // which keeps the whole transcript inside the rate limit budget.
   const model =
@@ -703,9 +788,13 @@ const callQualityChat = async (messages, extra = {}) => {
           ? String(env.aiModelQuality || '').toLowerCase().includes('deepseek')
             ? env.aiModelQuality
             : 'deepseek-chat'
-          : extra.fast
-            ? env.aiModelFast || GROQ_MODEL_FAST
-            : env.aiModelQuality || GROQ_MODEL_QUALITY;
+          : provider === 'crowllm'
+            ? extra.fast
+              ? env.crowllmModel || 'gpt-4o-mini:free'
+              : env.crowllmModel || 'qwen-3.6-plus:free'
+            : extra.fast
+              ? env.aiModelFast || GROQ_MODEL_FAST
+              : env.aiModelQuality || GROQ_MODEL_QUALITY;
   return callChatCompletion(messages, { ...extra, model });
 };
 
@@ -713,6 +802,9 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
   const system =
     'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
     'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
+    'TECHNICAL TERMS MUST BE COPIED CHARACTER FOR CHARACTER from the source: same letters, same order, same casing, no missing or extra letter, no merged or split words. A misspelled term (for example "erminal" instead of "terminal", or "gues edition" instead of "Guest Additions") makes the lesson unusable. ' +
+    'GRAMMAR: use correct grammatical gender, number, person and pronoun agreement in the target language, and keep the subject/verb agreement of the original sentence. ' +
+    'PRESERVE THE SOURCE WORD ORDER AND MEANING: keep the number of content words as close as possible to the source so the dub stays in sync with the original audio; do not drop, merge or reorder words. Each translated segment must be a complete, natural sentence that a native speaker can pronounce fluently. ' +
     (String(targetLanguage).toLowerCase().startsWith('ar')
       ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
       : '') +
@@ -839,7 +931,8 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
       languageName +
       ' speaker pronounces it, using ' +
       languageName +
-      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ';
+      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ' +
+      'The pronunciation must contain every sound of the term: never drop the first or last letter, never merge two words into one, and never replace a term with a vague paraphrase such as "هذه الإضافات" instead of the name itself. ';
 
   const system =
     'You prepare ' +
@@ -913,7 +1006,67 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
   return spoken;
 };
 
-const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [] }) => {
+/**
+ * Refines the spoken (TTS) text for clarity and meaning in the target language,
+ * so the dubbed voice sounds natural and understandable.
+ */
+const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
+  const input = (segments || [])
+    .map((segment, position) => ({
+      index: Number.isInteger(segment?.index) ? segment.index : position,
+      text: String(segment?.spokenText || segment?.text || '').trim(),
+      original: String(segment?.sourceText || segment?.original || '').trim(),
+    }))
+    .filter((s) => s.text);
+  const out = new Map();
+  if (!input.length) return out;
+
+  const target = languageBase(targetLanguage);
+  const languageName = { ar: 'Arabic', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese', ru: 'Russian', hi: 'Hindi', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', tr: 'Turkish', nl: 'Dutch', pl: 'Polish', en: 'English' }[target] || targetLanguage;
+  const system =
+    `You are a voice/dubbing script editor for ${languageName}. ` +
+    `Given each sentence and its original meaning, rewrite it as ONE clear, natural spoken sentence for TTS in ${languageName} ` +
+    `so pronunciation, meaning, and flow are easy to understand. Keep the meaning faithful to the original. ` +
+    `Use correct grammar and natural phrasing; keep correct gender, number and pronoun agreement; for Arabic add/keep full tashkeel where helpful for pronunciation. ` +
+    `Keep every technical name, command and code identifier exactly as it appears in the given sentence: never drop, shorten, merge or reorder its letters, and never replace it with a paraphrase. ` +
+    `Return ONLY valid JSON: {"segments":["spoken sentence 1", ...]} in the same order and same count (${input.length}).`;
+
+  const batches = chunkArray(input, 10);
+  for (const batch of batches) {
+    try {
+      const content = await callQualityChat(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: `Target: ${targetLanguage}\n` + JSON.stringify(batch.map(b => ({ original: b.original, text: b.text }))) },
+        ],
+        { fast: true, temperature: 0.15, maxTokens: 4000, responseFormat: { type: 'json_object' } },
+      );
+      const parsed = parseJson(content);
+      const list = parsed?.segments;
+      if (Array.isArray(list) && list.length === batch.length) {
+        batch.forEach((seg, i) => {
+          const raw = String(typeof list[i] === 'string' ? list[i] : list[i]?.text || '').trim();
+          if (!raw) return;
+          // The refinement pass can rewrite a technical term, so the glossary
+          // is applied once more to keep the pronunciation exact.
+          const repaired = repairTechnicalTerms({
+            text: raw,
+            spokenText: raw,
+            sourceText: seg.original,
+            targetLanguage,
+          });
+          const v = String(repaired.spokenText || raw).replace(/\s+/g, ' ').trim();
+          if (v) out.set(seg.index, v);
+        });
+      }
+    } catch (e) {
+      console.error('[refineSpokenForVoice] error:', e?.message);
+    }
+  }
+  return out;
+};
+
+const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [], provider = null }) => {
   const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
   let content = '';
   try {
@@ -922,12 +1075,14 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
           temperature: 0.15,
           maxTokens: 8000,
           responseFormat: { type: 'json_object' },
+          provider,
         })
       : await callQualityChat(messages, {
           fast: true,
           temperature: 0.1,
           maxTokens: 8000,
           responseFormat: { type: 'json_object' },
+          provider,
         });
   } catch (e) {
     console.error('[translateSegmentsOnce] chat error:', e?.message);
@@ -955,6 +1110,17 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
     ),
   }));
 
+  // The model still occasionally drops a letter from a technical term
+  // ("erminal", "gues edition"). The glossary repair is deterministic, so it
+  // runs on every segment before the translation is accepted.
+  translated.forEach((seg, index) => {
+    seg.text = repairTechnicalTerms({
+      text: seg.text,
+      sourceText: batch[index].text,
+      targetLanguage,
+    }).text;
+  });
+
   const wrongLanguage = translated.find(
     (seg, index) =>
       !seg.text || !isTargetLanguageText(seg.text, targetLanguage, batch[index].text),
@@ -975,8 +1141,8 @@ const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context 
  * Translates a batch, halving it whenever a batch fails so that one bad
  * batch cannot poison the whole transcript.
  */
-const translateBatchResilient = async ({ batch, targetLanguage, highQuality, context = [] }) => {
-  const translated = await translateBatchOnce({ batch, targetLanguage, highQuality, context });
+const translateBatchResilient = async ({ batch, targetLanguage, highQuality, context = [], provider = null }) => {
+  const translated = await translateBatchOnce({ batch, targetLanguage, highQuality, context, provider });
   if (translated) return translated;
 
   if (batch.length === 1) {
@@ -994,12 +1160,14 @@ const translateBatchResilient = async ({ batch, targetLanguage, highQuality, con
     targetLanguage,
     highQuality,
     context: context.slice(0, mid),
+    provider,
   });
   const tail = await translateBatchResilient({
     batch: batch.slice(mid),
     targetLanguage,
     highQuality,
     context: context.slice(mid),
+    provider,
   });
   return [...head, ...tail];
 };
@@ -1010,6 +1178,7 @@ const translateSegmentsOnce = async ({
   highQuality = false,
   context = [],
   onProgress = null,
+  provider = null,
 }) => {
   const input = (segments || []).map(toPair).filter((s) => s.text);
   if (input.length === 0) return [];
@@ -1030,6 +1199,7 @@ const translateSegmentsOnce = async ({
         targetLanguage,
         highQuality,
         context: batchContext,
+        provider,
       })),
     );
 
@@ -1078,6 +1248,8 @@ export const evaluateTranslationSegments = async ({ pairs, targetLanguage }) => 
               'You are a strict bilingual translation quality evaluator and editor. ' +
               'Compare each ORIGINAL (English) sentence with its TRANSLATED sentence. ' +
               'Score from 0 to 10 (decimals allowed) for: meaning accuracy, completeness, grammar, naturalness, and preservation of intent. ' +
+              'Penalise heavily (maximum 5) when a technical term, product name, command or code identifier is misspelled, shortened, merged with another word or missing its first/last letter. ' +
+              'Also penalise wrong grammatical gender, number or pronoun agreement. ' +
               'A score of 8 or higher means the translation is acceptable. ' +
               'If you notice English words that were left untranslated, suggest an equivalent phrase in the TARGET LANGUAGE based on the whole sentence context (not word-by-word). ' +
               'Return ONLY valid JSON: {"results":[{"i":number,"s":number,"r":string,"w":[{"e":string,"x":string}]}]}. ' +
@@ -1135,7 +1307,14 @@ export const translateTranscriptSegments = async ({
   fast = false,
   onProgress = null,
 }) => {
-  const source = (segments || []).map(toPair).filter((s) => s.text);
+  // The transcript itself contains speech-to-text mistakes in technical names
+  // ("guest edition CD image" instead of "Guest Additions CD image"). Fixing
+  // them here means the translation, the subtitles and the narration are all
+  // built from the real term.
+  const source = (segments || [])
+    .map(toPair)
+    .map((segment) => ({ ...segment, text: normalizeTechnicalSource(segment.text) }))
+    .filter((s) => s.text);
 
   if (source.length === 0) return [];
 
@@ -1195,19 +1374,64 @@ export const translateTranscriptSegments = async ({
     e && typeof e.score === 'number' ? e.score : null,
   );
 
+  // Cross-model (quality-model) second opinion: translate the same source with
+  // the high-quality model (e.g. deepseek-reasoner) and keep the per-segment
+  // version that scores higher against the original. This is what lifts the
+  // match above 95% instead of trusting a single model/pass.
+  if (!fast && env.aiModelQuality && env.aiModelQuality !== env.aiModelFast) {
+    try {
+      const qualityTranslated = await translateSegmentsOnce({
+        segments: source,
+        targetLanguage,
+        highQuality: true,
+      });
+      const qualityPairs = source.map((s, index) => ({
+        original: s.text,
+        translated:
+          qualityTranslated[index] && qualityTranslated[index].text
+            ? qualityTranslated[index].text
+            : currentSegments[index].text,
+      }));
+      const qualityEvals = await evaluateTranslationSegments({
+        pairs: qualityPairs,
+        targetLanguage,
+      });
+      qualityTranslated.forEach((seg, index) => {
+        if (!seg || !seg.text) return;
+        const qualityScore =
+          qualityEvals[index] && typeof qualityEvals[index].score === 'number'
+            ? qualityEvals[index].score
+            : null;
+        const currentScore = bestScores[index];
+        if (qualityScore !== null && (currentScore === null || qualityScore > currentScore)) {
+          currentSegments[index] = {
+            start: source[index].start,
+            end: source[index].end,
+            text: String(seg.text).trim(),
+            spokenText: '',
+          };
+          if (qualityEvals[index]) evaluations[index] = qualityEvals[index];
+          bestScores[index] = qualityScore;
+          attempts[index] = 1;
+        }
+      });
+    } catch (error) {
+      console.warn('[translate] quality-model second-opinion pass failed:', error?.message);
+    }
+  }
 
-  // 3. Retry low-scoring segments with a high-quality pass.
-  //
-  // Arabic segments without tashkeel are retried as well: the diacritics are
-  // what let the neural voice pronounce the words correctly, and the bulk
-  // (fast) model does not add them consistently.
+
+  // 3. Iterative refinement: compare original vs translated, get edit
+  // suggestions from the evaluator, and retry until each segment reaches
+  // >= 95% match (score 9.5/10) or attempts are exhausted, always keeping
+  // the best-scoring version.
   const needsTashkeel = String(targetLanguage || '').toLowerCase().startsWith('ar');
   for (let attempt = 2; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt += 1) {
     const lowIndices = source
       .map((_, index) => index)
       .filter((index) => {
         const score = bestScores[index];
-        const lowScore = score !== null && score < QUALITY_THRESHOLD;
+        const lowScore = score === null || score < QUALITY_THRESHOLD;
         const missingTashkeel =
           needsTashkeel &&
           hasArabicLetters(currentSegments[index].text) &&
@@ -1355,6 +1579,27 @@ export const translateTranscriptSegments = async ({
     segment.spokenText = isArabicTarget ? spellOutNumbersInArabic(spoken) : spoken;
   });
 
+  // Refine spoken text for voice clarity/meaning in the target language (best
+  // effort) so dubbing sounds natural and clear.
+  if (!fast) {
+    try {
+      const refined = await refineSpokenForVoice({
+        segments: currentSegments.map((s, i) => ({
+          index: i,
+          spokenText: s.spokenText,
+          text: s.text,
+          sourceText: source[i]?.text || '',
+        })),
+        targetLanguage,
+      });
+      refined.forEach((value, index) => {
+        if (value && currentSegments[index]) currentSegments[index].spokenText = value;
+      });
+    } catch (e) {
+      console.error('[translate] spoken refinement failed:', e?.message);
+    }
+  }
+
   // 5. Final evaluation for missing scores.
   const needsFinalEval = source
     .map((_, index) => index)
@@ -1388,11 +1633,24 @@ export const translateTranscriptSegments = async ({
     const spokenText = String(
       currentSegments[index].spokenText || currentSegments[index].text,
     ).trim();
+
+    // Last deterministic pass: whatever the model produced, the technical
+    // terms in the subtitle and in the narration are exactly right. This also
+    // repairs segments that were never sent to the spoken-version pass.
+    const repaired = repairTechnicalTerms({
+      text: currentSegments[index].text,
+      spokenText,
+      sourceText: s.text,
+      targetLanguage,
+    });
+
     return {
       start: s.start,
       end: s.end,
-      text: currentSegments[index].text,
-      spokenText: isArabicTarget ? spellOutNumbersInArabic(spokenText) : spokenText,
+      text: repaired.text,
+      spokenText: isArabicTarget
+        ? spellOutNumbersInArabic(repaired.spokenText)
+        : repaired.spokenText,
       sourceText: s.text,
       originalLanguage: originalLanguage || 'en',
       targetLanguage,
@@ -1443,7 +1701,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
       },
     ],
     {
-      provider: 'groq',
+      provider: resolveProvider(),
       fast: true,
       temperature: 0.4,
       maxTokens: 700,
@@ -1581,7 +1839,7 @@ export const condenseTranslationForDuration = async ({ text, targetLanguage, max
       { temperature: 0.1, maxTokens: 512 },
     );
     const condensed = stripMarkdown(content);
-    if (condensed && condensed.length <= limit * 1.2) return condensed;
+    if (condensed && condensed.length >= limit * 0.5 && condensed.length <= limit * 1.2) return condensed;
   } catch {
     // fall through to trimmed original
   }

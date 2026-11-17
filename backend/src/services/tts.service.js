@@ -1,74 +1,79 @@
-import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
-import { env } from '../config/env.js';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { spawn } from 'child_process';
-import ffmpegStatic from 'ffmpeg-static';
+import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
+import { env } from "../config/env.js";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { spawn } from "child_process";
+import ffmpegStatic from "ffmpeg-static";
 
 export const VOICES = {
-  en: 'en-US-AriaNeural',
-  es: 'es-ES-ElviraNeural',
-  fr: 'fr-FR-DeniseNeural',
-  de: 'de-DE-KatjaNeural',
-  it: 'it-IT-ElsaNeural',
-  pt: 'pt-BR-FranciscaNeural',
-  ru: 'ru-RU-SvetlanaNeural',
-  ar: 'ar-EG-SalmaNeural',
-  hi: 'hi-IN-SwaraNeural',
-  zh: 'zh-CN-XiaoxiaoNeural',
-  ja: 'ja-JP-NanamiNeural',
-  ko: 'ko-KR-SunHiNeural',
-  tr: 'tr-TR-EmelNeural',
-  nl: 'nl-NL-ColetteNeural',
-  pl: 'pl-PL-ZofiaNeural',
+  en: "en-US-AriaNeural",
+  es: "es-ES-Standard-A",
+  fr: "fr-FR-DeniseNeural",
+  de: "de-DE-KatjaNeural",
+  it: "it-IT-ElsaNeural",
+  pt: "pt-BR-FranciscaNeural",
+  ru: "ru-RU-SvetlanaNeural",
+  ar: "ar-XA-Standard-B",
+  hi: "hi-IN-SwaraNeural",
+  zh: "zh-CN-XiaoxiaoNeural",
+  ja: "ja-JP-NanamiNeural",
+  ko: "ko-KR-SunHiNeural",
+  tr: "tr-TR-EmelNeural",
+  nl: "nl-NL-ColetteNeural",
+  pl: "pl-PL-ZofiaNeural",
 };
 
 export const EDGE_VOICE_OPTIONS = {
-  en: ['en-US-JennyNeural', 'en-US-GuyNeural', 'en-US-AriaNeural', 'en-US-AndrewNeural'],
-  es: ['es-ES-ElviraNeural', 'es-ES-AlvaroNeural', 'es-MX-DaliaNeural'],
-  fr: ['fr-FR-DeniseNeural', 'fr-FR-HenriNeural', 'fr-CA-SylvieNeural'],
-  de: ['de-DE-KatjaNeural', 'de-DE-ConradNeural', 'de-AT-IngridNeural'],
-  it: ['it-IT-ElsaNeural', 'it-IT-DiegoNeural'],
-  pt: ['pt-BR-FranciscaNeural', 'pt-BR-AntonioNeural', 'pt-PT-FernandaNeural'],
-  ru: ['ru-RU-SvetlanaNeural', 'ru-RU-DmitryNeural'],
-  ar: [
-    'ar-EG-SalmaNeural',
-    'ar-EG-ShakirNeural',
-    'ar-SA-ZariyahNeural',
-    'ar-SA-HamedNeural',
-    'ar-AE-FatimaNeural',
-    'ar-AE-HamdanNeural',
+  en: [
+    "en-US-JennyNeural",
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",
+    "en-US-AndrewNeural",
   ],
-  hi: ['hi-IN-SwaraNeural', 'hi-IN-MadhurNeural'],
-  zh: ['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-CN-XiaochenNeural'],
-  ja: ['ja-JP-NanamiNeural', 'ja-JP-KeitaNeural'],
-  ko: ['ko-KR-SunHiNeural', 'ko-KR-InJoonNeural'],
-  tr: ['tr-TR-EmelNeural', 'tr-TR-AhmetNeural'],
-  nl: ['nl-NL-ColetteNeural', 'nl-NL-MaartenNeural'],
-  pl: ['pl-PL-ZofiaNeural', 'pl-PL-MarekNeural'],
+  es: ["es-ES-ElviraNeural", "es-ES-AlvaroNeural", "es-MX-DaliaNeural"],
+  fr: ["fr-FR-DeniseNeural", "fr-FR-HenriNeural", "fr-CA-SylvieNeural"],
+  de: ["de-DE-KatjaNeural", "de-DE-ConradNeural", "de-AT-IngridNeural"],
+  it: ["it-IT-ElsaNeural", "it-IT-DiegoNeural"],
+  pt: ["pt-BR-FranciscaNeural", "pt-BR-AntonioNeural", "pt-PT-FernandaNeural"],
+  ru: ["ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural"],
+  ar: [
+    "ar-EG-SalmaNeural",
+    "ar-EG-ShakirNeural",
+    "ar-SA-ZariyahNeural",
+    "ar-SA-HamedNeural",
+    "ar-AE-FatimaNeural",
+    "ar-AE-HamdanNeural",
+  ],
+  hi: ["hi-IN-SwaraNeural", "hi-IN-MadhurNeural"],
+  zh: ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaochenNeural"],
+  ja: ["ja-JP-NanamiNeural", "ja-JP-KeitaNeural"],
+  ko: ["ko-KR-SunHiNeural", "ko-KR-InJoonNeural"],
+  tr: ["tr-TR-EmelNeural", "tr-TR-AhmetNeural"],
+  nl: ["nl-NL-ColetteNeural", "nl-NL-MaartenNeural"],
+  pl: ["pl-PL-ZofiaNeural", "pl-PL-MarekNeural"],
 };
 
 const stripMarkdown = (text) =>
-  String(text || '')
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/_(.*?)_/g, '$1')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/\s{2,}/g, ' ')
+  String(text || "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/_(.*?)_/g, "$1")
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\s{2,}/g, " ")
     .trim();
 
 const escapeXml = (text) =>
-  String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 
 const KHz100ns = 10000000;
 
@@ -82,20 +87,21 @@ const KHz100ns = 10000000;
 // Voice used for the English fragments inside a non-English narration. It is
 // matched to the gender of the target voice so the dub keeps one speaker.
 const TECHNICAL_TERM_VOICE_MAP = {
-  'ar-EG-SalmaNeural': 'en-US-JennyNeural',
-  'ar-EG-ShakirNeural': 'en-US-GuyNeural',
-  'ar-AE-FatimaNeural': 'en-US-JennyNeural',
-  'ar-AE-HamdanNeural': 'en-US-GuyNeural',
-  'ar-SA-ZariyahNeural': 'en-US-JennyNeural',
-  'ar-SA-HamedNeural': 'en-US-GuyNeural',
+  "ar-EG-SalmaNeural": "en-US-JennyNeural",
+  "ar-EG-ShakirNeural": "en-US-GuyNeural",
+  "ar-AE-FatimaNeural": "en-US-JennyNeural",
+  "ar-AE-HamdanNeural": "en-US-GuyNeural",
+  "ar-SA-ZariyahNeural": "en-US-JennyNeural",
+  "ar-SA-HamedNeural": "en-US-GuyNeural",
 };
 
-const DEFAULT_TECHNICAL_TERM_VOICE = 'en-US-AriaNeural';
+const DEFAULT_TECHNICAL_TERM_VOICE = "en-US-AriaNeural";
 
 export const technicalTermVoiceFor = (voice) =>
-  TECHNICAL_TERM_VOICE_MAP[String(voice || '')] || DEFAULT_TECHNICAL_TERM_VOICE;
+  TECHNICAL_TERM_VOICE_MAP[String(voice || "")] || DEFAULT_TECHNICAL_TERM_VOICE;
 
-const ARABIC_SCRIPT_PATTERN = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+const ARABIC_SCRIPT_PATTERN =
+  /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
 const LATIN_RUN_PATTERN = /[A-Za-z0-9]/;
 // Letters and digits are speakable; diacritics and punctuation on their own
 // are not (Edge returns empty audio for them).
@@ -107,7 +113,7 @@ const SPEAKABLE_PATTERN = /[\p{L}\p{N}]/u;
  * follow.
  */
 export const splitIntoScriptRuns = (text, { minLatinLength = 2 } = {}) => {
-  const value = String(text || '');
+  const value = String(text || "");
   if (!value) return [];
 
   const runs = [];
@@ -124,13 +130,13 @@ export const splitIntoScriptRuns = (text, { minLatinLength = 2 } = {}) => {
 
   for (const ch of value) {
     if (ARABIC_SCRIPT_PATTERN.test(ch)) {
-      push('target', ch);
+      push("target", ch);
     } else if (LATIN_RUN_PATTERN.test(ch)) {
-      push('latin', ch);
+      push("latin", ch);
     } else if (current) {
       current.text += ch;
     } else {
-      current = { kind: 'target', text: ch };
+      current = { kind: "target", text: ch };
     }
   }
   if (current) runs.push(current);
@@ -144,7 +150,8 @@ export const splitIntoScriptRuns = (text, { minLatinLength = 2 } = {}) => {
   // own request. Both are glued to a neighbour.
   const isGlueable = (run) =>
     !SPEAKABLE_PATTERN.test(run.text) ||
-    (run.kind === 'latin' && run.text.replace(/[^A-Za-z0-9]/g, '').length < minLatinLength);
+    (run.kind === "latin" &&
+      run.text.replace(/[^A-Za-z0-9]/g, "").length < minLatinLength);
 
   const merged = [];
   for (let i = 0; i < cleaned.length; i += 1) {
@@ -170,20 +177,25 @@ export const splitIntoScriptRuns = (text, { minLatinLength = 2 } = {}) => {
   return merged
     .map((run) => ({
       ...run,
-      text: run.kind === 'latin' ? run.text.replace(/\p{M}/gu, '').trim() : run.text,
+      text:
+        run.kind === "latin"
+          ? run.text.replace(/\p{M}/gu, "").trim()
+          : run.text,
     }))
     .filter((run) => run.text);
 };
 
 const runFfmpegTrim = (args) =>
   new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegStatic, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    proc.stderr.on('data', (chunk) => {
+    const proc = spawn(ffmpegStatic, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    proc.on('error', (err) => reject(err));
-    proc.on('close', (code) => {
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg failed (${code}): ${stderr.slice(-500)}`));
     });
@@ -192,36 +204,63 @@ const runFfmpegTrim = (args) =>
 const runFfmpegConcat = (inputFiles, outputFile) =>
   new Promise((resolve, reject) => {
     const listFile = path.join(os.tmpdir(), `concat-${Date.now()}.txt`);
-    fs.writeFileSync(listFile, inputFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'));
-    const proc = spawn(ffmpegStatic, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outputFile], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    proc.stderr.on('data', (chunk) => {
+    fs.writeFileSync(
+      listFile,
+      inputFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n"),
+    );
+    const proc = spawn(
+      ffmpegStatic,
+      [
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listFile,
+        "-c",
+        "copy",
+        outputFile,
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    proc.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    proc.on('error', (err) => reject(err));
-    proc.on('close', (code) => {
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
       try {
         fs.unlinkSync(listFile);
       } catch {
         // ignore
       }
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg concat failed (${code}): ${stderr.slice(-500)}`));
+      else
+        reject(
+          new Error(`ffmpeg concat failed (${code}): ${stderr.slice(-500)}`),
+        );
     });
   });
 
 const synthesizeChunk = async (chunkText, voice, rate) => {
   // No debug output in production; keep synthesis quiet.
-  const tts = new MsEdgeTTS({ connectionTimeoutMs: 30000, synthesisTimeoutMs: 120000 });
+  const tts = new MsEdgeTTS({
+    connectionTimeoutMs: 30000,
+    synthesisTimeoutMs: 120000,
+  });
   // 96 kbit/s mono is noticeably clearer than the old 48 kbit/s stream.
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3, {
     wordBoundaryEnabled: true,
     sentenceBoundaryEnabled: true,
   });
 
-  const lang = String(voice || 'en-US').split('-').slice(0, 2).join('-');
+  const lang = String(voice || "en-US")
+    .split("-")
+    .slice(0, 2)
+    .join("-");
   const ssml =
     `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
     `<voice name="${voice}"><prosody rate="${rate}" pitch="+0.8Hz">${escapeXml(chunkText)}</prosody></voice></speak>`;
@@ -231,12 +270,18 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
   const metadataItems = [];
 
   const audioPromise = new Promise((resolve, reject) => {
-    audioStream.on('data', (c) => audioChunks.push(c));
-    audioStream.on('end', () => { console.log('[tts] audio end', voice, 'chunks', audioChunks.length); resolve(); });
-    audioStream.on('error', (e) => { console.error('[tts] audio error', voice, e?.message); reject(e); });
+    audioStream.on("data", (c) => audioChunks.push(c));
+    audioStream.on("end", () => {
+      console.log("[tts] audio end", voice, "chunks", audioChunks.length);
+      resolve();
+    });
+    audioStream.on("error", (e) => {
+      console.error("[tts] audio error", voice, e?.message);
+      reject(e);
+    });
   });
   if (metadataStream) {
-    metadataStream.on('data', (chunk) => {
+    metadataStream.on("data", (chunk) => {
       try {
         const json = JSON.parse(chunk.toString());
         metadataItems.push(...(json.Metadata || []));
@@ -244,14 +289,16 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
         // ignore malformed chunks
       }
     });
-    metadataStream.on('error', () => {});
+    metadataStream.on("error", () => {});
   }
 
   await audioPromise;
-  if (!audioChunks.length) throw new Error('Edge TTS returned empty audio');
+  if (!audioChunks.length) throw new Error("Edge TTS returned empty audio");
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const sentenceBoundaries = metadataItems.filter((b) => b.Type === 'SentenceBoundary');
-  const wordBoundaries = metadataItems.filter((b) => b.Type === 'WordBoundary');
+  const sentenceBoundaries = metadataItems.filter(
+    (b) => b.Type === "SentenceBoundary",
+  );
+  const wordBoundaries = metadataItems.filter((b) => b.Type === "WordBoundary");
 
   const segments = [];
   if (sentenceBoundaries.length > 0) {
@@ -264,7 +311,11 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
     }
   } else {
     const words = chunkText.split(/\s+/).length;
-    segments.push({ start: 0, end: Math.max(1, words / 2.5), text: stripMarkdown(chunkText) });
+    segments.push({
+      start: 0,
+      end: Math.max(1, words / 2.5),
+      text: stripMarkdown(chunkText),
+    });
   }
 
   const wordSegments = [];
@@ -280,19 +331,32 @@ const synthesizeChunk = async (chunkText, voice, rate) => {
     }
   } else {
     // Fallback: at least one segment for the whole chunk.
-    wordSegments.push({ start: 0, end: segments[0]?.end || 1, text: stripMarkdown(chunkText) });
+    wordSegments.push({
+      start: 0,
+      end: segments[0]?.end || 1,
+      text: stripMarkdown(chunkText),
+    });
   }
 
   const chunkEnd =
     segments.length > 0
       ? segments[segments.length - 1].end
-      : (wordSegments.length > 0 ? wordSegments[wordSegments.length - 1].end : Math.max(1, chunkText.split(/\s+/).length / 2.5));
+      : wordSegments.length > 0
+        ? wordSegments[wordSegments.length - 1].end
+        : Math.max(1, chunkText.split(/\s+/).length / 2.5);
 
-  return { buffer: Buffer.concat(audioChunks), segments, wordSegments, chunkEnd };
+  return {
+    buffer: Buffer.concat(audioChunks),
+    segments,
+    wordSegments,
+    chunkEnd,
+  };
 };
 
 const chunkElevenLabsText = (text) =>
-  (String(text || '').match(/.{1,3500}/gs) || [String(text || '')]).map((c) => c.trim()).filter(Boolean);
+  (String(text || "").match(/.{1,3500}/gs) || [String(text || "")])
+    .map((c) => c.trim())
+    .filter(Boolean);
 
 const alignmentToWordSegments = (alignment) => {
   const chars = alignment?.characters || [];
@@ -311,7 +375,11 @@ const alignmentToWordSegments = (alignment) => {
       current.text += ch;
       current.end = Number(ends[i] ?? current.end);
     } else {
-      current = { text: ch, start: Number(starts[i] ?? 0), end: Number(ends[i] ?? 0) };
+      current = {
+        text: ch,
+        start: Number(starts[i] ?? 0),
+        end: Number(ends[i] ?? 0),
+      };
     }
   }
   if (current) words.push(current);
@@ -332,7 +400,10 @@ const alignmentToSentenceSegments = (wordSegments) => {
     if (/[.!?]$/.test(word.text)) {
       const start = current[0].start;
       const end = current[current.length - 1].end;
-      const text = current.map((w) => w.text).join(' ').trim();
+      const text = current
+        .map((w) => w.text)
+        .join(" ")
+        .trim();
       if (text) sentences.push({ start, end, text });
       current = [];
     }
@@ -340,7 +411,10 @@ const alignmentToSentenceSegments = (wordSegments) => {
   if (current.length) {
     const start = current[0].start;
     const end = current[current.length - 1].end;
-    const text = current.map((w) => w.text).join(' ').trim();
+    const text = current
+      .map((w) => w.text)
+      .join(" ")
+      .trim();
     if (text) sentences.push({ start, end, text });
   }
   return sentences;
@@ -348,19 +422,19 @@ const alignmentToSentenceSegments = (wordSegments) => {
 
 const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
   if (!env.elevenLabsApiKey) {
-    const err = new Error('ELEVENLABS_API_KEY is not configured');
+    const err = new Error("ELEVENLABS_API_KEY is not configured");
     err.statusCode = 500;
     throw err;
   }
 
-  const client = new (await import('elevenlabs')).ElevenLabsClient({
+  const client = new (await import("elevenlabs")).ElevenLabsClient({
     apiKey: env.elevenLabsApiKey,
   });
 
-  const modelId = options.modelId || 'eleven_multilingual_v2';
+  const modelId = options.modelId || "eleven_multilingual_v2";
   const report = options.onProgress;
   const clean = stripMarkdown(text);
-  if (!clean.trim()) throw new Error('No speech could be generated');
+  if (!clean.trim()) throw new Error("No speech could be generated");
 
   const chunks = chunkElevenLabsText(clean);
   const results = [];
@@ -372,27 +446,27 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
     let response;
     try {
       response = await client.textToSpeech.convertWithTimestamps(voiceId, {
-      text: chunk,
-      model_id: modelId,
-      voice_settings: {
-        stability: 0.45,
-        similarity_boost: 0.8,
-        style: 0.35,
-        use_speaker_boost: true,
-      },
-    });
-
+        text: chunk,
+        model_id: modelId,
+        voice_settings: {
+          stability: 0.45,
+          similarity_boost: 0.8,
+          style: 0.35,
+          use_speaker_boost: true,
+        },
+      });
     } catch (error) {
       const detail = error?.body?.detail;
-      const message = detail?.message || error?.message || 'ElevenLabs request failed';
+      const message =
+        detail?.message || error?.message || "ElevenLabs request failed";
       const err = new Error(message);
       err.statusCode = error?.statusCode || 400;
       throw err;
     }
 
-    if (!response) throw new Error('ElevenLabs returned no response');
-    const buffer = Buffer.from(response.audio_base64 || '', 'base64');
-    if (!buffer.length) throw new Error('ElevenLabs returned empty audio');
+    if (!response) throw new Error("ElevenLabs returned no response");
+    const buffer = Buffer.from(response.audio_base64 || "", "base64");
+    if (!buffer.length) throw new Error("ElevenLabs returned empty audio");
 
     const alignment = response.normalized_alignment || response.alignment;
     const wordSegments = alignmentToWordSegments(alignment);
@@ -400,7 +474,9 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
     const chunkEnd =
       wordSegments.length > 0
         ? wordSegments[wordSegments.length - 1].end
-        : (segments.length > 0 ? segments[segments.length - 1].end : Math.max(1, chunk.split(/\s+/).length / 2.5));
+        : segments.length > 0
+          ? segments[segments.length - 1].end
+          : Math.max(1, chunk.split(/\s+/).length / 2.5);
 
     results.push({ buffer });
     for (const seg of segments.length ? segments : wordSegments) {
@@ -433,7 +509,9 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
   if (buffers.length === 1) {
     finalBuffer = buffers[0];
   } else {
-    const files = buffers.map((b, i) => path.join(os.tmpdir(), `eleven-chunk-${Date.now()}-${i}.mp3`));
+    const files = buffers.map((b, i) =>
+      path.join(os.tmpdir(), `eleven-chunk-${Date.now()}-${i}.mp3`),
+    );
     files.forEach((f, i) => fs.writeFileSync(f, buffers[i]));
     const out = path.join(os.tmpdir(), `eleven-merged-${Date.now()}.mp3`);
     try {
@@ -454,7 +532,9 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
   const finalWordSegments = allWordSegments.filter((s) => s.text);
   return {
     buffer: finalBuffer,
-    segments: finalSegments.length ? finalSegments : [{ start: 0, end: 0, text: clean }],
+    segments: finalSegments.length
+      ? finalSegments
+      : [{ start: 0, end: 0, text: clean }],
     // Keep word-level timings too; downstream can use them as subtitles.
     wordSegments: finalWordSegments,
   };
@@ -462,36 +542,47 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
 
 const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
   if (!env.googleTtsApiKey) {
-    const err = new Error('GOOGLE_TTS_API_KEY is not configured');
+    const err = new Error("GOOGLE_TTS_API_KEY is not configured");
     err.statusCode = 500;
     throw err;
   }
   const clean = stripMarkdown(text);
-  if (!clean.trim()) throw new Error('No speech could be generated');
-  const name = String(voiceName || env.googleTtsVoice || '').trim();
-  if (!name) throw new Error('A Google TTS voice name is required (e.g. ar-XA-Wavenet-A)');
-  const languageCode = name.split('-').slice(0, 2).join('-');
+  if (!clean.trim()) throw new Error("No speech could be generated");
+  const name = String(voiceName || env.googleTtsVoice || "").trim();
+  if (!name)
+    throw new Error(
+      "A Google TTS voice name is required (e.g. ar-XA-Wavenet-A)",
+    );
+  const languageCode = name.split("-").slice(0, 2).join("-");
   const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(env.googleTtsApiKey)}`;
   const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       input: { text: clean },
       voice: { languageCode, name },
-      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0.0 },
+      audioConfig: { audioEncoding: "MP3", speakingRate: 1.0, pitch: 0.0 },
     }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data?.error?.message || `Google TTS failed (${res.status})`);
+    const err = new Error(
+      data?.error?.message || `Google TTS failed (${res.status})`,
+    );
     err.statusCode = res.status;
     throw err;
   }
-  const buffer = Buffer.from(String(data.audioContent || ''), 'base64');
-  if (!buffer.length) throw new Error('Google TTS returned empty audio');
+  const buffer = Buffer.from(String(data.audioContent || ""), "base64");
+  if (!buffer.length) throw new Error("Google TTS returned empty audio");
   return {
     buffer,
-    segments: [{ start: 0, end: Math.max(1, clean.split(/\\s+/).length / 2.5), text: clean }],
+    segments: [
+      {
+        start: 0,
+        end: Math.max(1, clean.split(/\\s+/).length / 2.5),
+        text: clean,
+      },
+    ],
     wordSegments: [],
   };
 };
@@ -502,13 +593,15 @@ const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
  * then falls back to the closest space before the limit.
  */
 export const splitIntoSpeechChunks = (text, maxLen = 260) => {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  const clean = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!clean) return [];
   if (clean.length <= maxLen) return [clean];
 
   // 1) break the text into sentences
   const sentences = [];
-  let buffer = '';
+  let buffer = "";
   for (const part of clean.split(/(?<=[.!?؟۔…])\s+/)) {
     const candidate = buffer ? `${buffer} ${part}` : part;
     if (candidate.length <= maxLen) {
@@ -525,10 +618,10 @@ export const splitIntoSpeechChunks = (text, maxLen = 260) => {
   for (const sentence of sentences) {
     let rest = sentence;
     while (rest.length > maxLen) {
-      let cut = rest.lastIndexOf(' ', maxLen);
+      let cut = rest.lastIndexOf(" ", maxLen);
       if (cut < maxLen * 0.5) {
         // no usable space: take the next space after the limit instead
-        const nextSpace = rest.indexOf(' ', maxLen);
+        const nextSpace = rest.indexOf(" ", maxLen);
         cut = nextSpace > 0 ? nextSpace : maxLen;
       }
       chunks.push(rest.slice(0, cut).trim());
@@ -564,8 +657,14 @@ const speakChunks = async (parts, voice, rate, depth = 0) => {
       });
     }
     const lastEnd =
-      (result.segments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
-      (result.wordSegments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      (result.segments || []).reduce(
+        (m, s) => Math.max(m, Number(s.end) || 0),
+        0,
+      ) ||
+      (result.wordSegments || []).reduce(
+        (m, s) => Math.max(m, Number(s.end) || 0),
+        0,
+      ) ||
       0;
     offset += lastEnd;
     // Small pause avoids Edge stream truncation on long runs.
@@ -588,7 +687,9 @@ const synthesizeChunkRobust = async (chunk, voice, rate, depth = 0) => {
     } catch (error) {
       lastError = error;
       if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * (attempt + 1)),
+        );
       }
     }
   }
@@ -598,19 +699,22 @@ const synthesizeChunkRobust = async (chunk, voice, rate, depth = 0) => {
   // of the SAME text using the SAME voice.
   const clean = stripMarkdown(chunk).trim();
   if (clean.length > 120 && depth < 4) {
-    const parts = splitIntoSpeechChunks(clean, Math.max(70, Math.ceil(clean.length / 2)));
+    const parts = splitIntoSpeechChunks(
+      clean,
+      Math.max(70, Math.ceil(clean.length / 2)),
+    );
     if (parts.length > 1) {
       console.warn(
-        '[tts] retrying failed chunk with the same voice in',
+        "[tts] retrying failed chunk with the same voice in",
         parts.length,
-        'shorter pieces:',
+        "shorter pieces:",
         voice,
       );
       return speakChunks(parts, voice, rate, depth + 1);
     }
   }
 
-  throw lastError || new Error('TTS chunk failed');
+  throw lastError || new Error("TTS chunk failed");
 };
 
 /**
@@ -621,13 +725,16 @@ const synthesizeChunkRobust = async (chunk, voice, rate, depth = 0) => {
  * the English names with an English voice, instead of the Arabic voice
  * mangling them into Arabic phonetics.
  */
-export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => {
-  const secondaryVoice =
-    options.secondaryVoice || technicalTermVoiceFor(voice);
+export const synthesizeSpeechMixedScript = async (
+  text,
+  voice,
+  options = {},
+) => {
+  const secondaryVoice = options.secondaryVoice || technicalTermVoiceFor(voice);
   const runs = splitIntoScriptRuns(text);
 
-  const hasLatin = runs.some((run) => run.kind === 'latin');
-  const hasTarget = runs.some((run) => run.kind === 'target');
+  const hasLatin = runs.some((run) => run.kind === "latin");
+  const hasTarget = runs.some((run) => run.kind === "target");
 
   if (!hasLatin || !hasTarget) {
     return synthesizeSpeech(text, voice, { ...options, mixedScript: false });
@@ -645,7 +752,7 @@ export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => 
     // whole sentence.
     if (!SPEAKABLE_PATTERN.test(run.text)) continue;
 
-    const runVoice = run.kind === 'latin' ? secondaryVoice : voice;
+    const runVoice = run.kind === "latin" ? secondaryVoice : voice;
 
     let result = null;
     try {
@@ -654,7 +761,7 @@ export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => 
         mixedScript: false,
       });
     } catch (error) {
-      console.warn('[tts] mixed script run failed, skipping:', error?.message);
+      console.warn("[tts] mixed script run failed, skipping:", error?.message);
       continue;
     }
     if (!result?.buffer?.length) continue;
@@ -681,8 +788,14 @@ export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => 
     }
 
     const lastEnd =
-      (result.segments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
-      (result.wordSegments || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0) ||
+      (result.segments || []).reduce(
+        (m, s) => Math.max(m, Number(s.end) || 0),
+        0,
+      ) ||
+      (result.wordSegments || []).reduce(
+        (m, s) => Math.max(m, Number(s.end) || 0),
+        0,
+      ) ||
       0;
     offset += lastEnd;
   }
@@ -712,13 +825,18 @@ export const synthesizeSpeechMixedScript = async (text, voice, options = {}) => 
  * concatenated byte for byte, while WAV files cannot (every file carries its
  * own header).
  */
-const pcmToWav = (pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) => {
+const pcmToWav = (
+  pcm,
+  sampleRate = 24000,
+  channels = 1,
+  bitsPerSample = 16,
+) => {
   const data = pcm || Buffer.alloc(0);
   const header = Buffer.alloc(44);
-  header.write('RIFF', 0, 'ascii');
+  header.write("RIFF", 0, "ascii");
   header.writeUInt32LE(36 + data.length, 4);
-  header.write('WAVE', 8, 'ascii');
-  header.write('fmt ', 12, 'ascii');
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20);
   header.writeUInt16LE(channels, 22);
@@ -726,7 +844,7 @@ const pcmToWav = (pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) => 
   header.writeUInt32LE((sampleRate * channels * bitsPerSample) / 8, 28);
   header.writeUInt16LE((channels * bitsPerSample) / 8, 32);
   header.writeUInt16LE(bitsPerSample, 34);
-  header.write('data', 36, 'ascii');
+  header.write("data", 36, "ascii");
   header.writeUInt32LE(data.length, 40);
   return Buffer.concat([header, data]);
 };
@@ -756,17 +874,17 @@ const trimToSpeechSpan = async (buffer, startSeconds, endSeconds) => {
   try {
     fs.writeFileSync(inputPath, buffer);
     await runFfmpegTrim([
-      '-y',
-      '-i',
+      "-y",
+      "-i",
       inputPath,
-      '-af',
+      "-af",
       `atrim=start=${safeStart.toFixed(3)}:end=${safeEnd.toFixed(3)},asetpts=PTS-STARTPTS`,
-      '-f',
-      's16le',
-      '-ar',
-      '24000',
-      '-ac',
-      '1',
+      "-f",
+      "s16le",
+      "-ar",
+      "24000",
+      "-ac",
+      "1",
       outputPath,
     ]);
 
@@ -774,7 +892,10 @@ const trimToSpeechSpan = async (buffer, startSeconds, endSeconds) => {
     const pcm = fs.readFileSync(outputPath);
     return pcm.length ? pcm : null;
   } catch (error) {
-    console.warn('[tts] speech trim failed, keeping original audio:', error?.message);
+    console.warn(
+      "[tts] speech trim failed, keeping original audio:",
+      error?.message,
+    );
     return null;
   } finally {
     for (const file of [inputPath, outputPath]) {
@@ -796,15 +917,15 @@ const decodeToPcm = async (buffer) => {
   try {
     fs.writeFileSync(inputPath, buffer);
     await runFfmpegTrim([
-      '-y',
-      '-i',
+      "-y",
+      "-i",
       inputPath,
-      '-f',
-      's16le',
-      '-ar',
-      '24000',
-      '-ac',
-      '1',
+      "-f",
+      "s16le",
+      "-ar",
+      "24000",
+      "-ac",
+      "1",
       outputPath,
     ]);
     if (!fs.existsSync(outputPath)) return null;
@@ -825,17 +946,21 @@ const decodeToPcm = async (buffer) => {
 
 export const synthesizeSpeech = async (text, voice, options = {}) => {
   const elevenLabsVoiceId =
-    options.voiceId || options.elevenLabsVoiceId || env.elevenLabsDefaultVoiceId;
+    options.voiceId ||
+    options.elevenLabsVoiceId ||
+    env.elevenLabsDefaultVoiceId;
 
   // When the caller selected a specific Edge speaker we must use exactly that
   // speaker. Otherwise a leftover ElevenLabs/Google voice from .env would be
   // used instead and the dub would not sound like the chosen voice.
   const provider = options.provider;
-  const looksLikeEdgeVoice = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(String(voice || ''));
+  const looksLikeEdgeVoice = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(
+    String(voice || ""),
+  );
   const forceEdge =
-    provider === 'edge' ||
+    provider === "edge" ||
     options.forceEdge === true ||
-    (provider !== 'elevenlabs' && provider !== 'google' && looksLikeEdgeVoice);
+    (provider !== "elevenlabs" && provider !== "google" && looksLikeEdgeVoice);
 
   // Mixed script narration: English technical names and numbers inside an
   // Arabic sentence are spoken by an English voice.
@@ -847,27 +972,35 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
     try {
       return await synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
     } catch (error) {
-      const message = String(error?.message || '');
+      const message = String(error?.message || "");
       // Do not stop the whole lesson if an optional paid voice is out of credits.
-      console.warn('[tts] ElevenLabs failed; trying Google Cloud TTS:', message);
+      console.warn(
+        "[tts] ElevenLabs failed; trying Google Cloud TTS:",
+        message,
+      );
     }
   }
 
-  const googleVoice = String(options.googleVoice || env.googleTtsVoice || '').trim();
+  const googleVoice = String(
+    options.googleVoice || env.googleTtsVoice || "",
+  ).trim();
   if (!forceEdge && googleVoice && env.googleTtsApiKey) {
     try {
       return await synthesizeWithGoogleCloud(text, googleVoice, options);
     } catch (error) {
-      console.warn('[tts] Google Cloud TTS failed; falling back to free Edge TTS:', error?.message || error);
+      console.warn(
+        "[tts] Google Cloud TTS failed; falling back to free Edge TTS:",
+        error?.message || error,
+      );
     }
   }
 
-  const rate = options.rate || '-3%';
+  const rate = options.rate || "-3%";
   const report = options.onProgress;
   const clean = stripMarkdown(text);
   const chunks = splitIntoSpeechChunks(clean, 260).filter(Boolean);
 
-  if (chunks.length === 0) throw new Error('No speech could be generated');
+  if (chunks.length === 0) throw new Error("No speech could be generated");
 
   const results = [];
   const allSegments = [];
@@ -912,7 +1045,9 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   if (buffers.length === 1) {
     finalBuffer = buffers[0];
   } else {
-    const files = buffers.map((b, i) => path.join(os.tmpdir(), `tts-chunk-${Date.now()}-${i}.mp3`));
+    const files = buffers.map((b, i) =>
+      path.join(os.tmpdir(), `tts-chunk-${Date.now()}-${i}.mp3`),
+    );
     files.forEach((f, i) => fs.writeFileSync(f, buffers[i]));
     const out = path.join(os.tmpdir(), `tts-merged-${Date.now()}.mp3`);
     try {
@@ -938,7 +1073,9 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   let pcm = null;
   let shift = 0;
   if (finalWordSegments.length > 0) {
-    const first = Math.min(...finalWordSegments.map((s) => Number(s.start) || 0));
+    const first = Math.min(
+      ...finalWordSegments.map((s) => Number(s.start) || 0),
+    );
     const last = Math.max(...finalWordSegments.map((s) => Number(s.end) || 0));
     if (last > first) {
       const trimmed = await trimToSpeechSpan(finalBuffer, first, last);

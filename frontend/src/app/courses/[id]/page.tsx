@@ -1,4 +1,5 @@
 import CourseDetailClient from "./client";
+import { fetchCourse } from "@/lib/server-api";
 
 export const instant = false;
 
@@ -8,5 +9,6 @@ export default async function CourseDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <CourseDetailClient id={id} />;
+  const initialCourse = await fetchCourse(id);
+  return <CourseDetailClient id={id} initialCourse={initialCourse} />;
 }

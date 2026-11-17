@@ -3,6 +3,7 @@ import healthRoutes from './health.routes.js';
 import authRoutes from './auth.routes.js';
 import videoRoutes from './video.routes.js';
 import courseRoutes from './course.routes.js';
+import publishQueueRoutes from './publishQueue.routes.js';
 import adminRoutes from './admin.routes.js';
 import billingRoutes from './billing.routes.js';
 import { protectSSE } from '../middleware/auth.middleware.js';
@@ -20,6 +21,7 @@ router.get('/videos/:id/lessons/:language/subtitles.vtt', protectSSE, video.stre
 
 router.use('/videos', videoRoutes);
 router.use('/courses', courseRoutes);
+router.use('/publish-queue', publishQueueRoutes);
 router.use('/admin', adminRoutes);
 router.use('/billing', billingRoutes);
 

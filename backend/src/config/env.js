@@ -30,6 +30,10 @@ export const env = {
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
   deepseekBaseUrl:
     process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+  crowllmApiKey: process.env.CROWLLM_API_KEY || '',
+  crowllmBaseUrl:
+    process.env.CROWLLM_BASE_URL || 'https://crowllm.com/v1',
+  crowllmModel: process.env.CROWLLM_MODEL || '',
   googleTtsApiKey: process.env.GOOGLE_TTS_API_KEY || '',
   googleTtsVoice: process.env.GOOGLE_TTS_VOICE || '',
   // AI provider selection: 'groq' (default) or 'ollama'
@@ -51,9 +55,25 @@ export const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'ai-youtube-automation',
+  // 'cloudinary', 'local', or 'auto' (try cloudinary then local on limits)
+  storageProvider: (process.env.STORAGE_PROVIDER || 'auto').toLowerCase(),
+  // Absolute path for local uploads (e.g. D:\ai-youtube-uploads). Defaults to backend/uploads.
+  uploadsDir: process.env.UPLOADS_DIR || process.env.LOCAL_STORAGE_PATH || '',
+  serverUrl: process.env.SERVER_URL || process.env.API_URL || '',
   backgroundMusicUrl: process.env.BACKGROUND_MUSIC_URL || '',
   elevenLabsApiKey: String(process.env.ELEVENLABS_API_KEY || '').trim().split(/\s+/)[0],
   elevenLabsDefaultVoiceId: String(process.env.ELEVENLABS_VOICE_ID || '').trim().split(/\s+/)[0],
+  // Scheduled publishing queue. '1' enables the background worker.
+  publishQueueEnabled: process.env.PUBLISH_QUEUE_ENABLED ?? '1',
+  publishQueueIntervalMs: Number(process.env.PUBLISH_QUEUE_INTERVAL_MS) || 5 * 60 * 1000,
+  // Either a per-day target (2-3 videos/day) or an explicit gap in hours.
+  publishVideosPerDay: Number(process.env.PUBLISH_VIDEOS_PER_DAY) || 0,
+  publishGapHours: Number(process.env.PUBLISH_GAP_HOURS) || 7,
+  publishStartHour: process.env.PUBLISH_START_HOUR ?? '9',
+  publishRetryHour: process.env.PUBLISH_RETRY_HOUR ?? '10',
+  publishMinLeadMinutes: Number(process.env.PUBLISH_MIN_LEAD_MINUTES) || 30,
+  publishSchedulingMode: (process.env.PUBLISH_SCHEDULING_MODE || 'youtube').toLowerCase(),
+  publishMaxAttempts: Number(process.env.PUBLISH_MAX_ATTEMPTS) || 5,
 };
 
 export const validateEnv = () => {

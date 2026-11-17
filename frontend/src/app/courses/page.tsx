@@ -191,6 +191,13 @@ export default function CoursesPage() {
                   (lesson) => lesson.youtubeUrl || lesson.youtubeVideoId,
                 ).length;
                 const isCollapsed = Boolean(collapsedCourses[course._id]);
+                const playlistUrl =
+                  course.youtubePlaylistUrl ||
+                  (course.playlistId
+                    ? `https://www.youtube.com/playlist?list=${course.playlistId}`
+                    : course.youtubePlaylistId
+                      ? `https://www.youtube.com/playlist?list=${course.youtubePlaylistId}`
+                      : null);
 
                 return (
                   <Card key={course._id}>
@@ -273,9 +280,9 @@ export default function CoursesPage() {
                               {course.playlistId}
                             </p>
                           )}
-                          {course.youtubePlaylistUrl && (
+                          {playlistUrl && (
                             <a
-                              href={course.youtubePlaylistUrl}
+                              href={playlistUrl}
                               target="_blank"
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 text-xs text-primary hover:underline"

@@ -5,6 +5,7 @@ import { spawn } from "child_process";
 import ffmpegStatic from "ffmpeg-static";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
+import { resolveSourcePath, storeFile, isLocalStorage } from "./storage.service.js";
 import {
   generateEducationalScript,
   translateTranscriptSegments,
@@ -253,7 +254,7 @@ export const generateLessonVideo = async ({
         ? [
             "-y",
             "-i",
-            video.publicUrl,
+            sourceInput,
             "-i",
             audioFile,
             "-stream_loop",
@@ -285,7 +286,7 @@ export const generateLessonVideo = async ({
         : [
             "-y",
             "-i",
-            video.publicUrl,
+            sourceInput,
             "-i",
             audioFile,
             "-stream_loop",
@@ -319,7 +320,7 @@ export const generateLessonVideo = async ({
         ? [
             "-y",
             "-i",
-            video.publicUrl,
+            sourceInput,
             "-i",
             audioFile,
             "-filter_complex",
@@ -347,7 +348,7 @@ export const generateLessonVideo = async ({
         : [
             "-y",
             "-i",
-            video.publicUrl,
+            sourceInput,
             "-i",
             audioFile,
             "-map",
@@ -376,12 +377,19 @@ export const generateLessonVideo = async ({
     await runFfmpeg(ffmpegArgs, TEMP_DIR);
     await report(82);
 
-    const result = await uploadFileWithTimeout(outputFile, {
-      resource_type: "video",
-      folder: `${env.cloudinaryFolder}/lessons`,
-      use_filename: true,
-      unique_filename: true,
-      overwrite: false,
+    const result = await storeFile({
+      filePath: outputFile,
+      subdir: "lessons",
+      originalName: path.basename(outputFile),
+      mimeType: "video/mp4",
+      preferLocal: preferLocalOutput,
+      cloudinaryOptions: {
+        resource_type: "video",
+        folder: `${env.cloudinaryFolder}/lessons`,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      },
     });
     await report(92);
 
@@ -409,14 +417,21 @@ export const generateLessonVideo = async ({
     fs.writeFileSync(subtitleFile, subtitleContent);
     let subtitlesUrl = null;
     try {
-      const subtitleUpload = await uploadFileWithTimeout(subtitleFile, {
-        resource_type: "raw",
-        folder: `${env.cloudinaryFolder}/lessons`,
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
+      const subtitleUpload = await storeFile({
+        filePath: subtitleFile,
+        subdir: "subtitles",
+        originalName: path.basename(subtitleFile),
+        mimeType: "text/vtt",
+        preferLocal: preferLocalOutput,
+        cloudinaryOptions: {
+          resource_type: "raw",
+          folder: `${env.cloudinaryFolder}/lessons`,
+          use_filename: true,
+          unique_filename: true,
+          overwrite: false,
+        },
       });
-      subtitlesUrl = subtitleUpload.secure_url;
+      subtitlesUrl = subtitleUpload.url;
     } catch (subtitleError) {
       console.error(
         "[lessonVideo] subtitle upload failed:",
@@ -427,10 +442,11 @@ export const generateLessonVideo = async ({
 
     return {
       language,
-      url: result.secure_url,
-      storagePath: result.public_id,
+      url: result.url,
+      storagePath: result.storagePath,
+      storageProvider: result.provider,
       durationSeconds: Math.round(
-        result.duration || video.durationSeconds || 0,
+        result.duration || result.raw?.duration || video.durationSeconds || 0,
       ),
       voice: selectedVoice,
       script,

@@ -174,27 +174,35 @@ const languageOptions = (video: {
   return all.filter((code, index) => all.indexOf(code) === index);
 };
 
-export default function VideoDetailClient({ id }: { id: string }) {
+export default function VideoDetailClient({
+  id,
+  initialVideo = null,
+}: {
+  id: string;
+  initialVideo?: VideoDetail | null;
+}) {
   const router = useRouter();
   const { user } = useAuth();
   const toast = useToast();
 
-  const [video, setVideo] = useState<VideoDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [video, setVideo] = useState<VideoDetail | null>(initialVideo);
+  const [loading, setLoading] = useState(!initialVideo);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [startingProcess, setStartingProcess] = useState(false);
 
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editVisibility, setEditVisibility] = useState("public");
-  const [editCategory, setEditCategory] = useState("27");
-  const [editTags, setEditTags] = useState("");
+  const [editTitle, setEditTitle] = useState(initialVideo?.title || "");
+  const [editDescription, setEditDescription] = useState(initialVideo?.description || "");
+  const [editVisibility, setEditVisibility] = useState(initialVideo?.youtubeVisibility || "public");
+  const [editCategory, setEditCategory] = useState(initialVideo?.youtubeCategoryId || "27");
+  const [editTags, setEditTags] = useState(initialVideo?.aiMetadata?.tags?.join(", ") || "");
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState("");
   const [dubLanguage, setDubLanguage] = useState("");
   const [generatingDub, setGeneratingDub] = useState(false);
   const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
+  const [googleVoiceOptionsByLang, setGoogleVoiceOptionsByLang] = useState<Record<string, string[]>>({});
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
   const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
   const [youtubeState, setYoutubeState] = useState<VideoYouTubeState | null>(null);
@@ -214,15 +222,22 @@ export default function VideoDetailClient({ id }: { id: string }) {
 
   const load = async () => {
     setLoading(true);
-    const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
-    if (res.success && res.data?.video) {
-      const v = res.data.video;
-      setVideo(v);
-      setEditTitle(v.title || "");
-      setEditDescription(v.description || "");
-      setEditVisibility(v.youtubeVisibility || "public");
-      setEditCategory(v.youtubeCategoryId || "27");
-      setEditTags(v.aiMetadata?.tags?.join(", ") || "");
+    let v: VideoDetail | null = initialVideo;
+    if (!v) {
+      const res = await api.get<{ video: VideoDetail }>(`/api/videos/${id}`);
+      if (res.success && res.data?.video) {
+        v = res.data.video;
+        setVideo(v);
+        setEditTitle(v.title || "");
+        setEditDescription(v.description || "");
+        setEditVisibility(v.youtubeVisibility || "public");
+        setEditCategory(v.youtubeCategoryId || "27");
+        setEditTags(v.aiMetadata?.tags?.join(", ") || "");
+      } else {
+        toast.error(res.message || "Failed to load video.");
+      }
+    }
+    if (v) {
       setSelectedLanguage(v.transcriptLanguage || v.originalLanguage || "en");
       // The channel language wins: the user explicitly declared which
       // language that channel publishes in. Without one, fall back to the
@@ -233,8 +248,6 @@ export default function VideoDetailClient({ id }: { id: string }) {
       setLessonLanguage(
         channelLanguage || v.targetLanguages?.[0] || v.transcriptLanguage || v.originalLanguage || "en",
       );
-    } else {
-      toast.error(res.message || "Failed to load video.");
     }
 
     // The published status on YouTube is read from YouTube itself, so the
@@ -269,14 +282,42 @@ export default function VideoDetailClient({ id }: { id: string }) {
   }, []);
 
   useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    if (opts.length && !opts.includes(dubEdgeVoice)) setDubEdgeVoice(opts[0]);
-  }, [dubLanguage, edgeVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+    api.get<{ voices: Record<string, string[]> }>("/api/videos/google-voices").then((res) => {
+      if (res.success && res.data?.voices) setGoogleVoiceOptionsByLang(res.data.voices);
+    });
+  }, []);
 
   useEffect(() => {
-    const opts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    if (opts.length && !opts.includes(lessonEdgeVoice)) setLessonEdgeVoice(opts[0]);
-  }, [lessonLanguage, edgeVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+    const langBase = String(dubLanguage || "").toLowerCase().split("-")[0];
+    const edgeOpts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const googleOpts = googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const allOpts = [...googleOpts, ...edgeOpts];
+    const preferredDefault =
+      langBase === "ar"
+        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        : langBase === "es"
+          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
+          : (edgeOpts[0] || googleOpts[0] || "");
+    const belongsToLang = dubEdgeVoice.toLowerCase().startsWith(langBase);
+    const isAvailable = !dubEdgeVoice || allOpts.includes(dubEdgeVoice);
+    if (preferredDefault && (!dubEdgeVoice || !belongsToLang || !isAvailable)) setDubEdgeVoice(preferredDefault);
+  }, [dubLanguage, edgeVoiceOptionsByLang, googleVoiceOptionsByLang, dubEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+
+  useEffect(() => {
+    const langBase = String(lessonLanguage || "").toLowerCase().split("-")[0];
+    const edgeOpts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const googleOpts = googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
+    const allOpts = [...googleOpts, ...edgeOpts];
+    const preferredDefault =
+      langBase === "ar"
+        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        : langBase === "es"
+          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
+          : (edgeOpts[0] || googleOpts[0] || "");
+    const belongsToLang = lessonEdgeVoice.toLowerCase().startsWith(langBase);
+    const isAvailable = !lessonEdgeVoice || allOpts.includes(lessonEdgeVoice);
+    if (preferredDefault && (!lessonEdgeVoice || !belongsToLang || !isAvailable)) setLessonEdgeVoice(preferredDefault);
+  }, [lessonLanguage, edgeVoiceOptionsByLang, googleVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
 
   const saveChanges = async () => {
     if (!video) return;
@@ -299,9 +340,22 @@ export default function VideoDetailClient({ id }: { id: string }) {
     setSaving(false);
   };
 
+  const startProcessing = async () => {
+    if (!video) return;
+    setStartingProcess(true);
+    const res = await api.post(`/api/videos/${video._id}/process`);
+    if (res.success) {
+      toast.success(res.message || "Processing started.");
+      await load();
+    } else {
+      toast.error(res.message || "Failed to start processing.");
+    }
+    setStartingProcess(false);
+  };
+
   const deleteVideo = async () => {
     if (!video) return;
-    if (!window.confirm("Delete this video and its files from Cloudinary?")) return;
+    if (!window.confirm("Delete this video and its files from storage?")) return;
     setDeleting(true);
     const res = await api.delete(`/api/videos/${video._id}`);
     if (res.success) {
@@ -466,6 +520,21 @@ export default function VideoDetailClient({ id }: { id: string }) {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {video.status === "processing" && <Progress value={video.progress || 0} />}
+                  {(video.status === "pending" || video.status === "failed" || (!video.aiMetadata?.summary && video.status !== "processing")) && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="button" onClick={startProcessing} disabled={startingProcess}>
+                        {startingProcess ? "Starting…" : video.status === "failed" ? "Retry processing" : "Start processing"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        Runs transcription, AI metadata, and translation (needed for dubbing).
+                      </span>
+                    </div>
+                  )}
+                  {video.lastError?.message && video.status === "failed" && (
+                    <p className="text-sm text-destructive">
+                      Last error: {video.lastError.message} {video.lastError.stage ? `(stage: ${video.lastError.stage})` : ""}
+                    </p>
+                  )}
                   {video.publicUrl && (
                     <div className="space-y-2">
                       <video
@@ -778,7 +847,13 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
                         {(edgeVoiceOptionsByLang[dubLanguage] || []).map((v) => (
-                          <option key={v} value={v}>{v}</option>
+                          <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
+                        ))}
+                        {(googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
+                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
+                        ))}
+                        {elevenVoices.map((v) => (
+                          <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
                     </div>
@@ -1017,7 +1092,13 @@ export default function VideoDetailClient({ id }: { id: string }) {
                         className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
                         {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
-                          <option key={v} value={v}>{v}</option>
+                          <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
+                        ))}
+                        {(googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
+                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
+                        ))}
+                        {elevenVoices.map((v) => (
+                          <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
                       <Label htmlFor="lessonVoiceId">ElevenLabs voice ID (optional)</Label>

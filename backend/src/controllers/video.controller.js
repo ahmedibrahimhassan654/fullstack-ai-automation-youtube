@@ -7,6 +7,17 @@ const YOUTUBE_TOKEN_FIELDS =
 import Video from "../models/Video.js";
 import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
+import fs from "fs";
+import path from "path";
+import {
+  storeBuffer,
+  storeFile,
+  deleteStored,
+  isLocalStorage,
+  readSourceBuffer,
+  resolveSourcePath,
+  renameLocalStoredFile,
+} from "../services/storage.service.js";
 import { transcribeAudio } from "../services/transcription.service.js";
 import { publishProgress, subscribeProgress } from "../lib/progressBus.js";
 import {
@@ -32,6 +43,7 @@ import {
   youtubeFetch,
   setYouTubeThumbnail,
   replyYouTubeComment as replyToYouTubeComment,
+  postYouTubeComment,
 } from "../services/youtubePublish.service.js";
 import User from "../models/User.js";
 import Course from "../models/Course.js";
@@ -40,6 +52,7 @@ import {
   getVideoYouTubeState,
   reconcilePublishedLesson,
 } from "../services/youtubeSync.service.js";
+import { buildPublishDescription } from "../services/publishScheduler.service.js";
 
 const emitVideoProgress = (video) => {
   if (!video) return;
@@ -173,13 +186,19 @@ const normalizeLinks = (value) => {
     .filter(Boolean);
 };
 
-export const uploadVideo = asyncHandler(async (req, res) => {
-  if (!isCloudinaryConfigured()) {
-    const err = new Error("Cloudinary is not configured on the server");
-    err.statusCode = 500;
-    throw err;
-  }
+const stripExt = (name = "") => String(name || "").replace(/\.[^.]+$/, "").trim();
 
+// Windows 8.3 short names (13INST~1) and one/two letter leftovers are not a
+// usable lesson name, so a clearer name is preferred whenever one exists.
+export const isVagueUploadName = (name = "") => {
+  const n = String(name || "").trim();
+  if (!n) return true;
+  if (/~\d/.test(n)) return true;
+  if (n.length <= 2) return true;
+  return false;
+};
+
+export const uploadVideo = asyncHandler(async (req, res) => {
   const videoFile = req.files?.video?.[0];
   if (!videoFile) {
     const err = new Error('No video file provided (field name: "video")');
@@ -187,10 +206,23 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const title = (req.body?.title || videoFile.originalname || "")
-    .toString()
-    .trim();
+  const providedTitle = (req.body?.title || "").toString().trim();
+  const originalBase = stripExt(videoFile.originalname || "");
+  const requestedOriginalName = (req.body?.originalFilename || "").toString().trim();
+  const requestedOriginalBase = stripExt(requestedOriginalName);
+  let title = providedTitle || originalBase || requestedOriginalBase || (videoFile.originalname || "").toString().trim();
+  // Prefer a clearer name if the provided one is a vague/8.3 short name.
+  if (isVagueUploadName(title)) {
+    const candidates = [originalBase, requestedOriginalBase, providedTitle].filter(Boolean);
+    const better = candidates.find((c) => !isVagueUploadName(c));
+    if (better) title = better;
+  }
+  title = String(title || "Untitled video").replace(/[<>]/g, "").trim().slice(0, 100);
   const description = (req.body?.description || "").toString().trim();
+  const originalFilename = [videoFile.originalname, requestedOriginalName].find((n) => n && !isVagueUploadName(stripExt(n)))
+    || videoFile.originalname
+    || requestedOriginalName
+    || "";
   const originalLanguage =
     (req.body?.originalLanguage || "en").toString().trim() || "en";
   const targetLanguages = normalizeLanguages(req.body?.targetLanguages);
@@ -217,27 +249,31 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     }
   }
 
-  // Upload main video.
+  // Hybrid storage: keep old Cloudinary videos as-is, but store new uploads
+  // locally when Cloudinary is unavailable/at limit or STORAGE_PROVIDER=local.
+  // Save the file using the written/actual lesson name when possible.
+  const desiredVideoName = (title || originalBase || requestedOriginalBase || "video").toString().trim();
   let videoResult;
   try {
-    videoResult = await uploadBuffer(videoFile.buffer, {
-      resource_type: "video",
-      folder: env.cloudinaryFolder,
-      use_filename: true,
-      unique_filename: true,
-      overwrite: false,
+    videoResult = await storeBuffer({
+      buffer: videoFile.buffer,
+      subdir: "videos",
+      originalName: originalFilename || videoFile.originalname,
+      desiredName: desiredVideoName,
+      keepName: !isVagueUploadName(desiredVideoName),
+      mimeType: videoFile.mimetype,
+      preferLocal: env.storageProvider === "local",
+      cloudinaryOptions: {
+        resource_type: "video",
+        folder: env.cloudinaryFolder,
+        use_filename: true,
+        unique_filename: true,
+        overwrite: false,
+      },
     });
   } catch (error) {
-    const isTooLarge =
-      error?.http_code === 413 ||
-      /413/.test(String(error?.message || "")) ||
-      /too large/i.test(String(error?.message || ""));
-    const err = new Error(
-      isTooLarge
-        ? "Video is too large for Cloudinary (account upload limit exceeded). Please compress or trim the video (for example under ~100MB) and try again."
-        : error?.message || "Cloudinary video upload failed",
-    );
-    err.statusCode = isTooLarge ? 413 : 502;
+    const err = new Error(error?.message || "Video upload failed");
+    err.statusCode = 502;
     throw err;
   }
 
@@ -252,6 +288,7 @@ export const uploadVideo = asyncHandler(async (req, res) => {
       type: "link",
       url: link.url,
       publicId: null,
+      storageProvider: "cloudinary",
       sizeBytes: 0,
       mimeType: null,
     });
@@ -260,53 +297,57 @@ export const uploadVideo = asyncHandler(async (req, res) => {
   for (const file of attachmentFiles) {
     try {
       const resourceType = file.mimetype.startsWith("image/") ? "image" : "raw";
-      const result = await uploadBuffer(file.buffer, {
-        resource_type: resourceType,
-        folder: `${env.cloudinaryFolder}/attachments`,
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
+      const result = await storeBuffer({
+        buffer: file.buffer,
+        subdir: "attachments",
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        cloudinaryOptions: {
+          resource_type: resourceType,
+          folder: `${env.cloudinaryFolder}/attachments`,
+          use_filename: true,
+          unique_filename: true,
+          overwrite: false,
+        },
       });
       attachments.push({
         name: file.originalname,
         type: "file",
-        url: result.secure_url,
-        publicId: result.public_id,
+        url: result.url,
+        publicId: result.provider === "cloudinary" ? result.storagePath : null,
+        storageProvider: result.provider,
         sizeBytes: file.size,
         mimeType: file.mimetype,
       });
     } catch (error) {
-      // Skip failed attachments but keep the video; report in response.
-      attachments.push({
-        name: file.originalname,
-        type: "file",
-        url: null,
-        publicId: null,
-        sizeBytes: file.size,
-        mimeType: file.mimetype,
-        // store error in name? We'll just skip nulls later.
-      });
+      console.error("[uploadVideo] attachment upload failed:", error?.message);
     }
   }
 
-  // Filter out attachments that failed to upload (url null).
   const cleanAttachments = attachments.filter((a) => a.url);
 
   // Upload original subtitle (SRT/VTT) if provided.
   const subtitleEntries = [];
   if (subtitleFile) {
     try {
-      const result = await uploadBuffer(subtitleFile.buffer, {
-        resource_type: "raw",
-        folder: `${env.cloudinaryFolder}/subtitles`,
-        use_filename: true,
-        unique_filename: true,
-        overwrite: false,
+      const result = await storeBuffer({
+        buffer: subtitleFile.buffer,
+        subdir: "subtitles",
+        originalName: subtitleFile.originalname,
+        mimeType: subtitleFile.mimetype,
+        cloudinaryOptions: {
+          resource_type: "raw",
+          folder: `${env.cloudinaryFolder}/subtitles`,
+          use_filename: true,
+          unique_filename: true,
+          overwrite: false,
+        },
       });
       subtitleEntries.push({
         language: originalLanguage,
-        url: result.secure_url,
-        path: result.public_id,
+        url: result.url,
+        path: result.storagePath,
+        storageProvider: result.provider,
       });
     } catch (error) {
       console.error("[uploadVideo] subtitle upload failed:", error?.message);
@@ -317,11 +358,12 @@ export const uploadVideo = asyncHandler(async (req, res) => {
     user: req.user._id,
     title,
     description,
-    originalFilename: videoFile.originalname,
+    originalFilename: originalFilename || videoFile.originalname,
     mimeType: videoFile.mimetype,
     sizeBytes: videoFile.size,
-    publicUrl: videoResult.secure_url,
-    storagePath: videoResult.public_id,
+    publicUrl: videoResult.url,
+    storagePath: videoResult.storagePath,
+    storageProvider: videoResult.provider,
     durationSeconds: Math.round(videoResult.duration || 0),
     thumbnailUrl: videoResult.eager?.[0]?.secure_url || null,
     originalLanguage,
@@ -397,38 +439,45 @@ export const deleteVideo = asyncHandler(async (req, res) => {
   }
 
   try {
-    if (video.storagePath) {
-      await cloudinary.uploader.destroy(video.storagePath, {
-        resource_type: "video",
+    await deleteStored({
+      storagePath: video.storagePath,
+      storageProvider: video.storageProvider,
+      resourceType: "video",
+      url: video.publicUrl,
+    });
+    for (const att of video.attachments || []) {
+      if (att.type === "link") continue;
+      const rt = att.mimeType?.startsWith("image/") ? "image" : "raw";
+      await deleteStored({
+        storagePath: att.publicId || att.path,
+        storageProvider: att.storageProvider,
+        resourceType: rt,
+        url: att.url,
       });
     }
-    for (const att of video.attachments || []) {
-      if (att.publicId) {
-        const rt = att.mimeType?.startsWith("image/") ? "image" : "raw";
-        await cloudinary.uploader.destroy(att.publicId, { resource_type: rt });
-      }
-    }
     for (const sub of video.subtitles || []) {
-      if (sub.path) {
-        await cloudinary.uploader.destroy(sub.path, { resource_type: "raw" });
-      }
+      await deleteStored({
+        storagePath: sub.path,
+        storageProvider: sub.storageProvider,
+        resourceType: "raw",
+        url: sub.url,
+      });
     }
     for (const dub of video.dubs || []) {
-      if (dub.storagePath) {
-        await cloudinary.uploader.destroy(dub.storagePath, {
-          resource_type: "video",
-        });
-      }
+      await deleteStored({
+        storagePath: dub.storagePath,
+        storageProvider: dub.storageProvider,
+        resourceType: "video",
+        url: dub.url,
+      });
     }
     for (const lesson of video.lessonVideos || []) {
-      if (lesson.storagePath) {
-        await cloudinary.uploader.destroy(lesson.storagePath, {
-          resource_type: "video",
-        });
-      }
-      if (lesson.subtitlesUrl) {
-        // Best effort: lesson VTT is raw, but public ID isn't stored; ignore.
-      }
+      await deleteStored({
+        storagePath: lesson.storagePath,
+        storageProvider: lesson.storageProvider,
+        resourceType: "video",
+        url: lesson.url,
+      });
     }
   } catch {
     // ignore
@@ -475,32 +524,47 @@ export const runPipeline = async (videoId) => {
     if (!hasTranscript) {
       await saveVideo("transcription", 10);
 
-      if (!video.publicUrl) {
-        throw new Error("No uploaded video URL available for transcription");
+      if (!video.publicUrl && !video.storagePath) {
+        throw new Error("No uploaded video available for transcription");
       }
 
-      let fetchUrl = video.publicUrl;
-      if (video.publicUrl.includes("/video/upload/")) {
-        fetchUrl = video.publicUrl
-          .replace("/video/upload/", "/video/upload/ac_mp3/")
-          .replace(/\.[^/.]+$/, ".mp3");
+      let buffer;
+      let filename = video.originalFilename || "video.mp4";
+      let mimeType = video.mimeType || "video/mp4";
+
+      const local = await readSourceBuffer(video);
+      let inputPath = null;
+      if (local) {
+        buffer = local.buffer;
+        inputPath = local.path || null;
+      } else {
+        let fetchUrl = video.publicUrl;
+        if (video.publicUrl.includes("/video/upload/")) {
+          fetchUrl = video.publicUrl
+            .replace("/video/upload/", "/video/upload/ac_mp3/")
+            .replace(/\.[^/.]+$/, ".mp3");
+        }
+
+        let response = await fetch(fetchUrl, { signal: AbortSignal.timeout(300000) });
+        if (!response.ok && fetchUrl !== video.publicUrl) {
+          response = await fetch(video.publicUrl, { signal: AbortSignal.timeout(300000) });
+          fetchUrl = video.publicUrl;
+        }
+        if (!response.ok) {
+          throw new Error(`Failed to download video for transcription (${response.status})`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        buffer = Buffer.from(arrayBuffer);
+        filename = fetchUrl.endsWith(".mp3") ? "audio.mp3" : video.originalFilename || "video.mp4";
+        mimeType = fetchUrl.endsWith(".mp3") ? "audio/mpeg" : video.mimeType;
       }
 
-      let response = await fetch(fetchUrl, { signal: AbortSignal.timeout(300000) });
-      if (!response.ok && fetchUrl !== video.publicUrl) {
-        response = await fetch(video.publicUrl, { signal: AbortSignal.timeout(300000) });
-        fetchUrl = video.publicUrl;
-      }
-      if (!response.ok) {
-        throw new Error(`Failed to download video for transcription (${response.status})`);
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
       const result = await transcribeAudio({
         buffer,
-        filename: fetchUrl.endsWith(".mp3") ? "audio.mp3" : video.originalFilename || "video.mp4",
-        mimeType: fetchUrl.endsWith(".mp3") ? "audio/mpeg" : video.mimeType,
+        filename,
+        mimeType,
+        inputPath,
         language: video.originalLanguage || video.transcriptLanguage || "en",
       });
 
@@ -548,6 +612,37 @@ export const runPipeline = async (videoId) => {
         model: ai.model,
         generatedAt: new Date(),
       };
+
+      // A vague upload name (Windows 8.3 short name such as 13INST~1) is
+      // replaced by the first AI title so the lesson is always identifiable,
+      // and the local file is renamed to match.
+      if (isVagueUploadName(video.title)) {
+        const aiTitle = Array.isArray(video.aiMetadata?.titles)
+          ? video.aiMetadata.titles[0]
+          : null;
+        if (aiTitle) {
+          const nextTitle = String(aiTitle).replace(/[<>]/g, "").trim().slice(0, 100);
+          if (nextTitle) {
+            video.title = nextTitle;
+            if (isLocalStorage(video)) {
+              try {
+                const renamed = await renameLocalStoredFile(video.storagePath, nextTitle);
+                if (renamed) {
+                  video.storagePath = renamed.storagePath;
+                  video.publicUrl = renamed.url;
+                  video.originalFilename = path.basename(renamed.relativePath);
+                }
+              } catch (renameError) {
+                console.warn(
+                  "[processVideo] could not rename the local file:",
+                  renameError?.message,
+                );
+              }
+            }
+          }
+        }
+      }
+
       await saveVideo("analyzed", 70);
     }
 
@@ -878,7 +973,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
             ),
           },
         ];
-        await video.save();
+        await Video.updateOne({ _id: video._id }, { $set: { translations: video.translations } });
         emitVideoProgress(video);
       }
     }
@@ -891,7 +986,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
       startedAt: video.dubbing?.startedAt || new Date(),
       completedAt: null,
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
     emitVideoProgress(video);
 
     let lastReportedProgress = video.dubbing?.progress ?? 10;
@@ -910,7 +1005,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
           throw cancelError;
         }
         video.dubbing.progress = value;
-        await video.save();
+        await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
         emitVideoProgress(video);
       },
     });
@@ -932,7 +1027,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
         ),
     );
     video.dubs = [...existing, dub];
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubs: video.dubs, dubbing: video.dubbing } });
     emitVideoProgress(video);
   } catch (error) {
     video.dubbing = {
@@ -943,7 +1038,7 @@ const runDubbing = async (videoId, language, elevenLabsVoiceId = null, edgeVoice
       startedAt: video.dubbing?.startedAt || new Date(),
       completedAt: new Date(),
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { dubbing: video.dubbing } });
     emitVideoProgress(video);
   }
 };
@@ -1113,7 +1208,7 @@ export const runLessonGeneration = async (
       startedAt: video.lessonGeneration?.startedAt || new Date(),
       completedAt: new Date(),
     };
-    await video.save();
+    await Video.updateOne({ _id: video._id }, { $set: { lessonGeneration: video.lessonGeneration } });
     emitVideoProgress(video);
   }
 };
@@ -1348,6 +1443,45 @@ export const listElevenLabsVoices = asyncHandler(async (req, res) => {
   }
 });
 
+export const listGoogleVoices = asyncHandler(async (req, res) => {
+  if (!env.googleTtsApiKey) {
+    return res.status(200).json({ success: true, data: { voices: {}, provider: "google" } });
+  }
+
+  const language = String(req.query.language || "").trim().toLowerCase();
+  const baseToCode = {
+    ar: "ar-XA", de: "de-DE", en: "en-US", es: "es-ES", fr: "fr-FR",
+    hi: "hi-IN", it: "it-IT", ja: "ja-JP", ko: "ko-KR", nl: "nl-NL",
+    pl: "pl-PL", pt: "pt-BR", ru: "ru-RU", tr: "tr-TR", zh: "cmn-CN",
+    cmn: "cmn-CN",
+  };
+
+  const codes = language
+    ? [baseToCode[language] || language]
+    : Object.values(baseToCode);
+
+  const data = {};
+  for (const code of codes) {
+    if (!code) continue;
+    try {
+      const r = await fetch(
+        `https://texttospeech.googleapis.com/v1/voices?languageCode=${encodeURIComponent(code)}&key=${encodeURIComponent(env.googleTtsApiKey)}`,
+      );
+      const json = await r.json().catch(() => ({}));
+      const names = (json.voices || []).map((v) => v.name).filter(Boolean);
+      const base = code.split("-")[0].toLowerCase();
+      data[base] = Array.from(new Set([...(data[base] || []), ...names]));
+    } catch (error) {
+      console.warn("[listGoogleVoices] failed for", code, error?.message);
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Google voices",
+    data: { voices: data, provider: "google" },
+  });
+});
 export const listYouTubePlaylists = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
   // The playlists belong to a channel, and every channel can sit on another
@@ -1472,16 +1606,95 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   }
 
   // The course decides the playlist and the position of the lesson in it.
-  const courses = await Course.find({
+  // When publishing to a selected playlist/channel, auto-attach the lesson to
+  // the matching target-language course so it appears in the correct course
+  // without manual steps.
+  const requestedPlaylistId = req.body?.playlistId
+    ? String(req.body.playlistId).trim()
+    : null;
+  const requestedChannelId = req.body?.channelId
+    ? String(req.body.channelId).trim()
+    : null;
+  const publishLangBase = String(language || "").toLowerCase().split("-")[0];
+
+  let targetCourse = null;
+  if (requestedPlaylistId) {
+    targetCourse = await Course.findOne({
+      owner: req.user._id,
+      $or: [
+        { playlistId: requestedPlaylistId },
+        { youtubePlaylistId: requestedPlaylistId },
+      ],
+    });
+  }
+  if (!targetCourse && requestedChannelId) {
+    targetCourse =
+      (await Course.findOne({
+        owner: req.user._id,
+        channelId: requestedChannelId,
+        language: publishLangBase,
+      })) ||
+      (await Course.findOne({
+        owner: req.user._id,
+        channelId: requestedChannelId,
+      }));
+  }
+
+  const coursesContaining = await Course.find({
     owner: req.user._id,
-    'videos.video': video._id,
+    "videos.video": video._id,
   });
-  const course =
-    courses.find((item) => item.language === language && item.playlistId) ||
-    courses.find((item) => item.language === language) ||
-    courses.find((item) => item.playlistId) ||
-    courses[0] ||
-    null;
+
+  const targetCourseInContaining = targetCourse
+    ? coursesContaining.find((c) => String(c._id) === String(targetCourse._id))
+    : null;
+  const targetCourseDoc = targetCourseInContaining || targetCourse || null;
+
+  let course = null;
+  if (requestedPlaylistId && targetCourseDoc) {
+    // Publishing to an explicitly selected playlist: use its course.
+    course = targetCourseDoc;
+  } else if (requestedChannelId && targetCourseDoc) {
+    course = targetCourseDoc;
+  } else {
+    course =
+      coursesContaining.find(
+        (item) =>
+          String(item.language || "").toLowerCase().split("-")[0] === publishLangBase &&
+          item.playlistId,
+      ) ||
+      coursesContaining.find(
+        (item) => String(item.language || "").toLowerCase().split("-")[0] === publishLangBase,
+      ) ||
+      targetCourseDoc ||
+      coursesContaining.find((item) => item.playlistId) ||
+      coursesContaining[0] ||
+      null;
+  }
+
+  // If the chosen publish course doesn't contain this lesson yet, add it (end
+  // of course, next order) so it appears in the course/playlist automatically.
+  let addedToCourse = false;
+  if (
+    course &&
+    !(course.videos || []).some((entry) => String(entry.video) === String(video._id))
+  ) {
+    const maxOrder = (course.videos || []).reduce(
+      (m, e) => Math.max(m, Number(e.order ?? 0)),
+      -1,
+    );
+    course.videos = [
+      ...(course.videos || []),
+      {
+        video: video._id,
+        order: maxOrder + 1,
+        addedAt: new Date(),
+        language,
+      },
+    ];
+    addedToCourse = true;
+  }
+
   const courseEntry = course
     ? (course.videos || []).find(
         (entry) => String(entry.video) === String(video._id),
@@ -1520,13 +1733,39 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     }
   }
 
-  const title = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
-  const description = String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim();
+  const rawTitle = String(req.body?.title || (lesson.youtubeTitle || `${video.title} (${language})`)).trim();
+  // YouTube rejects titles containing '<' or '>' and requires a non-empty
+  // title of at most 100 characters.
+  const title = rawTitle
+    .replace(/[<>]/g, "")
+    .slice(0, 100)
+    .trim() || `${String(video.title || "Lesson").trim()} (${language})`.slice(0, 100).trim();
+  const description = buildPublishDescription({
+    description: String(req.body?.description || lesson.youtubeDescription || video.aiMetadata?.summary || video.description || "").trim(),
+    playlistId: req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || coursePlaylistId || null),
+    channelId: String(req.body?.channelId || lesson.youtubeChannelId || "").trim() || null,
+    courseTitle: course?.title || "",
+  });
   const tags = Array.isArray(req.body?.tags)
     ? req.body.tags
     : (lesson.youtubeTags?.length ? lesson.youtubeTags : (video.aiMetadata?.tags || []));
   const categoryId = String(req.body?.categoryId || lesson.youtubeCategoryId || video.youtubeCategoryId || "27");
-  const visibility = String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
+  const requestedScheduleRaw = req.body?.scheduledPublishAt;
+  const scheduledPublishAt = requestedScheduleRaw
+    ? new Date(requestedScheduleRaw)
+    : null;
+  if (scheduledPublishAt && Number.isNaN(scheduledPublishAt.getTime())) {
+    const err = new Error("scheduledPublishAt is not a valid date");
+    err.statusCode = 400;
+    throw err;
+  }
+  const publishAt =
+    scheduledPublishAt && scheduledPublishAt.getTime() > Date.now() + 60_000
+      ? scheduledPublishAt.toISOString()
+      : null;
+  const visibility = publishAt
+    ? "private"
+    : String(req.body?.visibility || lesson.youtubeVisibility || video.youtubeVisibility || "private");
   const playlistId = req.body?.playlistId ? String(req.body.playlistId).trim() : (lesson.youtubePlaylistId || coursePlaylistId || null);
   // The YouTube Automation Form checklist fields for this language.
   const madeForKids = req.body?.madeForKids === undefined ? Boolean(lesson.youtubeMadeForKids) : Boolean(req.body.madeForKids);
@@ -1571,6 +1810,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
         tags,
         categoryId,
         visibility,
+        publishAt,
         madeForKids,
         videoLanguage,
         mimeType: "video/mp4",
@@ -1585,6 +1825,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       tags,
       categoryId,
       visibility,
+      publishAt,
       madeForKids,
       videoLanguage,
     });
@@ -1692,8 +1933,9 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 
   lesson.youtubeVideoId = youtubeVideoId;
   lesson.youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
-  lesson.youtubePublishedAt = lesson.youtubePublishedAt || new Date();
+  lesson.youtubePublishedAt = publishAt ? lesson.youtubePublishedAt : (lesson.youtubePublishedAt || new Date());
   lesson.youtubeVisibility = visibility;
+  lesson.youtubeScheduledPublishAt = publishAt ? scheduledPublishAt : null;
   lesson.youtubeCategoryId = categoryId;
   lesson.youtubeTitle = title;
   lesson.youtubeDescription = description;
@@ -1722,6 +1964,28 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     await course.save();
   }
 
+  // Post up to 3 of the AI-generated open questions as top-level comments on
+  // the published video, so viewers can answer them. Best-effort: a comment
+  // failure never fails the publish. Pinned comments are not available via
+  // the YouTube Data API, so pinning must be done manually in YouTube Studio.
+  const localizedQuestions = Array.isArray(video.aiMetadata?.localized?.[language.toLowerCase()]?.openQuestions)
+    ? video.aiMetadata.localized[language.toLowerCase()].openQuestions
+    : null;
+  const openQuestions = (localizedQuestions || video.aiMetadata?.openQuestions || [])
+    .map((q) => String(q || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const commentWarnings = [];
+  for (const question of openQuestions) {
+    try {
+      await postYouTubeComment(accessToken, youtubeVideoId, question);
+    } catch (error) {
+      const msg = error?.message || "comment posting failed";
+      console.warn("[publishLessonVideo] comment posting failed:", msg);
+      commentWarnings.push(msg);
+    }
+  }
+
   res.status(200).json({
     success: true,
     message: isUpdate
@@ -1737,6 +2001,10 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
       playlistPosition: coursePosition,
       removedDuplicates: reconcile.deleted,
       reconcileWarnings: reconcile.warnings,
+      commentWarnings,
+      addedToCourse,
+      courseId: course?._id ? String(course._id) : null,
+      courseTitle: course?.title || null,
     },
   });
 });
@@ -1864,19 +2132,36 @@ export const uploadCanvasThumbnail = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  const result = await cloudinary.uploader.upload(dataUrl, {
-    folder: `${env.cloudinaryFolder}/thumbnails`,
-    resource_type: "image",
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    const err = new Error("A valid image data URL is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const mimeType = match[1];
+  const ext = mimeType.split("/")[1] === "jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
+  const buffer = Buffer.from(match[2], "base64");
+
+  const result = await storeBuffer({
+    buffer,
+    subdir: "thumbnails",
+    originalName: `${String(video._id)}-thumbnail.${ext}`,
+    mimeType,
+    cloudinaryOptions: {
+      folder: `${env.cloudinaryFolder}/thumbnails`,
+      resource_type: "image",
+    },
+    preferLocal: env.storageProvider === "local",
   });
 
-  video.thumbnailUrl = result.secure_url;
+  video.thumbnailUrl = result.url;
   await video.save();
   emitVideoProgress(video);
 
   res.status(200).json({
     success: true,
     message: "Thumbnail uploaded",
-    data: { thumbnailUrl: result.secure_url },
+    data: { thumbnailUrl: result.url },
   });
 });
 

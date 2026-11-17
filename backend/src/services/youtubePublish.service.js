@@ -143,7 +143,22 @@ export const createYouTubePlaylist = async (
   };
 };
 
+const sanitizeYouTubeDescription = (value) => {
+  let text = String(value ?? "");
+  // Normalize line endings and strip control chars YouTube rejects.
+  text = text.replace(/\r\n?/g, "\n");
+  text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  // YouTube rejects angle brackets in metadata fields.
+  text = text.replace(/[<>]/g, "");
+  // YouTube descriptions are limited to 5000 characters.
+  if (text.length > 5000) text = text.slice(0, 5000);
+  // YouTube requires a description string; fall back to a minimal value.
+  if (!text.trim()) text = " ";
+  return text;
+};
+
 export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) => {
+  const sanitizedDescription = sanitizeYouTubeDescription(metadata?.description);
   const initRes = await fetch(
     `${UPLOAD_URL}?uploadType=resumable&part=snippet,status`,
     {
@@ -157,14 +172,17 @@ export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) =>
       body: JSON.stringify({
         snippet: {
           title: metadata.title,
-          description: metadata.description,
+          description: sanitizedDescription,
           tags: metadata.tags || [],
           categoryId: metadata.categoryId || '27',
           defaultAudioLanguage: metadata.videoLanguage || undefined,
           defaultCaptionLanguage: metadata.videoLanguage || undefined,
         },
         status: {
+          // YouTube has no "scheduled" privacy status: a private video with a
+          // publishAt timestamp is what YouTube Studio calls scheduled.
           privacyStatus: metadata.visibility || 'private',
+          ...(metadata.publishAt ? { publishAt: metadata.publishAt } : {}),
           selfDeclaredMadeForKids: metadata.madeForKids ?? false,
         },
       }),
@@ -173,6 +191,22 @@ export const publishYouTubeVideo = async (accessToken, metadata, mediaBuffer) =>
 
   const initData = await initRes.json().catch(() => ({}));
   if (!initRes.ok) {
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.writeFile('C:/Users/dell/AppData/Local/Temp/opencode/yt-publish-debug.json', JSON.stringify({
+        status: initRes.status,
+        initData,
+        title: metadata?.title,
+        descriptionLength: sanitizedDescription.length,
+        description: sanitizedDescription,
+        tags: metadata?.tags,
+        categoryId: metadata?.categoryId,
+        visibility: metadata?.visibility,
+        publishAt: metadata?.publishAt,
+        madeForKids: metadata?.madeForKids,
+        videoLanguage: metadata?.videoLanguage,
+      }, null, 2), 'utf8');
+    } catch {}
     const err = new Error(initData?.error?.message || `YouTube upload init failed (${initRes.status})`);
     err.statusCode = initRes.status;
     throw err;
@@ -241,6 +275,23 @@ export const replyYouTubeComment = async (accessToken, parentId, text) => {
   });
 };
 
+export const postYouTubeComment = async (accessToken, videoId, text) => {
+  return youtubeFetch(accessToken, `${API_URL}/commentThreads?part=snippet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      snippet: {
+        videoId,
+        topLevelComment: {
+          snippet: {
+            textOriginal: text,
+          },
+        },
+      },
+    }),
+  });
+};
+
 export const deletePlaylistItem = async (accessToken, playlistItemId) => {
   const res = await fetch(
     `${API_URL}/playlistItems?id=${encodeURIComponent(playlistItemId)}`,
@@ -297,11 +348,12 @@ export const deleteYouTubeVideo = async (accessToken, videoId) => {
 };
 
 export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) => {
+  const sanitizedDescription = sanitizeYouTubeDescription(metadata?.description);
   const body = {
     id: youtubeVideoId,
     snippet: {
       title: metadata.title,
-      description: metadata.description,
+      description: sanitizedDescription,
       tags: metadata.tags || [],
       categoryId: metadata.categoryId || '27',
       defaultAudioLanguage: metadata.videoLanguage || undefined,
@@ -309,18 +361,55 @@ export const updateYouTubeVideo = async (accessToken, youtubeVideoId, metadata) 
     },
     status: {
       privacyStatus: metadata.visibility || 'private',
+      ...(metadata.publishAt ? { publishAt: metadata.publishAt } : {}),
       selfDeclaredMadeForKids: metadata.madeForKids ?? false,
     },
   };
-  return youtubeFetch(
+  try {
+    return await youtubeFetch(
+      accessToken,
+      `${API_URL}/videos?part=snippet,status`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (err) {
+    try {
+      const fs = await import('node:fs/promises');
+      await fs.writeFile('C:/Users/dell/AppData/Local/Temp/opencode/yt-publish-debug.json', JSON.stringify({
+        op: 'update',
+        message: err?.message,
+        statusCode: err?.statusCode,
+        title: body.snippet?.title,
+        descriptionLength: sanitizedDescription.length,
+        description: sanitizedDescription,
+        tags: body.snippet?.tags,
+        categoryId: body.snippet?.categoryId,
+        visibility: body.status?.privacyStatus,
+        publishAt: body.status?.publishAt,
+        madeForKids: body.status?.selfDeclaredMadeForKids,
+        videoLanguage: body.snippet?.defaultAudioLanguage,
+      }, null, 2), 'utf8');
+    } catch {}
+    throw err;
+  }
+};
+
+/** Reads the live status of an uploaded video (used to confirm publishAt). */
+export const fetchYouTubeVideoStatus = async (accessToken, videoId) => {
+  const data = await youtubeFetch(
     accessToken,
-    `${API_URL}/videos?part=snippet,status`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    },
+    `${API_URL}/videos?part=status,snippet&id=${encodeURIComponent(videoId)}`,
   );
+  const item = (data.items || [])[0];
+  if (!item) {
+    const err = new Error('YouTube video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return item;
 };
 
 export const setYouTubeThumbnail = async (accessToken, videoId, imageBuffer, mimeType) => {
