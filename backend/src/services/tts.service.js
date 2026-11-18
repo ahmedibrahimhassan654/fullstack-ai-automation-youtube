@@ -75,6 +75,51 @@ const escapeXml = (text) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
+// Pronunciation hints for TTS (spoken text). Display/subtitle text should remain unchanged.
+const PRONUNCIATION_SUBS = [
+  { pattern: /\bOpenVPN\b/g, alias: "Open V P N" },
+  { pattern: /\bVPNBook\b/g, alias: "V P N Book" },
+  { pattern: /\bmyip\.com\b/gi, alias: "my I P dot com" },
+  { pattern: /\bIP address\b/gi, alias: "I P address" },
+  { pattern: /\bUDP\b/g, alias: "U D P" },
+  { pattern: /\bVPN\b/g, alias: "V P N" },
+  { pattern: /\bIP\b/g, alias: "I P" },
+  { pattern: /\bURL\b/g, alias: "U R L" },
+  { pattern: /\bAPI\b/g, alias: "A P I" },
+  { pattern: /\bUSB\b/g, alias: "U S B" },
+  { pattern: /\bCPU\b/g, alias: "C P U" },
+  { pattern: /\bRAM\b/g, alias: "ram" },
+  { pattern: /\bDNS\b/g, alias: "D N S" },
+  { pattern: /\bSOCKS5\b/gi, alias: "socks five" },
+  { pattern: /\bProxyChains\b/gi, alias: "Proxy Chains" },
+  { pattern: /\bproxy chain\b/gi, alias: "proxy chain" },
+  { pattern: /\bproxychains\b/gi, alias: "Proxy Chains" },
+  { pattern: /\bproxy\b/gi, alias: "proxy" },
+  { pattern: /\bpwd\b/g, alias: "P W D" },
+  { pattern: /\bwhoami\b/g, alias: "who am I" },
+  { pattern: /\bcd\b/g, alias: "C D" },
+  { pattern: /\bls\b/g, alias: "L S" },
+  { pattern: /\bsudo\b/g, alias: "su do" },
+  { pattern: /\bkillall\b/g, alias: "kill all" },
+  { pattern: /\bCtrl\+Shift\+C\b/g, alias: "Control Shift C" },
+  { pattern: /\bCtrl\+Shift\+V\b/g, alias: "Control Shift V" },
+];
+
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const applyPronunciationSubsToPlain = (text) => {
+  let out = String(text || "");
+  for (const rule of PRONUNCIATION_SUBS) {
+    out = out.replace(rule.pattern, rule.alias);
+  }
+  // Space out isolated single alphanumeric characters sequences (e.g. "4 F M Z 7 4 2")
+  // to encourage clearer character-by-character reading.
+  out = out.replace(/\b(?:[A-Za-z0-9]\s+){2,}[A-Za-z0-9]\b/g, (m) =>
+    m.replace(/\s+/g, " , "),
+  );
+  return out;
+};
+
 const KHz100ns = 10000000;
 
 // --- Mixed script synthesis ----------------------------------------------------
@@ -540,6 +585,60 @@ const synthesizeWithElevenLabs = async (text, voiceId, options = {}) => {
   };
 };
 
+const getPronAlias = (token) => {
+  for (const rule of PRONUNCIATION_SUBS) {
+    rule.pattern.lastIndex = 0;
+    if (rule.pattern.test(token)) return rule.alias;
+  }
+  return null;
+};
+
+const buildGoogleMixedLangSsml = (text, baseLanguageCode = "en-US") => {
+  const value = String(text || "");
+  if (!value.trim()) return "";
+
+  // Always build SSML when we have Latin/technical tokens or spaced letter/digit
+  // sequences so we can apply pronunciation hints and clearer en-US reading.
+  const tokenRe =
+    /([A-Za-z0-9][A-Za-z0-9+./:_\\-]*|\b(?:[A-Za-z0-9]\s+){2,}[A-Za-z0-9]\b)/g;
+  let out = `<speak>`;
+  let last = 0;
+  let m;
+  let used = false;
+  while ((m = tokenRe.exec(value))) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (start > last) out += escapeXml(value.slice(last, start));
+    const token = m[0];
+    const spacedSeq = /\b(?:[A-Za-z0-9]\s+){2,}[A-Za-z0-9]\b/.test(token);
+    if (spacedSeq) {
+      const chars = token.replace(/\s+/g, " ").trim().split(" ").join(", ");
+      out += `<lang xml:lang="en-US"><say-as interpret-as="characters">${escapeXml(token.replace(/\s+/g, ""))}</say-as></lang>`;
+      used = true;
+    } else if (/[A-Za-z]/.test(token)) {
+      const alias = getPronAlias(token);
+      if (alias) {
+        out += `<lang xml:lang="en-US"><sub alias="${escapeXml(alias)}">${escapeXml(token)}</sub></lang>`;
+        used = true;
+      } else {
+        // Acronyms/all-caps tokens: spell out for clarity
+        if (/^[A-Z]{2,5}$/.test(token)) {
+          out += `<lang xml:lang="en-US"><say-as interpret-as="characters">${escapeXml(token)}</say-as></lang>`;
+          used = true;
+        } else {
+          out += `<lang xml:lang="en-US">${escapeXml(token)}</lang>`;
+        }
+      }
+    } else {
+      out += escapeXml(token);
+    }
+    last = end;
+  }
+  if (last < value.length) out += escapeXml(value.slice(last));
+  out += `</speak>`;
+  return used || /<lang\b/.test(out) ? out : "";
+};
+
 const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
   if (!env.googleTtsApiKey) {
     const err = new Error("GOOGLE_TTS_API_KEY is not configured");
@@ -554,32 +653,65 @@ const synthesizeWithGoogleCloud = async (text, voiceName, options = {}) => {
       "A Google TTS voice name is required (e.g. ar-XA-Wavenet-A)",
     );
   const languageCode = name.split("-").slice(0, 2).join("-");
+  const ssml = buildGoogleMixedLangSsml(clean, languageCode);
+  const plainSpoken = applyPronunciationSubsToPlain(clean);
   const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(env.googleTtsApiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input: { text: clean },
-      voice: { languageCode, name },
-      audioConfig: { audioEncoding: "MP3", speakingRate: 1.0, pitch: 0.0 },
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(
-      data?.error?.message || `Google TTS failed (${res.status})`,
-    );
-    err.statusCode = res.status;
-    throw err;
+
+  const requestAudio = async (input) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input,
+        voice: { languageCode, name },
+        audioConfig: { audioEncoding: "MP3", speakingRate: 1.0, pitch: 0.0 },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(
+        data?.error?.message || `Google TTS failed (${res.status})`,
+      );
+      err.statusCode = res.status;
+      err.googleError = data?.error;
+      throw err;
+    }
+    const buffer = Buffer.from(String(data.audioContent || ""), "base64");
+    if (!buffer.length) throw new Error("Google TTS returned empty audio");
+    return buffer;
+  };
+
+  let buffer;
+  if (ssml) {
+    try {
+      buffer = await requestAudio({ ssml });
+    } catch (error) {
+      const msg = String(error?.message || "");
+      const unsupportedSsml =
+        /not currently supported/i.test(msg) ||
+        /does not support/i.test(msg) ||
+        (/<lang>|<sub>|<say-as>|SSML/i.test(msg) &&
+          /support|invalid/i.test(msg));
+      if (unsupportedSsml) {
+        console.warn(
+          `[tts] Google voice ${name} does not support SSML features; retrying with plain text:`,
+          msg,
+        );
+        buffer = await requestAudio({ text: plainSpoken || clean });
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    buffer = await requestAudio({ text: plainSpoken || clean });
   }
-  const buffer = Buffer.from(String(data.audioContent || ""), "base64");
-  if (!buffer.length) throw new Error("Google TTS returned empty audio");
+
   return {
     buffer,
     segments: [
       {
         start: 0,
-        end: Math.max(1, clean.split(/\\s+/).length / 2.5),
+        end: Math.max(1, clean.split(/\s+/).length / 2.5),
         text: clean,
       },
     ],
@@ -970,7 +1102,11 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
 
   if (!forceEdge && elevenLabsVoiceId && env.elevenLabsApiKey) {
     try {
-      return await synthesizeWithElevenLabs(text, elevenLabsVoiceId, options);
+      return await synthesizeWithElevenLabs(
+        applyPronunciationSubsToPlain(text),
+        elevenLabsVoiceId,
+        options,
+      );
     } catch (error) {
       const message = String(error?.message || "");
       // Do not stop the whole lesson if an optional paid voice is out of credits.
@@ -984,21 +1120,35 @@ export const synthesizeSpeech = async (text, voice, options = {}) => {
   const googleVoice = String(
     options.googleVoice || env.googleTtsVoice || "",
   ).trim();
+  const looksLikeGoogleVoice =
+    /^[a-z]{2,3}-[A-Z]{2}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(
+      String(voice || ""),
+    );
+  const explicitGoogle =
+    provider === "google" || (!looksLikeEdgeVoice && looksLikeGoogleVoice);
   if (!forceEdge && googleVoice && env.googleTtsApiKey) {
     try {
       return await synthesizeWithGoogleCloud(text, googleVoice, options);
     } catch (error) {
-      console.warn(
-        "[tts] Google Cloud TTS failed; falling back to free Edge TTS:",
-        error?.message || error,
-      );
+      console.warn("[tts] Google Cloud TTS failed:", error?.message || error);
+      // Don't fall back to Edge with an incompatible Google voice id.
+      if (explicitGoogle) throw error;
     }
+  } else if (explicitGoogle) {
+    const err = new Error(
+      !env.googleTtsApiKey
+        ? "GOOGLE_TTS_API_KEY is not configured"
+        : "Google voice requested but no Google voice was resolved for synthesis",
+    );
+    err.statusCode = 500;
+    throw err;
   }
 
   const rate = options.rate || "-3%";
   const report = options.onProgress;
   const clean = stripMarkdown(text);
-  const chunks = splitIntoSpeechChunks(clean, 260).filter(Boolean);
+  const spokenClean = applyPronunciationSubsToPlain(clean);
+  const chunks = splitIntoSpeechChunks(spokenClean, 260).filter(Boolean);
 
   if (chunks.length === 0) throw new Error("No speech could be generated");
 

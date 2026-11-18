@@ -3,7 +3,6 @@ import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
-import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { resolveSourcePath, storeFile, isLocalStorage } from './storage.service.js';
 import { repairTranslationSegments } from './technicalTerms.service.js';
@@ -79,14 +78,6 @@ const SUBTITLE_STYLE =
 const stripArabicTashkeel = (text = '') =>
   String(text || '').replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, '');
 
-const uploadFile = (filePath, options) =>
-  new Promise((resolve, reject) => {
-    cloudinary.uploader.upload(filePath, options, (error, result) => {
-      if (error) return reject(error);
-      resolve(result);
-    });
-  });
-
 const getAudioDurationSeconds = async (filePath) => {
   return new Promise((resolve) => {
     const proc = spawn(ffmpegStatic, ['-hide_banner', '-i', filePath], {
@@ -119,7 +110,9 @@ const estimateSpeechSeconds = (text, language) => {
 };
 
 const wrapSubtitleText = (text, maxCharsPerLine = 34, maxLines = 2) => {
-  const clean = stripArabicTashkeel(text).replace(/\s+/g, ' ').trim();
+  // Keep display text as-is except whitespace normalization and wrapping.
+  // (Do not strip Arabic tashkeel globally here; callers may rely on original text.)
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
   if (!clean) return '';
   const words = clean.split(' ');
   const lines = [];
@@ -198,11 +191,45 @@ const splitTextForSubtitles = (text, maxChunkChars = 70) => {
 };
 
 const buildBurnSubtitleCues = (block, startAt, fittedDuration, videoDuration) => {
-  const text = stripArabicTashkeel(block?.text).replace(/\s+/g, ' ').trim();
   const blockStart = Math.max(0, Number(startAt) || 0);
   const naturalEnd = blockStart + Math.max(0.4, Number(fittedDuration) || 0);
   const blockEnd = videoDuration > 0 ? Math.min(naturalEnd, videoDuration) : naturalEnd;
   const duration = Math.max(0.4, blockEnd - blockStart);
+
+  // Prefer preserving original segment texts/timing proportions (from reference
+  // SRT/transcript segments) when available, so subtitles stay closer to the
+  // source cues instead of being arbitrarily re-chunked.
+  const items = Array.isArray(block?.items) ? block.items.filter((it) => String(it?.text || '').trim()) : [];
+  if (items.length > 0) {
+    const sourceStart = Math.min(...items.map((it) => Number(it.start) || 0));
+    const sourceEnd = Math.max(...items.map((it) => Math.max(Number(it.end) || 0, (Number(it.start) || 0) + 0.01)));
+    const sourceSpan = Math.max(0.01, sourceEnd - sourceStart);
+    const cues = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i];
+      const relStart = Math.max(0, Math.min(1, ((Number(it.start) || 0) - sourceStart) / sourceSpan));
+      const relEnd = Math.max(relStart + 0.01, Math.min(1, ((Number(it.end) || 0) - sourceStart) / sourceSpan));
+      let start = blockStart + duration * relStart;
+      let end = blockStart + duration * (i === items.length - 1 ? 1 : relEnd);
+      end = Math.max(start + 0.25, Math.min(blockEnd, end));
+      start = Math.min(start, end - 0.2);
+      const text = wrapSubtitleText(String(it.text || '').trim()) || String(it.text || '').trim();
+      if (!text) continue;
+      cues.push({ start, end, text });
+    }
+    if (cues.length) {
+      cues[0].start = blockStart;
+      cues[cues.length - 1].end = blockEnd;
+      for (let i = 1; i < cues.length; i += 1) {
+        if (cues[i].start < cues[i - 1].end) cues[i].start = cues[i - 1].end;
+        if (cues[i].end <= cues[i].start) cues[i].end = Math.min(blockEnd, cues[i].start + 0.25);
+      }
+      cues[cues.length - 1].end = Math.max(cues[cues.length - 1].end, blockEnd);
+      return cues;
+    }
+  }
+
+  const text = String(block?.text || '').replace(/\s+/g, ' ').trim();
   if (!text) return [];
 
   const chunks = splitTextForSubtitles(text, 70);
@@ -223,7 +250,6 @@ const buildBurnSubtitleCues = (block, startAt, fittedDuration, videoDuration) =>
     cues.push({ start: cursor, end: safeEnd, text: wrapSubtitleText(chunks[i]) || chunks[i] });
     cursor = safeEnd;
   }
-  // Ensure last cue reaches block end.
   if (cues.length) cues[cues.length - 1].end = Math.max(cues[cues.length - 1].end, blockEnd);
   return cues;
 };
@@ -376,12 +402,12 @@ const normalizeSegmentTiming = (segments, totalDuration) => {
 };
 
 // Arabic and other non-latin languages need noticeably longer than English
-// for the same content. Speeding the voice up to 1.6x was the reason the
-// dub sounded rushed and the pronunciation came out wrong, so the tempo is
-// kept close to natural and the remaining overflow is left as a short pause
-// instead of being crammed into the next sentence.
+// for the same content. Keep tempo close to natural and fit speech to the
+// original (SRT/reference) segment timing as much as possible to avoid drift.
 const DUB_AUDIO_LEAD_OFFSET = Number(process.env.DUB_AUDIO_LEAD_OFFSET) || 0.5;
 const MAX_TEMPO = 1.3;
+const MIN_TEMPO = 0.85;
+const MAX_SLOT_TEMPO = 1.45;
 
 /**
  * Merge subtitle cues into whole sentences.
@@ -491,11 +517,7 @@ export const planDubTiming = ({ totalSpeechSeconds, videoDuration }) => {
 };
 
 export const generateDubbedVideo = async ({ video, language, voice = null, elevenLabsVoiceId = null, onProgress = null }) => {
-  if (!isCloudinaryConfigured()) {
-    const err = new Error('Cloudinary is not configured on the server');
-    err.statusCode = 500;
-    throw err;
-  }
+  // Local storage is used for dub output (Cloudinary uploads disabled).
 
   const videoDuration = Math.max(0, Number(video.durationSeconds) || 0);
   const reportProgress = async (value) => {
@@ -570,8 +592,7 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
 
     if (videoDuration > 0 && block.start >= videoDuration) break;
 
-    // The narration uses the spoken version (technical names in Arabic
-    // script, numbers as Arabic words); the subtitles keep the clear text.
+    // The narration uses the spoken version for TTS; subtitles keep the display text.
     let spokenText = String(block.spokenText || block.text || '').trim();
 
     // Per-block fitting: if this sentence's natural speech is longer than
@@ -692,36 +713,31 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
     throw new Error('Audio timeline assembly produced no clips');
   }
 
-  // Phase 2 - per-block tempo so each sentence fills its slot: short sentences
-  // are stretched (down to 0.85x) instead of leaving a silence gap, and long
-  // ones are compressed (up to MAX_TEMPO). This keeps the narration aligned
-  // with the original video instead of drifting or going silent.
+  // Phase 2/3 - per-block timing: fit each sentence into its own slot so audio
+  // stays aligned with the original (SRT/reference) segment timing and does not
+  // drift. Short sentences may be stretched slightly; long ones are compressed.
   const totalSpeech = prepared.reduce((sum, item) => sum + item.duration, 0);
-  const uniformTempo = planDubTiming({
-    totalSpeechSeconds: totalSpeech,
-    videoDuration,
-  });
-  if (uniformTempo > 1.02) {
+  const videoFitTempo = planDubTiming({ totalSpeechSeconds: totalSpeech, videoDuration });
+  if (videoFitTempo > 1.02) {
     console.log(
-      `[dubbing] compressing narration from ${totalSpeech.toFixed(1)}s to fit ${videoDuration}s (tempo ${uniformTempo.toFixed(3)})`,
+      `[dubbing] estimated overall compression ${videoFitTempo.toFixed(3)}x to fit ${videoDuration}s (per-slot timing applied)`,
     );
   }
 
-  // Phase 3 - place the sentences on the timeline.
   let cursor = 0;
 
   for (let i = 0; i < prepared.length; i += 1) {
-    const { block, index, rawFile } = prepared[i];
+    const { block, index, rawFile, duration } = prepared[i];
 
-    // If the previous sentence overflowed we simply continue from the cursor
-    // instead of cutting the audio short.
-    const slotEnd = Number(block.nextStart) > block.start
+    const naturalEnd = Number(block.nextStart) > block.start
       ? Number(block.nextStart)
       : (videoDuration > 0 ? videoDuration : block.end);
-    // Place the narration at its original segment start (preserving the
-    // original timing). A previous overflow still pushes the next sentence
-    // forward so nothing overlaps.
+    // Prefer the original segment start; if previous audio overflowed, continue
+    // from cursor to avoid overlap (small local drift is better than overlap).
     const startAt = Math.max(block.start, cursor);
+    const slotEnd = Math.max(startAt + 0.25, videoDuration > 0 ? Math.min(naturalEnd, videoDuration) : naturalEnd);
+    const slotDuration = Math.max(0.3, slotEnd - startAt);
+
     const leadingGap = startAt - cursor;
     if (leadingGap > 0.02) {
       const silenceFile = path.join(
@@ -735,13 +751,19 @@ export const generateDubbedVideo = async ({ video, language, voice = null, eleve
       }
     }
 
+    const rawDur = Number(duration) || (await getAudioDurationSeconds(rawFile)) || estimateSpeechSeconds(block.spokenText || block.text || '', language);
+    let tempo = rawDur / slotDuration;
+    if (!Number.isFinite(tempo) || tempo <= 0) tempo = 1;
+    tempo = Math.min(MAX_SLOT_TEMPO, Math.max(MIN_TEMPO, tempo));
+    // If it still won't fit at max tempo, keep max tempo (may overflow slightly)
+    // rather than speeding up to unintelligible levels.
     const fittedFile = path.join(
       TEMP_DIR,
       `dub-fit-${video._id}-${language}-${index}-${Date.now()}.wav`,
     );
     tempFiles.push(fittedFile);
 
-    const fittedDuration = await applyTempo(rawFile, fittedFile, uniformTempo);
+    const fittedDuration = await applyTempo(rawFile, fittedFile, tempo);
 
     clips.push(fittedFile);
     const cues = buildBurnSubtitleCues(block, startAt, fittedDuration, videoDuration);

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useToast } from "@/components/toast-provider";
+import { cn } from "@/lib/utils";
 
 function wrapCanvasText(
   ctx: CanvasRenderingContext2D,
@@ -531,7 +532,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [questions, setQuestions] = useState<string[]>([]);
-  const [aiMeta, setAiMeta] = useState<{ summary?: string; keyPoints?: string[]; tags?: string[] } | null>(null);
+  const [aiMeta, setAiMeta] = useState<{ summary?: string; keyPoints?: string[]; tags?: string[]; openQuestions?: string[] } | null>(null);
   const [generatingAi, setGeneratingAi] = useState(false);
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [visibility, setVisibility] = useState("private");
@@ -553,6 +554,10 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [loadingYoutube, setLoadingYoutube] = useState(false);
   const [lessonNumber, setLessonNumber] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [improvingSeo, setImprovingSeo] = useState(false);
+  const [aiThumbnailPrompt, setAiThumbnailPrompt] = useState("");
+  const [thumbnailBgUpload, setThumbnailBgUpload] = useState<string>("");
+  const [applyingThumbOverlay, setApplyingThumbOverlay] = useState(false);
   // The YouTube Automation Form checklist fields. They decide how the video
   // sits on the channel, so they are part of the publish payload.
   const [madeForKids, setMadeForKids] = useState(false);
@@ -609,6 +614,36 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         dub.published,
     ),
   );
+
+  const seoStatus = (() => {
+    const checks: { ok: boolean; label: string }[] = [];
+    let score = 0;
+    const add = (ok: boolean, points: number, label: string) => {
+      checks.push({ ok, label });
+      if (ok) score += points;
+    };
+    const t = title.trim();
+    const d = description.trim();
+    const tagList = tags.split(",").map((x) => x.trim()).filter(Boolean);
+    const descWords = d ? d.split(/\s+/).filter(Boolean).length : 0;
+    const hashtags = (d.match(/(^|\s)#([^\s#]+)/g) || []).length;
+    const chapterCount = aiMeta ? 0 : 0; // chapters reflected in description/aiMeta; keep simple
+    add(t.length > 0, 15, "Title");
+    add(t.length >= 20 && t.length <= 70, 10, "Title length"); if (t.length > 0 && (t.length < 20 || t.length > 70)) score += 4;
+    add(d.length > 0, 15, "Description");
+    add(descWords >= 40, 10, "Description depth"); if (descWords > 0 && descWords < 40) score += 4;
+    add(hashtags >= 1, 5, "Hashtags");
+    add(tagList.length >= 5, 10, "Tags"); if (tagList.length > 0 && tagList.length < 5) score += 4;
+    add(Boolean(thumbnailUrl), 10, "Thumbnail");
+    add((questions?.length || 0) >= 1 || (aiMeta?.openQuestions?.length || 0) >= 1, 7, "Questions/engagement");
+    add(Boolean(youtubeLesson?.published || existingPublish?.youtubeVideoId), 10, "Published");
+    // bonus for chapters presence in description text
+    if (/\b\d{1,2}:\d{2}\b/.test(d)) { score += 8; checks.push({ ok: true, label: "Chapters/timestamps" }); }
+    else checks.push({ ok: false, label: "Chapters/timestamps" });
+    score = Math.max(0, Math.min(100, Math.round(score)));
+    const level = score >= 80 ? "Strong" : score >= 55 ? "Good" : score >= 35 ? "Fair" : "Weak";
+    return { score, level, checks };
+  })();
 
   const load = async () => {
     const res = await api.get<{ video: VideoDetail; metadata?: VideoDetail["aiMetadata"]; language?: string }>(
@@ -783,6 +818,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
           summary: meta.summary,
           keyPoints: meta.keyPoints,
           tags: meta.tags,
+          openQuestions: (meta.openQuestions || []).map((q: any) => String(q).trim()).filter(Boolean),
         });
         setVisibility(existingPublishLesson?.youtubeVisibility || v.youtubeVisibility || "private");
         setCategoryId(existingPublishLesson?.youtubeCategoryId || v.youtubeCategoryId || "27");
@@ -952,6 +988,8 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
     }
   };
 
+  const metadataOnlyUpdate = Boolean(existingPublish?.youtubeVideoId);
+
   const publish = async () => {
     setPublishing(true);
     const res = await api.post<{ youtubeUrl?: string; youtubeVideoId?: string; mode?: string; source?: string; channelTitle?: string; playlistId?: string }>(
@@ -978,6 +1016,9 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         titleDescriptionLanguage,
         recordingDate,
         location,
+        // When this exact published record already exists on YouTube, update its
+        // metadata/thumbnail only (preserves views). Never re-upload the video file.
+        updateOnly: metadataOnlyUpdate,
       },
     );
     setPublishing(false);
@@ -1025,6 +1066,56 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
               <CardDescription>
                 Language: {language}. Edit metadata then publish to YouTube.
               </CardDescription>
+              <div className="mt-2 flex flex-wrap items-center gap-3 rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">SEO:</span>
+                  <span
+                    className={cn(
+                      "rounded-full border px-2.5 py-0.5 text-xs font-semibold",
+                      seoStatus.level === "Strong" && "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+                      seoStatus.level === "Good" && "border-blue-500/30 bg-blue-500/15 text-blue-700 dark:text-blue-400",
+                      seoStatus.level === "Fair" && "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-400",
+                      seoStatus.level === "Weak" && "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-400",
+                    )}
+                  >
+                    {seoStatus.score}/100 · {seoStatus.level}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    ({seoStatus.checks.filter((c) => c.ok).length}/{seoStatus.checks.length} checks)
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={improvingSeo || !video}
+                  onClick={async () => {
+                    setImprovingSeo(true);
+                    try {
+                      const res = await api.post<{ improved: { title?: string; description?: string; tags?: string[]; openQuestions?: string[] } }>(
+                        `/api/videos/${id}/improve-seo`,
+                        { language, currentTitle: title, courseTitle, lessonNumber },
+                      );
+                      if (res.success && res.data?.improved) {
+                        const imp = res.data.improved as any;
+                        if (imp.title) setTitle(String(imp.title));
+                        if (imp.description) setDescription(String(imp.description));
+                        if (Array.isArray(imp.tags)) setTags(imp.tags.filter(Boolean).join(", "));
+                        if (Array.isArray(imp.openQuestions)) setQuestions(imp.openQuestions.map((q: any) => String(q || '').trim()).filter(Boolean));
+                        toast.success(res.message || "تم تحسين بيانات SEO بالاعتماد على بيانات الـ AI.");
+                      } else {
+                        toast.error(res.message || "تعذر تحسين SEO.");
+                      }
+                    } catch (e: any) {
+                      toast.error(e?.message || "تعذر تحسين SEO.");
+                    } finally {
+                      setImprovingSeo(false);
+                    }
+                  }}
+                >
+                  {improvingSeo ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />Improving SEO…</>) : "Improve SEO"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               {!ytConnected && (
@@ -1289,48 +1380,167 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                     onClick={async () => {
                       setGeneratingAi(true);
                       try {
-                        const titleForImage = String(title || "")
-                          .trim()
-                          .replace(/^\\d+\\s*[.\\-–:)]\\s*/, "");
-                        const dataUrl = await generateAiThumbnailDataUrl({
-                          title: titleForImage,
-                          language,
-                          lessonNumber,
-                          metadata: aiMeta,
-                        });
-                        if (!dataUrl) {
-                          toast.error("The AI thumbnail could not be drawn.");
-                          return;
-                        }
-                        const res = await api.post<{ thumbnailUrl: string }>(
-                          `/api/videos/${id}/thumbnail`,
-                          { thumbnailDataUrl: dataUrl },
+                        const titleForImage = String(title || "").trim().replace(/^\d+\s*[.\-–:)]\s*/, "");
+                        const aiRes = await api.post<{ prompt?: string }>(
+                          `/api/videos/${id}/thumbnail/generate-ai`,
+                          { language, lessonNumber, title: titleForImage, courseTitle },
                         );
-                        if (res.success && res.data?.thumbnailUrl) {
-                          setThumbnailUrl(res.data.thumbnailUrl);
-                          await load();
-                          toast.success("AI thumbnail generated.");
+                        const prompt = String(aiRes.data?.prompt || "").trim();
+                        if (prompt) {
+                          setAiThumbnailPrompt(prompt);
+                          toast.success("تم توليد برومبت الصورة من محتوى الدرس. انسخه وأنشئ الصورة خارج التطبيق ثم ارفعها.");
                         } else {
-                          toast.error(res.message || "The AI thumbnail could not be saved.");
+                          toast.error(aiRes.message || "تعذر توليد برومبت الصورة.");
                         }
                       } catch (error) {
-                        toast.error(
-                          error instanceof Error ? error.message : "The AI thumbnail could not be generated.",
-                        );
+                        toast.error(error instanceof Error ? error.message : "تعذر توليد برومبت الصورة.");
                       } finally {
                         setGeneratingAi(false);
                       }
                     }}
-                    disabled={regenerating || generatingAi}
+                    disabled={regenerating || generatingAi || applyingThumbOverlay}
                   >
-                    {generatingAi ? "Generating AI thumbnail…" : "Generate AI thumbnail (lesson)"}
+                    {generatingAi ? "Generating prompt…" : "Generate thumbnail prompt (lesson)"}
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    {lessonNumber
-                      ? `${lessonBadgeText(language, lessonNumber)} — the course image with the lesson title.`
-                      : "The course image with the lesson title."}
+                    يولّد برومبت من التقنيات/الأدوات وما ستتعلمه في الدرس — أنشئ الصورة خارج التطبيق ثم ارفعها لإضافة عنوان الدرس.
                   </span>
                 </div>
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <Label className="text-xs font-semibold">ارفع صورة الخلفية (منشأة خارجياً) ثم أضف عنوان الدرس</Label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      type="file"
+                      accept="image/*"
+                      className="h-9 max-w-md"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) { setThumbnailBgUpload(""); return; }
+                        const reader = new FileReader();
+                        reader.onload = () => setThumbnailBgUpload(String(reader.result || ""));
+                        reader.onerror = () => { setThumbnailBgUpload(""); toast.error("تعذر قراءة الصورة."); };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={!thumbnailBgUpload || applyingThumbOverlay || generatingAi || regenerating}
+                      onClick={async () => {
+                        if (!thumbnailBgUpload) { toast.error("ارفع صورة الخلفية أولاً."); return; }
+                        setApplyingThumbOverlay(true);
+                        try {
+                          const titleForImage = String(title || "").trim().replace(/^\d+\s*[.\-–:)]\s*/, "");
+                          const bgImg = await loadImage(thumbnailBgUpload);
+                          if (!bgImg) throw new Error("تعذر تحميل صورة الخلفية.");
+
+                          const canvas = document.createElement("canvas");
+                          canvas.width = 1280; canvas.height = 720;
+                          const ctx = canvas.getContext("2d");
+                          if (!ctx) throw new Error("Canvas not supported");
+
+                          const scale = Math.max(canvas.width / bgImg.width, canvas.height / bgImg.height);
+                          const w = bgImg.width * scale; const h = bgImg.height * scale;
+                          ctx.drawImage(bgImg, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+                          const shade = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                          shade.addColorStop(0, "rgba(4, 10, 28, 0.4)");
+                          shade.addColorStop(0.5, "rgba(4, 10, 28, 0.3)");
+                          shade.addColorStop(1, "rgba(4, 10, 28, 0.7)");
+                          ctx.fillStyle = shade; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                          const isArabic = language.toLowerCase().startsWith("ar");
+                          ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+                          ctx.fillRect(0, 430, canvas.width, 290);
+                          ctx.direction = isArabic ? "rtl" : "ltr";
+                          ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#ffffff";
+                          const FONT = (size: number) => `bold ${size}px 'Segoe UI', 'Tahoma', sans-serif`;
+                          const MAX_LINES = 2; let fontSize = 74; let lines: string[] = []; let cut = false;
+                          for (;;) {
+                            ctx.font = FONT(fontSize);
+                            const wrapped = wrapCanvasText(ctx, titleForImage || "Lesson", 1080);
+                            const tooWide = wrapped.some((line) => ctx.measureText(line).width > 1080);
+                            if (wrapped.length <= MAX_LINES && !tooWide) { lines = wrapped; break; }
+                            if (fontSize <= 38) { lines = wrapped.slice(0, MAX_LINES); cut = wrapped.length > MAX_LINES || tooWide; break; }
+                            fontSize -= 4;
+                          }
+                          if (cut && lines.length) {
+                            let last = lines[lines.length - 1].replace(/[\\s.\\-]+$/, "");
+                            while (last.length > 4 && ctx.measureText(`${last}…`).width > 1080) last = last.slice(0, -2).trimEnd();
+                            lines[lines.length - 1] = `${last}…`;
+                          }
+                          ctx.font = FONT(fontSize);
+                          const lineHeight = Math.round(fontSize * 1.16);
+                          const titleCenter = 588;
+                          const startY = titleCenter - ((lines.length - 1) * lineHeight) / 2;
+                          lines.forEach((line, index) => {
+                            ctx.fillStyle = "rgba(0,0,0,0.65)";
+                            ctx.fillText(line, canvas.width / 2 + 4, startY + index * lineHeight + 4);
+                            ctx.fillStyle = "#ffffff";
+                            ctx.fillText(line, canvas.width / 2, startY + index * lineHeight);
+                          });
+                          ctx.fillStyle = "#ff8a00";
+                          ctx.fillRect(canvas.width / 2 - 180, startY + lines.length * lineHeight - 18, 360, 8);
+                          if (lessonNumber) {
+                            const badgeText = lessonBadgeText(language, lessonNumber);
+                            ctx.font = "bold 34px 'Segoe UI', 'Tahoma', sans-serif";
+                            const badgeWidth = ctx.measureText(badgeText).width + 60;
+                            const badgeHeight = 58;
+                            ctx.fillStyle = "#ff8a00";
+                            fillRoundedRect(ctx, (canvas.width - badgeWidth) / 2, 481 - badgeHeight / 2, badgeWidth, badgeHeight, badgeHeight / 2);
+                            ctx.fillStyle = "#1b1206";
+                            ctx.fillText(badgeText, canvas.width / 2, 481 + 2);
+                          }
+
+                          const dataUrl = canvas.toDataURL("image/png");
+                          const res = await api.post<{ thumbnailUrl: string }>(
+                            `/api/videos/${id}/thumbnail`,
+                            { thumbnailDataUrl: dataUrl },
+                          );
+                          if (res.success && res.data?.thumbnailUrl) {
+                            setThumbnailUrl(res.data.thumbnailUrl);
+                            await load();
+                            toast.success("تم إنشاء الصورة المصغّرة مع عنوان الدرس.");
+                          } else {
+                            toast.error(res.message || "تعذر حفظ الصورة المصغّرة.");
+                          }
+                        } catch (error) {
+                          toast.error(error instanceof Error ? error.message : "تعذر إنشاء الصورة المصغّرة.");
+                        } finally {
+                          setApplyingThumbOverlay(false);
+                        }
+                      }}
+                    >
+                      {applyingThumbOverlay ? "جاري الإنشاء…" : "إنشاء الصورة مع عنوان الدرس"}
+                    </Button>
+                  </div>
+                  {thumbnailBgUpload && (
+                    <img src={thumbnailBgUpload} alt="Uploaded background preview" className="mt-1 w-full max-w-md rounded-md border opacity-90" />
+                  )}
+                </div>
+                {aiThumbnailPrompt && (
+                  <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-xs font-semibold">برومبت الصورة (من محتوى الدرس: التقنيات/الأدوات وما ستتعلمه)</Label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          try { await navigator.clipboard.writeText(aiThumbnailPrompt); toast.success("تم نسخ البرومبت."); }
+                          catch { toast.error("تعذر نسخ البرومبت."); }
+                        }}
+                      >
+                        Copy prompt
+                      </Button>
+                    </div>
+                    <textarea
+                      readOnly
+                      value={aiThumbnailPrompt}
+                      className="min-h-28 w-full rounded-md border bg-background px-3 py-2 text-xs"
+                    />
+                  </div>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>YouTube channel</Label>
@@ -1520,10 +1730,21 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                   </label>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button onClick={publish} disabled={publishing || !ytConnected || (!dubForLanguage && !lessonForLanguage)}>
-                  {publishing ? "Publishing…" : currentVoicePublished ? "Update on YouTube" : youtubeLesson?.published ? "Replace the YouTube version" : "Publish to YouTube"}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button onClick={publish} disabled={publishing || !ytConnected || (!metadataOnlyUpdate && !dubForLanguage && !lessonForLanguage)}>
+                  {publishing
+                    ? "Publishing…"
+                    : metadataOnlyUpdate
+                      ? "Update on YouTube (metadata/thumbnail only)"
+                      : youtubeLesson?.published
+                        ? "Replace the YouTube version"
+                        : "Publish to YouTube"}
                 </Button>
+                {metadataOnlyUpdate && (
+                  <span className="text-xs text-muted-foreground">
+                    سيتم تحديث بيانات الفيديو/الصورة المصغّرة على YouTube بدون إعادة رفع الفيديو (للحفاظ على المشاهدات).
+                  </span>
+                )}
                 {publishedUrl && (
                   <a href={publishedUrl} target="_blank" rel="noreferrer" className="text-sm underline">
                     Open on YouTube

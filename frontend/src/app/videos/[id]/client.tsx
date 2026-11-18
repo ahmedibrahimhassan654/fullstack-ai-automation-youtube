@@ -55,6 +55,14 @@ type AiMetadata = {
   model?: string;
 };
 
+type TranscriptReferenceFile = {
+  name?: string | null;
+  format?: string | null;
+  segmentCount?: number;
+  uploadedAt?: string | null;
+  language?: string | null;
+};
+
 type VideoDetail = {
   _id: string;
   title: string;
@@ -69,6 +77,7 @@ type VideoDetail = {
   transcript?: string;
   transcriptSegments?: TranscriptSegment[];
   transcriptLanguage?: string;
+  transcriptReferenceFile?: TranscriptReferenceFile | null;
   translations?: Translation[];
   targetLanguages?: string[];
   originalLanguage?: string;
@@ -201,9 +210,14 @@ export default function VideoDetailClient({
   const [selectedLanguage, setSelectedLanguage] = useState("");
   const [dubLanguage, setDubLanguage] = useState("");
   const [generatingDub, setGeneratingDub] = useState(false);
+  const [importingReference, setImportingReference] = useState(false);
+  const [referenceSubtitleFile, setReferenceSubtitleFile] = useState<File | null>(null);
+  type VoiceOption = { name: string; label: string; gender?: string; type?: string; isStandard?: boolean };
   const [edgeVoiceOptionsByLang, setEdgeVoiceOptionsByLang] = useState<Record<string, string[]>>({});
-  const [googleVoiceOptionsByLang, setGoogleVoiceOptionsByLang] = useState<Record<string, string[]>>({});
+  const [googleVoiceOptionsByLang, setGoogleVoiceOptionsByLang] = useState<Record<string, VoiceOption[]>>({});
   const [dubEdgeVoice, setDubEdgeVoice] = useState("");
+  const [previewingVoiceKey, setPreviewingVoiceKey] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [deletingDubKey, setDeletingDubKey] = useState<string | null>(null);
   const [youtubeState, setYoutubeState] = useState<VideoYouTubeState | null>(null);
 
@@ -282,22 +296,44 @@ export default function VideoDetailClient({
   }, []);
 
   useEffect(() => {
-    api.get<{ voices: Record<string, string[]> }>("/api/videos/google-voices").then((res) => {
-      if (res.success && res.data?.voices) setGoogleVoiceOptionsByLang(res.data.voices);
+    api.get<{ voices: Record<string, any[]>; voicesByName?: Record<string, string[]> }>("/api/videos/google-voices").then((res) => {
+      if (!res.success) return;
+      const raw = (res.data?.voices || {}) as Record<string, any[]>;
+      const normalized: Record<string, VoiceOption[]> = {};
+      for (const [lang, items] of Object.entries(raw)) {
+        normalized[lang] = (items || []).map((item) => {
+          if (typeof item === "string") return { name: item, label: `${item} — Google TTS` };
+          const name = String(item?.name || "").trim();
+          if (!name) return null;
+          const gender = String(item?.gender || "Unknown");
+          const type = String(item?.type || "Other");
+          const isStandard = Boolean(item?.isStandard ?? type === "Standard");
+          const label = String(item?.label || `${name} — ${type} — ${gender}`);
+          return { name, label, gender, type, isStandard };
+        }).filter(Boolean) as VoiceOption[];
+      }
+      // Fallback for older API shape
+      if (Object.keys(normalized).length === 0 && res.data?.voicesByName) {
+        for (const [lang, names] of Object.entries(res.data.voicesByName)) {
+          normalized[lang] = (names || []).map((name) => ({ name, label: `${name} — Google TTS` }));
+        }
+      }
+      if (Object.keys(normalized).length > 0) setGoogleVoiceOptionsByLang(normalized);
     });
   }, []);
 
   useEffect(() => {
     const langBase = String(dubLanguage || "").toLowerCase().split("-")[0];
     const edgeOpts = edgeVoiceOptionsByLang[dubLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    const googleOpts = googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    const allOpts = [...googleOpts, ...edgeOpts];
+    const googleOpts = (googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[];
+    const googleNames = googleOpts.map((v) => v.name);
+    const allOpts = [...googleNames, ...edgeOpts];
     const preferredDefault =
       langBase === "ar"
-        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        ? (googleNames.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleNames[0] || "")
         : langBase === "es"
-          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
-          : (edgeOpts[0] || googleOpts[0] || "");
+          ? (googleNames.find((v) => v === "es-ES-Standard-A") || googleNames.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleNames[0] || "")
+          : (edgeOpts[0] || googleNames[0] || "");
     const belongsToLang = dubEdgeVoice.toLowerCase().startsWith(langBase);
     const isAvailable = !dubEdgeVoice || allOpts.includes(dubEdgeVoice);
     if (preferredDefault && (!dubEdgeVoice || !belongsToLang || !isAvailable)) setDubEdgeVoice(preferredDefault);
@@ -306,18 +342,67 @@ export default function VideoDetailClient({
   useEffect(() => {
     const langBase = String(lessonLanguage || "").toLowerCase().split("-")[0];
     const edgeOpts = edgeVoiceOptionsByLang[lessonLanguage] || edgeVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    const googleOpts = googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || [];
-    const allOpts = [...googleOpts, ...edgeOpts];
+    const googleOpts = (googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[];
+    const googleNames = googleOpts.map((v) => v.name);
+    const allOpts = [...googleNames, ...edgeOpts];
     const preferredDefault =
       langBase === "ar"
-        ? (googleOpts.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleOpts[0] || "")
+        ? (googleNames.find((v) => v === "ar-XA-Standard-B") || edgeOpts[0] || googleNames[0] || "")
         : langBase === "es"
-          ? (googleOpts.find((v) => v === "es-ES-Standard-A") || googleOpts.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleOpts[0] || "")
-          : (edgeOpts[0] || googleOpts[0] || "");
+          ? (googleNames.find((v) => v === "es-ES-Standard-A") || googleNames.find((v) => /^es-ES-Standard-/i.test(v)) || edgeOpts[0] || googleNames[0] || "")
+          : (edgeOpts[0] || googleNames[0] || "");
     const belongsToLang = lessonEdgeVoice.toLowerCase().startsWith(langBase);
     const isAvailable = !lessonEdgeVoice || allOpts.includes(lessonEdgeVoice);
     if (preferredDefault && (!lessonEdgeVoice || !belongsToLang || !isAvailable)) setLessonEdgeVoice(preferredDefault);
   }, [lessonLanguage, edgeVoiceOptionsByLang, googleVoiceOptionsByLang, lessonEdgeVoice, video?.transcriptLanguage, video?.originalLanguage]);
+
+  const previewVoice = async (voice: string, language: string) => {
+    if (!voice) return;
+    const key = `${language}:${voice}`;
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.src = "";
+      previewAudioRef.current = null;
+    }
+    if (previewingVoiceKey === key) {
+      setPreviewingVoiceKey(null);
+      return;
+    }
+    setPreviewingVoiceKey(key);
+    try {
+      const res = await fetch(`${API_BASE}/api/videos/tts/preview`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${api.getToken() || ""}`,
+        },
+        body: JSON.stringify({ voice, language }),
+      });
+      if (!res.ok) {
+        let msg = "Failed to preview voice";
+        try { const j = await res.json(); msg = j?.message || msg; } catch {}
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (previewAudioRef.current === audio) previewAudioRef.current = null;
+        setPreviewingVoiceKey((k) => (k === key ? null : k));
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (previewAudioRef.current === audio) previewAudioRef.current = null;
+        setPreviewingVoiceKey((k) => (k === key ? null : k));
+      };
+      await audio.play();
+    } catch (e: any) {
+      toast.error(e?.message || "تعذر تشغيل معاينة الصوت");
+      setPreviewingVoiceKey((k) => (k === key ? null : k));
+    }
+  };
 
   const saveChanges = async () => {
     if (!video) return;
@@ -838,24 +923,44 @@ export default function VideoDetailClient({
                         </option>
                       ))}
                     </select>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Label htmlFor="dubEdgeVoice">Dub voice</Label>
                       <select
                         id="dubEdgeVoice"
                         value={dubEdgeVoice}
                         onChange={(e) => setDubEdgeVoice(e.target.value)}
-                        className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        className="h-9 max-w-[520px] rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
+                        {((googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[])
+                          .filter((v) => v.isStandard !== false || v.type === "Standard")
+                          .map((v) => (
+                            <option key={`google-${v.name}`} value={v.name}>
+                              Google TTS — {v.label || `${v.name} — ${v.type || "Standard"} — ${v.gender || ""}`}
+                            </option>
+                          ))}
+                        {((googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[])
+                          .filter((v) => !(v.isStandard !== false || v.type === "Standard"))
+                          .map((v) => (
+                            <option key={`google-other-${v.name}`} value={v.name}>
+                              Google TTS — {v.label || `${v.name} — ${v.type || ""} — ${v.gender || ""}`}
+                            </option>
+                          ))}
                         {(edgeVoiceOptionsByLang[dubLanguage] || []).map((v) => (
                           <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
-                        ))}
-                        {(googleVoiceOptionsByLang[dubLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
-                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
                         ))}
                         {elevenVoices.map((v) => (
                           <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void previewVoice(dubEdgeVoice, dubLanguage)}
+                        disabled={!dubEdgeVoice || previewingVoiceKey === `${dubLanguage}:__loading__`}
+                      >
+                        {previewingVoiceKey === `${dubLanguage}:${dubEdgeVoice}` ? "إيقاف المعاينة" : "معاينة الصوت"}
+                      </Button>
                     </div>
                     <Button
                       onClick={async () => {
@@ -908,6 +1013,84 @@ export default function VideoDetailClient({
                       Refresh translation ({dubLanguage})
                     </Button>
                   </div>
+
+                  <div className="space-y-2 rounded-md border border-dashed p-3">
+                    <p className="text-sm font-medium">استخدام ملف ترجمة/سبتايتل مرجعي (SRT/VTT)</p>
+                    <p className="text-xs text-muted-foreground">
+                      ارفع ملف الترجمة الموقّت للفيديو ليُستخدم كمرجع للتوقيت والنص، وعند الدبلجة سيقوم النظام بترجمته إلى لغة الدبلجة المطلوبة (سيتم استبدال الترجمة النصية الحالية وإعادة توليد الترجمات من هذا المرجع).
+                    </p>
+                    <div className="rounded-md bg-muted/40 p-2 text-xs">
+                      <span className="font-medium">ملف الترجمة المرجعي المرفوع: </span>
+                      {video.transcriptReferenceFile?.name ? (
+                        <span>
+                          {video.transcriptReferenceFile.name}
+                          {typeof video.transcriptReferenceFile.segmentCount === "number"
+                            ? ` — ${video.transcriptReferenceFile.segmentCount} مقطع`
+                            : ""}
+                          {video.transcriptReferenceFile.language
+                            ? ` — ${video.transcriptReferenceFile.language}`
+                            : ""}
+                          {video.transcriptReferenceFile.uploadedAt
+                            ? ` — ${new Date(video.transcriptReferenceFile.uploadedAt).toLocaleString()}`
+                            : ""}
+                          <span className="text-muted-foreground"> (ملف مرفوع يدويًا، وليس ترجمة منشأة بالذكاء الاصطناعي)</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">لا يوجد ملف مرجعي مرفوع لهذا الفيديو.</span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        type="file"
+                        accept=".srt,.vtt,text/vtt,application/x-subrip,text/plain"
+                        onChange={(e) => setReferenceSubtitleFile(e.target.files?.[0] || null)}
+                        className="h-9 max-w-md"
+                      />
+                      <Button
+                        variant="outline"
+                        disabled={!referenceSubtitleFile || importingReference || video.dubbing?.status === "processing"}
+                        onClick={async () => {
+                          if (!referenceSubtitleFile) {
+                            toast.error("اختر ملف SRT أو VTT أولاً.");
+                            return;
+                          }
+                          setImportingReference(true);
+                          try {
+                            const form = new FormData();
+                            form.append("file", referenceSubtitleFile);
+                            form.append(
+                              "language",
+                              String(video.transcriptLanguage || video.originalLanguage || "en"),
+                            );
+                            const res = await api.upload<{ video: VideoDetail }>(
+                              `/api/videos/${video._id}/transcript/import`,
+                              form,
+                            );
+                            if (res.success) {
+                              toast.success(res.message || "تم استيراد ملف الترجمة المرجعي.");
+                              if (res.data?.video) setVideo(res.data.video);
+                              setReferenceSubtitleFile(null);
+                            } else {
+                              toast.error(res.message || "فشل استيراد ملف الترجمة.");
+                            }
+                          } catch (err: any) {
+                            toast.error(err?.message || "فشل استيراد ملف الترجمة.");
+                          } finally {
+                            setImportingReference(false);
+                          }
+                        }}
+                      >
+                        {importingReference ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            جارٍ الاستيراد…
+                          </>
+                        ) : (
+                          "رفع واستخدام كمرجع"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
                   {video.dubbing?.status === "processing" && (
                     <Progress value={video.dubbing.progress || 0} className="h-2" />
                   )}
@@ -953,6 +1136,9 @@ export default function VideoDetailClient({
                                             : ""}
                                           {dub.subtitlesBurned
                                             ? " • subtitles burned in"
+                                            : ""}
+                                          {dub.createdAt
+                                            ? ` • Created ${new Date(dub.createdAt).toLocaleString()}`
                                             : ""}
                                         </p>
                                         {(() => {
@@ -1089,18 +1275,38 @@ export default function VideoDetailClient({
                         id="lessonEdgeVoice"
                         value={lessonEdgeVoice}
                         onChange={(e) => setLessonEdgeVoice(e.target.value)}
-                        className="h-9 rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+                        className="h-9 max-w-[520px] rounded-md border-2 border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                       >
+                        {((googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[])
+                          .filter((v) => v.isStandard !== false || v.type === "Standard")
+                          .map((v) => (
+                            <option key={`google-${v.name}`} value={v.name}>
+                              Google TTS — {v.label || `${v.name} — ${v.type || "Standard"} — ${v.gender || ""}`}
+                            </option>
+                          ))}
+                        {((googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []) as VoiceOption[])
+                          .filter((v) => !(v.isStandard !== false || v.type === "Standard"))
+                          .map((v) => (
+                            <option key={`google-other-${v.name}`} value={v.name}>
+                              Google TTS — {v.label || `${v.name} — ${v.type || ""} — ${v.gender || ""}`}
+                            </option>
+                          ))}
                         {(edgeVoiceOptionsByLang[lessonLanguage] || []).map((v) => (
                           <option key={`edge-${v}`} value={v}>Free (Edge TTS) — {v}</option>
-                        ))}
-                        {(googleVoiceOptionsByLang[lessonLanguage] || googleVoiceOptionsByLang[video?.transcriptLanguage || video?.originalLanguage || "en"] || []).map((v) => (
-                          <option key={`google-${v}`} value={v}>Google TTS — {v}</option>
                         ))}
                         {elevenVoices.map((v) => (
                           <option key={`eleven-${v.voice_id}`} value={v.voice_id}>ElevenLabs (paid) — {v.name}</option>
                         ))}
                       </select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void previewVoice(lessonEdgeVoice, lessonLanguage)}
+                        disabled={!lessonEdgeVoice}
+                      >
+                        {previewingVoiceKey === `${lessonLanguage}:${lessonEdgeVoice}` ? "إيقاف المعاينة" : "معاينة الصوت"}
+                      </Button>
                       <Label htmlFor="lessonVoiceId">ElevenLabs voice ID (optional)</Label>
                       <select
                         id="lessonVoiceId"

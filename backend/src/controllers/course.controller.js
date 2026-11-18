@@ -2,8 +2,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import Course from '../models/Course.js';
 import Video from '../models/Video.js';
 import User from '../models/User.js';
-import cloudinary, { isCloudinaryConfigured } from '../config/cloudinary.js';
-import { env } from '../config/env.js';
+import { saveBufferLocally } from '../services/storage.service.js';
 import { publishCourseToYouTube } from '../services/coursePublish.service.js';
 import {
   applyCourseYouTubeSync,
@@ -163,13 +162,19 @@ export const createCourse = asyncHandler(async (req, res) => {
   // The course image can be sent with the course itself.
   let thumbnailUrl = String(req.body?.thumbnailUrl || '').trim() || null;
   const dataUrl = String(req.body?.thumbnailDataUrl || '').trim();
-  if (!thumbnailUrl && dataUrl.startsWith('data:image/') && isCloudinaryConfigured()) {
+  if (!thumbnailUrl && dataUrl.startsWith('data:image/')) {
     try {
-      const uploaded = await cloudinary.uploader.upload(dataUrl, {
-        folder: `${env.cloudinaryFolder}/courses`,
-        resource_type: 'image',
-      });
-      thumbnailUrl = uploaded.secure_url;
+      const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (match) {
+        const buffer = Buffer.from(match[2], 'base64');
+        const saved = await saveBufferLocally({
+          buffer,
+          subdir: 'courses',
+          originalName: `course-thumbnail.${match[1].split('/')[1] || 'png'}`,
+          mimeType: match[1],
+        });
+        thumbnailUrl = saved.url;
+      }
     } catch (error) {
       console.warn('[createCourse] image upload failed:', error?.message);
     }
@@ -547,25 +552,24 @@ export const uploadCourseThumbnail = asyncHandler(async (req, res) => {
     err.statusCode = 404;
     throw err;
   }
-  if (!isCloudinaryConfigured()) {
-    const err = new Error('Cloudinary is not configured on the server');
-    err.statusCode = 500;
-    throw err;
-  }
 
   const dataUrl = String(req.body?.thumbnailDataUrl || '').trim();
-  if (!dataUrl.startsWith('data:image/')) {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
     const err = new Error('A valid image data URL is required');
     err.statusCode = 400;
     throw err;
   }
 
-  const result = await cloudinary.uploader.upload(dataUrl, {
-    folder: `${env.cloudinaryFolder}/courses`,
-    resource_type: 'image',
+  const buffer = Buffer.from(match[2], 'base64');
+  const saved = await saveBufferLocally({
+    buffer,
+    subdir: 'courses',
+    originalName: `course-${course._id}.${match[1].split('/')[1] || 'png'}`,
+    mimeType: match[1],
   });
 
-  course.thumbnailUrl = result.secure_url;
+  course.thumbnailUrl = saved.url;
   await course.save();
 
   res.status(200).json({

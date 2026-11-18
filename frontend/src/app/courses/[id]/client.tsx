@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -13,6 +12,7 @@ import {
   ListVideo,
   Loader2,
   PlayCircle,
+  Plus,
   Radio,
   RefreshCw,
   Trash2,
@@ -77,7 +77,21 @@ type Course = {
   };
 };
 
-type VideoRow = { _id: string; title: string; status: string };
+type VideoRow = {
+  _id: string;
+  title: string;
+  status: string;
+  dubs?: { language: string; voice?: string; url?: string }[];
+  lessonVideos?: { language: string; source?: string; youtubeVideoId?: string | null; youtubeUrl?: string | null }[];
+  translations?: { language: string }[];
+};
+
+type CourseSummary = {
+  _id: string;
+  title: string;
+  language?: string;
+  videos?: { video?: { _id: string } | string | null; videoId?: string | null }[];
+};
 
 type YouTubeLesson = {
   videoId: string;
@@ -93,11 +107,7 @@ type YouTubeLesson = {
   inPlaylist: boolean;
   playlistPosition: number | null;
   duplicates: { videoId: string; title: string; publishedAt: string | null }[];
-  playlistItemDuplicates: {
-    playlistItemId: string;
-    videoId: string;
-    position: number;
-  }[];
+  playlistItemDuplicates: { playlistItemId: string; videoId: string; position: number }[];
 };
 
 type YouTubeState = {
@@ -109,11 +119,7 @@ type YouTubeState = {
     playlistUrl: string | null;
   };
   lessons: YouTubeLesson[];
-  unmatchedPlaylistItems: {
-    videoId: string;
-    title: string;
-    position: number;
-  }[];
+  unmatchedPlaylistItems: { videoId: string; title: string; position: number }[];
   summary: {
     lessons: number;
     published: number;
@@ -141,12 +147,14 @@ export default function CourseDetailClient({
   const router = useRouter();
   const toast = useToast();
 
-  const [course, setCourse] = useState<Course | null>(null);
+  const [course, setCourse] = useState<Course | null>(initialCourse);
   const [allVideos, setAllVideos] = useState<VideoRow[]>([]);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [language, setLanguage] = useState("en");
-  const [loading, setLoading] = useState(true);
+  const [allCourses, setAllCourses] = useState<CourseSummary[]>([]);
+  const [lessonCourseFilter, setLessonCourseFilter] = useState<string>("all");
+  const [title, setTitle] = useState(initialCourse?.title || "");
+  const [description, setDescription] = useState(initialCourse?.description || "");
+  const [language, setLanguage] = useState(initialCourse?.language || "en");
+  const [loading, setLoading] = useState(!initialCourse);
   const [saving, setSaving] = useState(false);
   const [dubbing, setDubbing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -155,6 +163,19 @@ export default function CourseDetailClient({
     Record<string, { status: string; progress: number; error?: string | null }>
   >({});
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
+  type StagedLesson = {
+    key: string;
+    video: File;
+    subtitle: File | null;
+    baseName: string;
+    status: "pending" | "uploading" | "subtitle" | "processing" | "adding" | "done" | "error";
+    message?: string;
+    videoId?: string;
+  };
+  const [stagedLessons, setStagedLessons] = useState<StagedLesson[]>([]);
+  const [stagedSubtitlePool, setStagedSubtitlePool] = useState<File[]>([]);
+  const [stagingUploading, setStagingUploading] = useState(false);
+  const [stagingOverall, setStagingOverall] = useState("");
   const [imageUploading, setImageUploading] = useState(false);
   const [youtube, setYoutube] = useState<YouTubeState | null>(null);
   const [loadingYoutube, setLoadingYoutube] = useState(false);
@@ -162,6 +183,8 @@ export default function CourseDetailClient({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoFilesInputRef = useRef<HTMLInputElement>(null);
+  const subtitleFilesInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const loadCourses = useCallback(async () => {
@@ -170,7 +193,10 @@ export default function CourseDetailClient({
   }, []);
 
   const load = useCallback(async () => {
-    const res = await api.get<{ course: Course }>(`/api/courses/${id}`);
+    const [res] = await Promise.all([
+      api.get<{ course: Course }>(`/api/courses/${id}`),
+      loadCourses(),
+    ]);
     if (res.success && res.data?.course) {
       const value = res.data.course;
       setCourse(value);
@@ -181,16 +207,20 @@ export default function CourseDetailClient({
       toast.error(res.message || "Failed to load the course.");
     }
     setLoading(false);
-  }, [id, toast]);
+  }, [id, toast, loadCourses]);
 
   useEffect(() => {
-    load();
+    // When the server already provided the course (SSR), skip the initial
+    // fetch and only load the supplementary video list.
+    if (!initialCourse) load();
+    else void loadCourses();
     api
       .get<{ items: VideoRow[] }>("/api/videos?limit=100")
       .then((res) => {
         if (res.success) setAllVideos(res.data?.items || []);
       });
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, initialCourse, loadCourses]);
 
   // The real YouTube state is read separately: it is the source of truth for
   // the published status and links shown on this page.
@@ -206,27 +236,8 @@ export default function CourseDetailClient({
   }, [id]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      setLoadingYoutube(true);
-      try {
-        const res = await api.get<{ youtube: YouTubeState }>(
-          `/api/courses/${id}/youtube`,
-        );
-        if (cancelled) return;
-        if (res.success && res.data?.youtube) {
-          setYoutube(res.data.youtube);
-        }
-      } catch {
-        // Request failed; loading state is reset below.
-      } finally {
-        if (!cancelled) setLoadingYoutube(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+    loadYouTube();
+  }, [loadYouTube]);
 
   // Follow the publish run while it is working.
   useEffect(() => {
@@ -238,12 +249,12 @@ export default function CourseDetailClient({
   const hasVersion = (entry: CourseVideo, lang: string) =>
     Boolean(
       entry.video?.dubs?.some((dub) => dub.language === lang && dub.url) ||
-      entry.video?.lessonVideos?.some(
-        (lesson) =>
-          lesson.language === lang &&
-          (lesson.source || "lesson") === "lesson" &&
-          lesson.url,
-      ),
+        entry.video?.lessonVideos?.some(
+          (lesson) =>
+            lesson.language === lang &&
+            (lesson.source || "lesson") === "lesson" &&
+            lesson.url,
+        ),
     );
 
   const missing = (course?.videos || []).filter(
@@ -479,60 +490,161 @@ export default function CourseDetailClient({
     reader.readAsDataURL(file);
   };
 
-  /**
-   * Uploads a brand new video and makes it a lesson of this course. The
-   * course language is the target, so the lesson is dubbed into it.
-   */
-  const uploadLesson = async (file?: File | null) => {
-    if (!file) return;
-
-    setUploading(true);
-    setUploadProgress(0);
-    toast.success("Upload started…");
-
-    const formData = new FormData();
-    const fileBaseName = file.name.replace(/\.[^.]+$/, "").trim();
-    formData.append("video", file);
-    formData.append("title", fileBaseName || file.name);
-    formData.append("originalFilename", file.name);
-    formData.append("description", "");
-    formData.append("originalLanguage", newLessonLanguage);
-    formData.append("targetLanguages", JSON.stringify([language]));
-
-    const res = await api.upload<{ video: { _id: string } }>(
-      "/api/videos/upload",
-      formData,
-      setUploadProgress,
-    );
-
-    if (!res.success || !res.data?.video?._id) {
-      toast.error(res.message || "The upload failed.");
-      setUploading(false);
-      return;
-    }
-
-    const videoId = res.data.video._id;
-
-    // Transcribe it, then make it a lesson of this course.
-    try {
-      await api.post(`/api/videos/${videoId}/process`);
-    } catch {
-      // Processing can also be started later from the video page.
-    }
-
-    const added = await api.post(`/api/courses/${id}/videos`, {
-      videoIds: [videoId],
-    });
-    if (added.success) {
-      toast.success("Lesson uploaded and added to the course.");
+  const addVideo = async (videoId: string) => {
+    const res = await api.post(`/api/courses/${id}/videos`, { videoIds: [videoId] });
+    if (res.success) {
+      toast.success(res.message || "Video added.");
+      await load();
     } else {
-      toast.error(added.message || "The video was uploaded but not added.");
+      toast.error(res.message || "Failed to add the video.");
+    }
+  };
+
+  const lessonBaseKey = (name: string) =>
+    name
+      .replace(/\.[^.]+$/, "")
+      .trim()
+      .toLowerCase()
+      .replace(/[._\s]+/g, " ")
+      .trim();
+
+  const lessonBaseKeyLoose = (name: string) =>
+    lessonBaseKey(name).replace(/\s+(ar|en|es|fr|de|tr|pt|ru|it|zh|ja|ko|hi|ur|ara|eng|spa)$/i, "").trim();
+
+  const pairSubtitlesToVideos = (videos: File[], subtitles: File[]) => {
+    const used = new Set<number>();
+    const findMatch = (video: File) => {
+      const k1 = lessonBaseKey(video.name);
+      const k2 = lessonBaseKeyLoose(video.name);
+      let idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKey(s.name) === k1);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKeyLoose(s.name) === k1);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKey(s.name) === k2);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKeyLoose(s.name) === k2);
+      if (idx >= 0) used.add(idx);
+      return idx >= 0 ? subtitles[idx] : null;
+    };
+    return videos.map((video, i) => {
+      const baseName = video.name.replace(/\.[^.]+$/, "").trim() || video.name;
+      return {
+        key: `${i}-${video.name}-${video.size}-${video.lastModified}`,
+        video,
+        subtitle: findMatch(video),
+        baseName,
+        status: "pending" as const,
+      };
+    });
+  };
+
+  const onSelectLessonVideos = (files: FileList | null) => {
+    const videos = files ? Array.from(files) : [];
+    if (!videos.length) return;
+    const next = pairSubtitlesToVideos(videos, stagedSubtitlePool);
+    setStagedLessons(next);
+  };
+
+  const onSelectLessonSubtitles = (files: FileList | null) => {
+    const subs = files ? Array.from(files) : [];
+    setStagedSubtitlePool(subs);
+    setStagedLessons((prev) => {
+      const videos = prev.map((p) => p.video);
+      if (!videos.length) return prev;
+      return pairSubtitlesToVideos(videos, subs);
+    });
+  };
+
+  const clearStagedLessons = () => {
+    if (stagingUploading) return;
+    setStagedLessons([]);
+    setStagedSubtitlePool([]);
+    setStagingOverall("");
+    if (videoFilesInputRef.current) videoFilesInputRef.current.value = "";
+    if (subtitleFilesInputRef.current) subtitleFilesInputRef.current.value = "";
+  };
+
+  const setStagedLessonState = (key: string, patch: Partial<StagedLesson>) => {
+    setStagedLessons((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  };
+
+  const uploadStagedLessons = async () => {
+    if (!stagedLessons.length || stagingUploading) return;
+    setStagingUploading(true);
+    setUploadProgress(0);
+    const createdIds: string[] = [];
+    let failed = 0;
+
+    for (let i = 0; i < stagedLessons.length; i++) {
+      const item = stagedLessons[i];
+      setStagingOverall(`درس ${i + 1} من ${stagedLessons.length}: ${item.baseName}`);
+      setUploadProgress(Math.round((i / stagedLessons.length) * 100));
+      try {
+        setStagedLessonState(item.key, { status: "uploading", message: "جارٍ رفع الفيديو..." });
+        const formData = new FormData();
+        formData.append("video", item.video);
+        formData.append("title", item.baseName || item.video.name);
+        formData.append("originalFilename", item.video.name);
+        formData.append("description", "");
+        formData.append("originalLanguage", newLessonLanguage);
+        formData.append("targetLanguages", JSON.stringify([language]));
+
+        const res = await api.upload<{ video: { _id: string } }>(
+          "/api/videos/upload",
+          formData,
+          (p) => setUploadProgress(Math.round(((i + p / 100) / stagedLessons.length) * 100)),
+        );
+        if (!res.success || !res.data?.video?._id) {
+          throw new Error(res.message || "فشل رفع الفيديو");
+        }
+        const videoId = res.data.video._id;
+
+        if (item.subtitle) {
+          setStagedLessonState(item.key, { status: "subtitle", message: "جارٍ رفع ملف الترجمة...", videoId });
+          const fd = new FormData();
+          fd.append("file", item.subtitle);
+          fd.append("language", newLessonLanguage);
+          const imp = await api.upload(`/api/videos/${videoId}/transcript/import`, fd);
+          if (!imp.success) {
+            throw new Error(imp.message || "فشل رفع ملف الترجمة");
+          }
+        }
+
+        setStagedLessonState(item.key, { status: "processing", message: "جارٍ بدء المعالجة...", videoId });
+        try {
+          await api.post(`/api/videos/${videoId}/process`);
+        } catch {
+          // يمكن بدء المعالجة لاحقاً
+        }
+
+        createdIds.push(videoId);
+        setStagedLessonState(item.key, { status: "done", message: item.subtitle ? "تم الرفع وربط ملف الترجمة" : "تم رفع الفيديو (بدون ملف ترجمة)", videoId });
+      } catch (e) {
+        failed += 1;
+        const msg = e instanceof Error ? e.message : "حدث خطأ";
+        setStagedLessonState(item.key, { status: "error", message: msg });
+        toast.error(`${item.baseName}: ${msg}`);
+      }
     }
 
-    setUploading(false);
-    setUploadProgress(0);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (createdIds.length) {
+      setStagingOverall("جارٍ إضافة الدروس للكورس بالترتيب...");
+      setStagedLessons((prev) => prev.map((l) => (createdIds.includes(l.videoId || "") && l.status === "done" ? { ...l, status: "adding", message: "جارٍ الإضافة للكورس..." } : l)));
+      const added = await api.post(`/api/courses/${id}/videos`, { videoIds: createdIds });
+      if (added.success) {
+        toast.success(`تمت إضافة ${createdIds.length} درس للكورس بالترتيب.`);
+        setStagedLessons((prev) => prev.map((l) => (createdIds.includes(l.videoId || "") ? { ...l, status: "done", message: l.subtitle ? "تم الرفع والإضافة مع ملف الترجمة" : "تم الرفع والإضافة" } : l)));
+      } else {
+        toast.error(added.message || "تم رفع الدروس لكن فشلت إضافتها للكورس.");
+      }
+    }
+
+    setUploadProgress(100);
+    setStagingOverall(failed ? `اكتمل مع أخطاء (${failed})` : "اكتمل");
+    setStagingUploading(false);
     await load();
+  };
+
+  /** Kept for backward-compat if referenced; use staged upload UI instead. */
+  const uploadLesson = async (_file?: File | null) => {
+    toast.error("اختر ملفات الفيديو وملفات الترجمة من قسم الرفع المتعدد ثم اضغط رفع.");
   };
 
   const removeVideo = async (
@@ -574,9 +686,7 @@ export default function CourseDetailClient({
     if (target < 0 || target >= ids.length) return;
     [ids[index], ids[target]] = [ids[target], ids[index]];
 
-    const res = await api.put(`/api/courses/${id}/videos/order`, {
-      videoIds: ids,
-    });
+    const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: ids });
     if (res.success) {
       await load();
     } else {
@@ -596,9 +706,7 @@ export default function CourseDetailClient({
     let toIndex = to;
     if (from < to) toIndex = to - 1;
     next.splice(toIndex, 0, moved);
-    const res = await api.put(`/api/courses/${id}/videos/order`, {
-      videoIds: next,
-    });
+    const res = await api.put(`/api/courses/${id}/videos/order`, { videoIds: next });
     if (res.success) {
       await load();
     } else {
@@ -621,7 +729,29 @@ export default function CourseDetailClient({
   const inCourse = new Set(
     (course?.videos || []).map((entry) => entry.video?._id).filter(Boolean) as string[],
   );
-  const available = allVideos.filter((video) => !inCourse.has(video._id));
+  const videoToCourses = (() => {
+    const map = new Map<string, CourseSummary[]>();
+    for (const c of allCourses) {
+      for (const entry of c.videos || []) {
+        const vid =
+          typeof entry.video === "string"
+            ? entry.video
+            : entry.video?._id || entry.videoId || null;
+        if (!vid) continue;
+        const list = map.get(String(vid)) || [];
+        if (!list.some((x) => x._id === c._id)) list.push(c);
+        map.set(String(vid), list);
+      }
+    }
+    return map;
+  })();
+  const available = allVideos.filter((video) => {
+    if (inCourse.has(video._id)) return false;
+    if (lessonCourseFilter === "all") return true;
+    const owners = videoToCourses.get(video._id) || [];
+    if (lessonCourseFilter === "none") return owners.length === 0;
+    return owners.some((c) => c._id === lessonCourseFilter);
+  });
   const publishing = course?.publishing;
   const isPublishing = publishing?.status === "processing";
   const ytByVideo = new Map(
@@ -737,9 +867,7 @@ export default function CourseDetailClient({
                       Publish course to YouTube
                     </Button>
                     <Badge
-                      variant={
-                        course.status === "published" ? "default" : "secondary"
-                      }
+                      variant={course.status === "published" ? "default" : "secondary"}
                       className="ml-auto"
                     >
                       {course.status === "published" ? "Published" : "Draft"}
@@ -773,17 +901,15 @@ export default function CourseDetailClient({
                     <>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
                         <Badge>
-                          {youtube.summary.published} of{" "}
-                          {youtube.summary.lessons} published
+                          {youtube.summary.published} of {youtube.summary.lessons}{" "}
+                          published
                         </Badge>
                         <Badge variant="outline">
                           {youtube.summary.inPlaylist} in the playlist
                         </Badge>
                         <Badge
                           variant={
-                            youtube.summary.duplicates
-                              ? "destructive"
-                              : "secondary"
+                            youtube.summary.duplicates ? "destructive" : "secondary"
                           }
                         >
                           {youtube.summary.duplicates} duplicate
@@ -831,10 +957,7 @@ export default function CourseDetailClient({
                                   Watch on YouTube
                                 </a>
                               ) : (
-                                <Badge
-                                  variant="secondary"
-                                  className="text-[10px]"
-                                >
+                                <Badge variant="secondary" className="text-[10px]">
                                   not on YouTube
                                 </Badge>
                               )}
@@ -850,9 +973,7 @@ export default function CourseDetailClient({
                                   : "not in the playlist"}
                                 {lesson.duplicates.length
                                   ? ` · ${lesson.duplicates.length} older copy${
-                                      lesson.duplicates.length === 1
-                                        ? ""
-                                        : "ies"
+                                      lesson.duplicates.length === 1 ? "" : "ies"
                                     }`
                                   : ""}
                               </p>
@@ -910,14 +1031,12 @@ export default function CourseDetailClient({
                     <div className="space-y-1.5">
                       <Label htmlFor="courseImage">Course image</Label>
                       <div className="flex items-start gap-3">
-                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted relative">
+                        <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted">
                           {course.thumbnailUrl ? (
-                            <Image
+                            <img
                               src={course.thumbnailUrl}
                               alt="Course image"
-                              fill
                               className="size-full object-cover"
-                              style={{ objectFit: "cover" }}
                             />
                           ) : (
                             <ImageIcon className="size-6 text-muted-foreground" />
@@ -993,20 +1112,19 @@ export default function CourseDetailClient({
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Upload a brand new video straight into the course */}
-                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                  {/* Upload new lessons (multiple) with paired translation files */}
+                  <div className="space-y-3 rounded-lg border border-dashed p-3">
                     <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Upload a new lesson
+                      Upload new lessons
                     </p>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-1.5">
-                        <Label htmlFor="newLessonLanguage">
-                          Spoken language of the new video
-                        </Label>
+                        <Label htmlFor="newLessonLanguage">Spoken language of the videos</Label>
                         <select
                           id="newLessonLanguage"
                           value={newLessonLanguage}
                           onChange={(e) => setNewLessonLanguage(e.target.value)}
+                          disabled={stagingUploading}
                           className={fieldClass}
                         >
                           {LANGUAGES.map((option) => (
@@ -1016,34 +1134,114 @@ export default function CourseDetailClient({
                           ))}
                         </select>
                       </div>
-                      <div className="min-w-0 flex-1 space-y-1.5">
-                        <Label htmlFor="newLessonFile">Video file</Label>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="newLessonVideos">Video files (multiple, in order)</Label>
                         <input
-                          ref={fileInputRef}
-                          id="newLessonFile"
+                          ref={videoFilesInputRef}
+                          id="newLessonVideos"
                           type="file"
                           accept="video/*"
-                          disabled={uploading}
-                          onChange={(e) => uploadLesson(e.target.files?.[0])}
-                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                          multiple
+                          disabled={stagingUploading}
+                          onChange={(e) => onSelectLessonVideos(e.target.files)}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
                         />
                         <p className="text-[11px] text-muted-foreground">
-                          The lesson keeps the name of the file you select.
+                          سيتم تسمية كل درس بنفس اسم ملف الفيديو.
+                        </p>
+                      </div>
+                      <div className="space-y-1.5 sm:col-span-2">
+                        <Label htmlFor="newLessonSubtitles">Translation/subtitle files (.srt/.vtt) — paired by file name</Label>
+                        <input
+                          ref={subtitleFilesInputRef}
+                          id="newLessonSubtitles"
+                          type="file"
+                          accept=".srt,.vtt,text/vtt,application/x-subrip"
+                          multiple
+                          disabled={stagingUploading}
+                          onChange={(e) => onSelectLessonSubtitles(e.target.files)}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          اختر كل ملفات الترجمة مرة واحدة وسيتم مطابقة كل ملف فيديو بملف الترجمة الذي له نفس الاسم (وبنفس الترتيب). يمكنك تغيير ملف الترجمة لكل درس قبل الرفع.
                         </p>
                       </div>
                     </div>
-                    {uploading && (
-                      <div className="space-y-1">
-                        <Progress value={uploadProgress} />
-                        <p className="text-xs text-muted-foreground">
-                          Uploading… {uploadProgress}%
-                        </p>
+
+                    {stagedLessons.length > 0 && (
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-medium">مراجعة الدروس قبل الرفع ({stagedLessons.length})</p>
+                          <Button type="button" variant="ghost" size="sm" onClick={clearStagedLessons} disabled={stagingUploading}>
+                            مسح القائمة
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          {stagedLessons.map((item, idx) => (
+                            <div key={item.key} className="rounded-md border bg-background p-2">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <p className="text-sm font-medium truncate">
+                                    {idx + 1}. {item.baseName}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground truncate">فيديو: {item.video.name}</p>
+                                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <span className="text-muted-foreground">ملف الترجمة:</span>
+                                    {item.subtitle ? (
+                                      <Badge variant="secondary" className="text-[10px]">{item.subtitle.name}</Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">لا يوجد ملف ترجمة مطابق</Badge>
+                                    )}
+                                    <label className={cn("cursor-pointer text-[11px] text-primary underline underline-offset-2", stagingUploading && "pointer-events-none opacity-50")}>
+                                      {item.subtitle ? "تغيير" : "اختيار ملف"}
+                                      <input
+                                        type="file"
+                                        accept=".srt,.vtt,text/vtt,application/x-subrip"
+                                        className="hidden"
+                                        disabled={stagingUploading}
+                                        onChange={(e) => {
+                                          const f = e.target.files?.[0] || null;
+                                          setStagedLessons((prev) => prev.map((l) => (l.key === item.key ? { ...l, subtitle: f } : l)));
+                                          e.currentTarget.value = "";
+                                        }}
+                                      />
+                                    </label>
+                                  </div>
+                                  {item.message && (
+                                    <p className={cn("text-xs", item.status === "error" ? "text-destructive" : item.status === "done" ? "text-green-700" : "text-muted-foreground")}>
+                                      {item.message}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="shrink-0">
+                                  <Badge
+                                    variant={item.status === "done" ? "default" : item.status === "error" ? "destructive" : "secondary"}
+                                    className="text-[10px]"
+                                  >
+                                    {item.status === "pending" ? "جاهز" : item.status === "uploading" ? "رفع الفيديو" : item.status === "subtitle" ? "رفع الترجمة" : item.status === "processing" ? "معالجة" : item.status === "adding" ? "إضافة للكورس" : item.status === "done" ? "تم" : "خطأ"}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <Button type="button" onClick={uploadStagedLessons} disabled={stagingUploading || stagedLessons.length === 0}>
+                            {stagingUploading ? "جارٍ الرفع..." : `رفع ${stagedLessons.length} درس بالترتيب`}
+                          </Button>
+                          {stagingOverall && <span className="text-xs text-muted-foreground">{stagingOverall}</span>}
+                        </div>
+                        {(stagingUploading || uploadProgress > 0) && (
+                          <div className="space-y-1">
+                            <Progress value={uploadProgress} />
+                            <p className="text-xs text-muted-foreground">التقدّم: {uploadProgress}%</p>
+                          </div>
+                        )}
                       </div>
                     )}
+
                     <p className="text-xs text-muted-foreground">
-                      The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into{" "}
-                      {language}.
+                      يتم رفع كل فيديو وربطه بملف الترجمة المطابق له (إن وُجد) بالترتيب، ثم إضافته للكورس بنفس الترتيب. عند الدبلجة لاحقاً سيُستخدم الفيديو مع ملف الترجمة/التوقيت المرتبط به لكل درس.
                     </p>
                   </div>
                   {course.videos.length === 0 ? (
@@ -1061,25 +1259,20 @@ export default function CourseDetailClient({
                             onDragStart={(e) => {
                               setDragIndex(index);
                               e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData(
-                                "text/plain",
-                                String(index),
-                              );
+                              e.dataTransfer.setData("text/plain", String(index));
                             }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               setDragOverIndex(index);
                             }}
                             onDragLeave={() => {
-                              if (dragOverIndex === index)
-                                setDragOverIndex(null);
+                              if (dragOverIndex === index) setDragOverIndex(null);
                             }}
                             onDrop={(e) => {
                               e.preventDefault();
                               setDragOverIndex(null);
                               setDragIndex(null);
-                              if (dragIndex !== null)
-                                reorderByDrop(dragIndex, index);
+                              if (dragIndex !== null) reorderByDrop(dragIndex, index);
                             }}
                             onDragEnd={() => {
                               setDragIndex(null);
@@ -1139,17 +1332,11 @@ export default function CourseDetailClient({
                                     );
                                   }
                                   return ready ? (
-                                    <Badge
-                                      variant="outline"
-                                      className="text-[10px]"
-                                    >
+                                    <Badge variant="outline" className="text-[10px]">
                                       {language} ready
                                     </Badge>
                                   ) : (
-                                    <Badge
-                                      variant="secondary"
-                                      className="text-[10px]"
-                                    >
+                                    <Badge variant="secondary" className="text-[10px]">
                                       needs {language} dub
                                     </Badge>
                                   );
@@ -1185,10 +1372,7 @@ export default function CourseDetailClient({
                               variant="ghost"
                               size="icon-xs"
                               onClick={() => move(index, 1)}
-                              disabled={
-                                index === course.videos.length - 1 ||
-                                isPublishing
-                              }
+                              disabled={index === course.videos.length - 1 || isPublishing}
                               aria-label="Move lesson down"
                             >
                               ↓
@@ -1196,7 +1380,15 @@ export default function CourseDetailClient({
                             <Button
                               variant="ghost"
                               size="icon-xs"
-                              onClick={() => removeVideo(entry.video?._id || "")}
+                              onClick={() => {
+                                const vidId = entry.video?._id || entry.videoId || "";
+                                const yt = vidId ? ytByVideo.get(vidId) : null;
+                                removeVideo(vidId, {
+                                  missing: !entry.video,
+                                  published: Boolean(yt?.published || entry.youtubeUrl || entry.youtubeVideoId),
+                                  order: index,
+                                });
+                              }}
                               disabled={isPublishing}
                               aria-label="Remove lesson"
                               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -1209,93 +1401,15 @@ export default function CourseDetailClient({
                     </ol>
                   )}
 
-                  {available.length > 0 && (
-                    <div className="space-y-2 rounded-lg border border-dashed p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Add an existing lesson
-                      </p>
-                      <div className="space-y-1">
-                        {available.map((video) => (
-                          <div
-                            key={video._id}
-                            className="flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-muted/50"
-                          >
-                            <span className="min-w-0 flex-1 truncate text-sm">
-                              {video.title}
-                            </span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => addVideo(video._id)}
-                            >
-                              <Plus className="mr-1 size-3.5" />
-                              Add
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
-                  {/* Upload a brand new video straight into the course */}
-                  <div className="space-y-2 rounded-lg border border-dashed p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Upload a new lesson
-                    </p>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                      <div className="space-y-1.5">
-                        <Label htmlFor="newLessonLanguage">
-                          Spoken language of the new video
-                        </Label>
-                        <select
-                          id="newLessonLanguage"
-                          value={newLessonLanguage}
-                          onChange={(e) => setNewLessonLanguage(e.target.value)}
-                          className={fieldClass}
-                        >
-                          {LANGUAGES.map((option) => (
-                            <option key={option.code} value={option.code}>
-                              {option.label} ({option.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="min-w-0 flex-1 space-y-1.5">
-                        <Label htmlFor="newLessonFile">Video file</Label>
-                        <input
-                          ref={fileInputRef}
-                          id="newLessonFile"
-                          type="file"
-                          accept="video/*"
-                          disabled={uploading}
-                          onChange={(e) => uploadLesson(e.target.files?.[0])}
-                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
-                        />
-                      </div>
-                    </div>
-                    {uploading && (
-                      <div className="space-y-1">
-                        <Progress value={uploadProgress} />
-                        <p className="text-xs text-muted-foreground">
-                          Uploading… {uploadProgress}%
-                        </p>
-                      </div>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into{" "}
-                      {language}.
-                    </p>
-                  </div>
+
                 </CardContent>
               </Card>
 
               <div className="flex flex-wrap justify-between gap-2">
                 <Link
                   href="/videos"
-                  className={cn(
-                    buttonVariants({ variant: "ghost", size: "sm" }),
-                  )}
+                  className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
                 >
                   <ArrowLeft className="mr-1 size-4" />
                   Back to videos
@@ -1309,9 +1423,7 @@ export default function CourseDetailClient({
               <div className="flex justify-center">
                 <Link
                   href="/courses/new"
-                  className={cn(
-                    buttonVariants({ variant: "ghost", size: "sm" }),
-                  )}
+                  className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
                 >
                   <BookOpen className="mr-1 size-4" />
                   All courses

@@ -169,31 +169,7 @@ const uploadBufferToCloudinary = (buffer, options) =>
   });
 
 export const storeBuffer = async ({ buffer, subdir = 'videos', originalName, mimeType, cloudinaryOptions = {}, preferLocal = false, desiredName, keepName = false }) => {
-  const canCloudinary = isCloudinaryConfigured();
-  if (!preferLocal && env.storageProvider !== 'local' && canCloudinary) {
-    try {
-      const opts = { ...cloudinaryOptions };
-      if (keepName && desiredName) {
-        opts.public_id = safeName(baseNameWithoutExt(desiredName));
-        opts.use_filename = false;
-        opts.unique_filename = false;
-      }
-      const result = await uploadBufferToCloudinary(buffer, opts);
-      return {
-        provider: 'cloudinary',
-        url: result.secure_url,
-        storagePath: result.public_id,
-        duration: result.duration || 0,
-        eager: result.eager || null,
-        raw: result,
-      };
-    } catch (error) {
-      if (!isCloudinaryLimitError(error)) throw error;
-      // Fall through to local storage when Cloudinary rejects due to limits.
-      console.warn('[storage] Cloudinary limit hit, saving locally:', error?.message);
-    }
-  }
-  // Local fallback/storage.
+  // Always store locally (Cloudinary uploads disabled).
   const local = await saveBufferLocally({ buffer, subdir, originalName, mimeType, desiredName, keepName });
   return {
     provider: 'local',
