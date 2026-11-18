@@ -3,7 +3,6 @@ import os from "os";
 import path from "path";
 import { spawn } from "child_process";
 import ffmpegStatic from "ffmpeg-static";
-import cloudinary, { isCloudinaryConfigured } from "../config/cloudinary.js";
 import { env } from "../config/env.js";
 import { resolveSourcePath, storeFile, isLocalStorage } from "./storage.service.js";
 import {
@@ -79,22 +78,6 @@ const runFfmpeg = (args, cwd) =>
     });
   });
 
-const uploadFile = (filePath, options) =>
-  new Promise((resolve, reject) => {
-    cloudinary.uploader.upload(filePath, options, (error, result) => {
-      if (error) return reject(error);
-      resolve(result);
-    });
-  });
-
-const uploadFileWithTimeout = (filePath, options, timeoutMs = 120000) =>
-  Promise.race([
-    uploadFile(filePath, options),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Cloudinary upload timed out')), timeoutMs),
-    ),
-  ]);
-
 export const generateLessonVideo = async ({
   video,
   language,
@@ -111,11 +94,7 @@ export const generateLessonVideo = async ({
     }
   };
 
-  if (!isCloudinaryConfigured()) {
-    const err = new Error("Cloudinary is not configured on the server");
-    err.statusCode = 500;
-    throw err;
-  }
+  // Local storage is used for uploads.
 
   await report(15);
 

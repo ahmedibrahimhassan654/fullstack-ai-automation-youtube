@@ -285,10 +285,40 @@ const GLOSSARY = [
     arabicAliases: ["كيرنل", "النواة"],
   },
   {
+    canonical: "root user",
+    aliases: ["root user", "root-user"],
+    spoken: { ar: "root user" },
+    arabicAliases: ["المستخدم الجذر", "المستخدم الجذري", "مستخدم جذري", "مستخدم الجذر", "حساب الجذر", "حساب الروت", "مستخدم الروت"],
+  },
+  {
     canonical: "root",
-    aliases: ["root user", "root"],
-    spoken: { ar: "رُوت" },
-    arabicAliases: ["روت", "المستخدم الجذر"],
+    aliases: ["root"],
+    spoken: { ar: "root" },
+    arabicAliases: ["روت", "الجذر", "الجذري", "جذر"],
+  },
+  {
+    canonical: "cd",
+    aliases: ["cd", "change directory"],
+    spoken: { ar: "cd" },
+    arabicAliases: ["سي دي", "تغيير المجلد", "تغيير الدليل"],
+  },
+  {
+    canonical: "ls",
+    aliases: ["ls"],
+    spoken: { ar: "ls" },
+    arabicAliases: ["إل إس", "ال اس"],
+  },
+  {
+    canonical: "pwd",
+    aliases: ["pwd"],
+    spoken: { ar: "pwd" },
+    arabicAliases: ["بي دبليو دي"],
+  },
+  {
+    canonical: "whoami",
+    aliases: ["whoami", "who am i"],
+    spoken: { ar: "whoami" },
+    arabicAliases: ["هوآمي", "من أنا"],
   },
   {
     canonical: "bash",
@@ -321,10 +351,70 @@ const GLOSSARY = [
     arabicAliases: ["جروب", "غروب"],
   },
   {
+    canonical: "OpenVPN",
+    aliases: ["openvpn", "open vpn", "open-vpn"],
+    spoken: { ar: "OpenVPN" },
+    arabicAliases: ["أوبن في بي إن", "اوبن في بي ان", "اوبن في بي إن"],
+  },
+  {
+    canonical: "VPNBook",
+    aliases: ["vpnbook", "vpn book", "vpn-book"],
+    spoken: { ar: "VPNBook" },
+    arabicAliases: ["في بي إن بوك", "في بي ان بوك", "في بي إن بوك"],
+  },
+  {
+    canonical: "ProxyChains",
+    aliases: ["proxychains", "proxy chains", "proxychain", "proxy chain"],
+    spoken: { ar: "ProxyChains" },
+    arabicAliases: ["بروكسي تشينز", "بروكسي تشين", "سلاسل البروكسي", "سلسلة البروكسي"],
+  },
+  {
+    canonical: "proxy",
+    aliases: ["proxy", "proxies"],
+    spoken: { ar: "proxy" },
+    arabicAliases: ["بروكسي", "وكيل", "بروكسيات"],
+  },
+  {
+    canonical: "DNS",
+    aliases: ["dns"],
+    spoken: { ar: "DNS" },
+    arabicAliases: ["دي إن إس", "دي ان اس"],
+  },
+  {
+    canonical: "SOCKS5",
+    aliases: ["socks5", "socks 5"],
+    spoken: { ar: "SOCKS5" },
+    arabicAliases: ["سوكس فايف", "سوكس 5"],
+  },
+  {
+    canonical: "Tor",
+    aliases: ["tor"],
+    spoken: { ar: "Tor" },
+    arabicAliases: ["تور"],
+  },
+  {
     canonical: "VPN",
     aliases: ["vpn"],
-    spoken: { ar: "فِي بِي إِن" },
+    spoken: { ar: "VPN" },
     arabicAliases: ["في بي إن", "في بي ان"],
+  },
+  {
+    canonical: "UDP",
+    aliases: ["udp"],
+    spoken: { ar: "UDP" },
+    arabicAliases: ["يو دي بي", "يودب"],
+  },
+  {
+    canonical: "IP address",
+    aliases: ["ip address", "ip-address", "ip addr"],
+    spoken: { ar: "IP address" },
+    arabicAliases: ["عنوان آي بي", "عنوان IP", "عنوان الآي بي"],
+  },
+  {
+    canonical: "IP",
+    aliases: ["ip"],
+    spoken: { ar: "IP" },
+    arabicAliases: ["آي بي", "أي بي", "أبي إي", "أيبي", "اي بي"],
   },
   {
     canonical: "NAT",
@@ -451,12 +541,6 @@ const GLOSSARY = [
     aliases: ["ok", "okay", "o k"],
     spoken: { ar: "أُوكَيْ" },
     arabicAliases: [],
-  },
-  {
-    canonical: "IP",
-    aliases: ["ip"],
-    spoken: { ar: "آي بِي" },
-    arabicAliases: ["أبي إي", "أي بي", "آبي إي", "أيبي"],
   },
   {
     canonical: "DHCP",
@@ -1391,30 +1475,45 @@ export const repairTechnicalTerms = ({
       // already repaired by repairSpokenWithTerms above, which is safer.
     }
 
-    // An Arabic dub must never hand a Latin word to the Arabic voice: it reads
-    // it with English pronunciation, which is exactly what "erminal" was.
-    if (!usesLatinScript(targetLanguage) && /[A-Za-z]/.test(repairedSpoken)) {
-      repairedSpoken = transliterateRemainingLatin(repairedSpoken);
-    }
+    // Keep technical/command terms in their canonical English/Latin form in both
+    // subtitle/display text and spoken text when the user expects English terms
+    // to be read clearly in English (and shown as-is in subtitles). For non-Latin
+    // target languages, avoid transliterating those terms to the target script:
+    // TTS pronunciation is handled separately (e.g. SSML/lang hints) so the same
+    // selected voice can pronounce them in English.
+    if (!usesLatinScript(targetLanguage)) {
+      const hasCanonicalTermInText = terms.some((term) =>
+        hasCanonical(repairedText, term.canonical),
+      );
+      const hasCanonicalTermInSpoken = terms.some((term) =>
+        hasCanonical(repairedSpoken, term.canonical),
+      );
 
-    // The burned subtitles must show the sentence that is actually spoken, so
-    // technical terms stay in the same (Arabic) form in text and narration.
-    // For an Arabic dub no Latin word may remain in the subtitle text.
-    if (!usesLatinScript(targetLanguage) && /[A-Za-z]/.test(repairedText)) {
-      for (const term of sortByLength(terms)) {
-        const spokenForm = getSpokenForm(term, targetLanguage);
-        if (!spokenForm) continue;
-        if (termRegex(term.canonical, "i").test(repairedText)) {
-          repairedText = repairedText.replace(
-            termRegex(term.canonical, "gi"),
-            spokenForm,
-          );
-        }
+      // Normalize/canonicalize known technical terms in display text so subtitles
+      // keep the correct English form (e.g. "OpenVPN", "sudo") instead of broken
+      // or transliterated variants.
+      if (hasCanonicalTermInText || /[A-Za-z]/.test(repairedText)) {
+        repairedText = repairTextWithTerms(repairedText, terms);
       }
-      repairedText = repairedText
-        .replace(/\s*\u0627\u0644\u0640\s*/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+
+      // Preserve/restore canonical English technical terms in spoken text when
+      // possible; do not replace them with Arabic transliterations.
+      if (String(spokenText || "").trim()) {
+        repairedSpoken = repairTextWithTerms(repairedSpoken, terms);
+
+        // If a required term is still missing from spoken text but present in
+        // display text, fall back to the display form so TTS gets the term.
+        for (const term of sortByLength(terms)) {
+          if (hasCanonical(repairedText, term.canonical) && !hasCanonical(repairedSpoken, term.canonical)) {
+            repairedSpoken = `${repairedSpoken} ${term.canonical}`.replace(/\s+/g, " ").trim();
+          }
+        }
+
+        // Avoid forcing full transliteration of all remaining Latin tokens to the
+        // target script. Keep meaningful Latin technical tokens as-is for clearer
+        // English pronunciation by capable TTS voices; strip isolated leftover
+        // noise conservatively.
+      }
     }
   }
 

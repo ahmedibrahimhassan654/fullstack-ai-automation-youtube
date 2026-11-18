@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  BarChart3,
   BookOpen,
   ChevronsLeft,
   ChevronsRight,
@@ -85,6 +86,12 @@ const NAV_SECTIONS: NavSection[] = [
         icon: Tv,
         isActive: (pathname) =>
           pathname === "/channels" || pathname.startsWith("/channels/"),
+      },
+      {
+        title: "SEO",
+        href: "/seo",
+        icon: BarChart3,
+        isActive: (pathname) => pathname === "/seo",
       },
     ],
   },

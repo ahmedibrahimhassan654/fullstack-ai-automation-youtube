@@ -163,6 +163,19 @@ export default function CourseDetailClient({
     Record<string, { status: string; progress: number; error?: string | null }>
   >({});
   const [newLessonLanguage, setNewLessonLanguage] = useState("en");
+  type StagedLesson = {
+    key: string;
+    video: File;
+    subtitle: File | null;
+    baseName: string;
+    status: "pending" | "uploading" | "subtitle" | "processing" | "adding" | "done" | "error";
+    message?: string;
+    videoId?: string;
+  };
+  const [stagedLessons, setStagedLessons] = useState<StagedLesson[]>([]);
+  const [stagedSubtitlePool, setStagedSubtitlePool] = useState<File[]>([]);
+  const [stagingUploading, setStagingUploading] = useState(false);
+  const [stagingOverall, setStagingOverall] = useState("");
   const [imageUploading, setImageUploading] = useState(false);
   const [youtube, setYoutube] = useState<YouTubeState | null>(null);
   const [loadingYoutube, setLoadingYoutube] = useState(false);
@@ -170,6 +183,8 @@ export default function CourseDetailClient({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoFilesInputRef = useRef<HTMLInputElement>(null);
+  const subtitleFilesInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const loadCourses = useCallback(async () => {
@@ -485,58 +500,151 @@ export default function CourseDetailClient({
     }
   };
 
-  /**
-   * Uploads a brand new video and makes it a lesson of this course. The
-   * course language is the target, so the lesson is dubbed into it.
-   */
-  const uploadLesson = async (file?: File | null) => {
-    if (!file) return;
+  const lessonBaseKey = (name: string) =>
+    name
+      .replace(/\.[^.]+$/, "")
+      .trim()
+      .toLowerCase()
+      .replace(/[._\s]+/g, " ")
+      .trim();
 
-    setUploading(true);
+  const lessonBaseKeyLoose = (name: string) =>
+    lessonBaseKey(name).replace(/\s+(ar|en|es|fr|de|tr|pt|ru|it|zh|ja|ko|hi|ur|ara|eng|spa)$/i, "").trim();
+
+  const pairSubtitlesToVideos = (videos: File[], subtitles: File[]) => {
+    const used = new Set<number>();
+    const findMatch = (video: File) => {
+      const k1 = lessonBaseKey(video.name);
+      const k2 = lessonBaseKeyLoose(video.name);
+      let idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKey(s.name) === k1);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKeyLoose(s.name) === k1);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKey(s.name) === k2);
+      if (idx < 0) idx = subtitles.findIndex((s, i) => !used.has(i) && lessonBaseKeyLoose(s.name) === k2);
+      if (idx >= 0) used.add(idx);
+      return idx >= 0 ? subtitles[idx] : null;
+    };
+    return videos.map((video, i) => {
+      const baseName = video.name.replace(/\.[^.]+$/, "").trim() || video.name;
+      return {
+        key: `${i}-${video.name}-${video.size}-${video.lastModified}`,
+        video,
+        subtitle: findMatch(video),
+        baseName,
+        status: "pending" as const,
+      };
+    });
+  };
+
+  const onSelectLessonVideos = (files: FileList | null) => {
+    const videos = files ? Array.from(files) : [];
+    if (!videos.length) return;
+    const next = pairSubtitlesToVideos(videos, stagedSubtitlePool);
+    setStagedLessons(next);
+  };
+
+  const onSelectLessonSubtitles = (files: FileList | null) => {
+    const subs = files ? Array.from(files) : [];
+    setStagedSubtitlePool(subs);
+    setStagedLessons((prev) => {
+      const videos = prev.map((p) => p.video);
+      if (!videos.length) return prev;
+      return pairSubtitlesToVideos(videos, subs);
+    });
+  };
+
+  const clearStagedLessons = () => {
+    if (stagingUploading) return;
+    setStagedLessons([]);
+    setStagedSubtitlePool([]);
+    setStagingOverall("");
+    if (videoFilesInputRef.current) videoFilesInputRef.current.value = "";
+    if (subtitleFilesInputRef.current) subtitleFilesInputRef.current.value = "";
+  };
+
+  const setStagedLessonState = (key: string, patch: Partial<StagedLesson>) => {
+    setStagedLessons((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  };
+
+  const uploadStagedLessons = async () => {
+    if (!stagedLessons.length || stagingUploading) return;
+    setStagingUploading(true);
     setUploadProgress(0);
-    toast.success("Upload started…");
+    const createdIds: string[] = [];
+    let failed = 0;
 
-    const formData = new FormData();
-    const fileBaseName = file.name.replace(/\.[^.]+$/, "").trim();
-    formData.append("video", file);
-    formData.append("title", fileBaseName || file.name);
-    formData.append("originalFilename", file.name);
-    formData.append("description", "");
-    formData.append("originalLanguage", newLessonLanguage);
-    formData.append("targetLanguages", JSON.stringify([language]));
+    for (let i = 0; i < stagedLessons.length; i++) {
+      const item = stagedLessons[i];
+      setStagingOverall(`درس ${i + 1} من ${stagedLessons.length}: ${item.baseName}`);
+      setUploadProgress(Math.round((i / stagedLessons.length) * 100));
+      try {
+        setStagedLessonState(item.key, { status: "uploading", message: "جارٍ رفع الفيديو..." });
+        const formData = new FormData();
+        formData.append("video", item.video);
+        formData.append("title", item.baseName || item.video.name);
+        formData.append("originalFilename", item.video.name);
+        formData.append("description", "");
+        formData.append("originalLanguage", newLessonLanguage);
+        formData.append("targetLanguages", JSON.stringify([language]));
 
-    const res = await api.upload<{ video: { _id: string } }>(
-      "/api/videos/upload",
-      formData,
-      setUploadProgress,
-    );
+        const res = await api.upload<{ video: { _id: string } }>(
+          "/api/videos/upload",
+          formData,
+          (p) => setUploadProgress(Math.round(((i + p / 100) / stagedLessons.length) * 100)),
+        );
+        if (!res.success || !res.data?.video?._id) {
+          throw new Error(res.message || "فشل رفع الفيديو");
+        }
+        const videoId = res.data.video._id;
 
-    if (!res.success || !res.data?.video?._id) {
-      toast.error(res.message || "The upload failed.");
-      setUploading(false);
-      return;
+        if (item.subtitle) {
+          setStagedLessonState(item.key, { status: "subtitle", message: "جارٍ رفع ملف الترجمة...", videoId });
+          const fd = new FormData();
+          fd.append("file", item.subtitle);
+          fd.append("language", newLessonLanguage);
+          const imp = await api.upload(`/api/videos/${videoId}/transcript/import`, fd);
+          if (!imp.success) {
+            throw new Error(imp.message || "فشل رفع ملف الترجمة");
+          }
+        }
+
+        setStagedLessonState(item.key, { status: "processing", message: "جارٍ بدء المعالجة...", videoId });
+        try {
+          await api.post(`/api/videos/${videoId}/process`);
+        } catch {
+          // يمكن بدء المعالجة لاحقاً
+        }
+
+        createdIds.push(videoId);
+        setStagedLessonState(item.key, { status: "done", message: item.subtitle ? "تم الرفع وربط ملف الترجمة" : "تم رفع الفيديو (بدون ملف ترجمة)", videoId });
+      } catch (e) {
+        failed += 1;
+        const msg = e instanceof Error ? e.message : "حدث خطأ";
+        setStagedLessonState(item.key, { status: "error", message: msg });
+        toast.error(`${item.baseName}: ${msg}`);
+      }
     }
 
-    const videoId = res.data.video._id;
-
-    // Transcribe it, then make it a lesson of this course.
-    try {
-      await api.post(`/api/videos/${videoId}/process`);
-    } catch {
-      // Processing can also be started later from the video page.
+    if (createdIds.length) {
+      setStagingOverall("جارٍ إضافة الدروس للكورس بالترتيب...");
+      setStagedLessons((prev) => prev.map((l) => (createdIds.includes(l.videoId || "") && l.status === "done" ? { ...l, status: "adding", message: "جارٍ الإضافة للكورس..." } : l)));
+      const added = await api.post(`/api/courses/${id}/videos`, { videoIds: createdIds });
+      if (added.success) {
+        toast.success(`تمت إضافة ${createdIds.length} درس للكورس بالترتيب.`);
+        setStagedLessons((prev) => prev.map((l) => (createdIds.includes(l.videoId || "") ? { ...l, status: "done", message: l.subtitle ? "تم الرفع والإضافة مع ملف الترجمة" : "تم الرفع والإضافة" } : l)));
+      } else {
+        toast.error(added.message || "تم رفع الدروس لكن فشلت إضافتها للكورس.");
+      }
     }
 
-    const added = await api.post(`/api/courses/${id}/videos`, { videoIds: [videoId] });
-    if (added.success) {
-      toast.success("Lesson uploaded and added to the course.");
-    } else {
-      toast.error(added.message || "The video was uploaded but not added.");
-    }
-
-    setUploading(false);
-    setUploadProgress(0);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    setUploadProgress(100);
+    setStagingOverall(failed ? `اكتمل مع أخطاء (${failed})` : "اكتمل");
+    setStagingUploading(false);
     await load();
+  };
+
+  /** Kept for backward-compat if referenced; use staged upload UI instead. */
+  const uploadLesson = async (_file?: File | null) => {
+    toast.error("اختر ملفات الفيديو وملفات الترجمة من قسم الرفع المتعدد ثم اضغط رفع.");
   };
 
   const removeVideo = async (
@@ -1004,20 +1112,19 @@ export default function CourseDetailClient({
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Upload a brand new video straight into the course */}
-                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                  {/* Upload new lessons (multiple) with paired translation files */}
+                  <div className="space-y-3 rounded-lg border border-dashed p-3">
                     <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Upload a new lesson
+                      Upload new lessons
                     </p>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-1.5">
-                        <Label htmlFor="newLessonLanguage">
-                          Spoken language of the new video
-                        </Label>
+                        <Label htmlFor="newLessonLanguage">Spoken language of the videos</Label>
                         <select
                           id="newLessonLanguage"
                           value={newLessonLanguage}
                           onChange={(e) => setNewLessonLanguage(e.target.value)}
+                          disabled={stagingUploading}
                           className={fieldClass}
                         >
                           {LANGUAGES.map((option) => (
@@ -1027,34 +1134,114 @@ export default function CourseDetailClient({
                           ))}
                         </select>
                       </div>
-                      <div className="min-w-0 flex-1 space-y-1.5">
-                        <Label htmlFor="newLessonFile">Video file</Label>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="newLessonVideos">Video files (multiple, in order)</Label>
                         <input
-                          ref={fileInputRef}
-                          id="newLessonFile"
+                          ref={videoFilesInputRef}
+                          id="newLessonVideos"
                           type="file"
                           accept="video/*"
-                          disabled={uploading}
-                          onChange={(e) => uploadLesson(e.target.files?.[0])}
-                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                          multiple
+                          disabled={stagingUploading}
+                          onChange={(e) => onSelectLessonVideos(e.target.files)}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
                         />
                         <p className="text-[11px] text-muted-foreground">
-                          The lesson keeps the name of the file you select.
+                          سيتم تسمية كل درس بنفس اسم ملف الفيديو.
+                        </p>
+                      </div>
+                      <div className="space-y-1.5 sm:col-span-2">
+                        <Label htmlFor="newLessonSubtitles">Translation/subtitle files (.srt/.vtt) — paired by file name</Label>
+                        <input
+                          ref={subtitleFilesInputRef}
+                          id="newLessonSubtitles"
+                          type="file"
+                          accept=".srt,.vtt,text/vtt,application/x-subrip"
+                          multiple
+                          disabled={stagingUploading}
+                          onChange={(e) => onSelectLessonSubtitles(e.target.files)}
+                          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80 disabled:opacity-50"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          اختر كل ملفات الترجمة مرة واحدة وسيتم مطابقة كل ملف فيديو بملف الترجمة الذي له نفس الاسم (وبنفس الترتيب). يمكنك تغيير ملف الترجمة لكل درس قبل الرفع.
                         </p>
                       </div>
                     </div>
-                    {uploading && (
-                      <div className="space-y-1">
-                        <Progress value={uploadProgress} />
-                        <p className="text-xs text-muted-foreground">
-                          Uploading… {uploadProgress}%
-                        </p>
+
+                    {stagedLessons.length > 0 && (
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-medium">مراجعة الدروس قبل الرفع ({stagedLessons.length})</p>
+                          <Button type="button" variant="ghost" size="sm" onClick={clearStagedLessons} disabled={stagingUploading}>
+                            مسح القائمة
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          {stagedLessons.map((item, idx) => (
+                            <div key={item.key} className="rounded-md border bg-background p-2">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <p className="text-sm font-medium truncate">
+                                    {idx + 1}. {item.baseName}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground truncate">فيديو: {item.video.name}</p>
+                                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <span className="text-muted-foreground">ملف الترجمة:</span>
+                                    {item.subtitle ? (
+                                      <Badge variant="secondary" className="text-[10px]">{item.subtitle.name}</Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">لا يوجد ملف ترجمة مطابق</Badge>
+                                    )}
+                                    <label className={cn("cursor-pointer text-[11px] text-primary underline underline-offset-2", stagingUploading && "pointer-events-none opacity-50")}>
+                                      {item.subtitle ? "تغيير" : "اختيار ملف"}
+                                      <input
+                                        type="file"
+                                        accept=".srt,.vtt,text/vtt,application/x-subrip"
+                                        className="hidden"
+                                        disabled={stagingUploading}
+                                        onChange={(e) => {
+                                          const f = e.target.files?.[0] || null;
+                                          setStagedLessons((prev) => prev.map((l) => (l.key === item.key ? { ...l, subtitle: f } : l)));
+                                          e.currentTarget.value = "";
+                                        }}
+                                      />
+                                    </label>
+                                  </div>
+                                  {item.message && (
+                                    <p className={cn("text-xs", item.status === "error" ? "text-destructive" : item.status === "done" ? "text-green-700" : "text-muted-foreground")}>
+                                      {item.message}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="shrink-0">
+                                  <Badge
+                                    variant={item.status === "done" ? "default" : item.status === "error" ? "destructive" : "secondary"}
+                                    className="text-[10px]"
+                                  >
+                                    {item.status === "pending" ? "جاهز" : item.status === "uploading" ? "رفع الفيديو" : item.status === "subtitle" ? "رفع الترجمة" : item.status === "processing" ? "معالجة" : item.status === "adding" ? "إضافة للكورس" : item.status === "done" ? "تم" : "خطأ"}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <Button type="button" onClick={uploadStagedLessons} disabled={stagingUploading || stagedLessons.length === 0}>
+                            {stagingUploading ? "جارٍ الرفع..." : `رفع ${stagedLessons.length} درس بالترتيب`}
+                          </Button>
+                          {stagingOverall && <span className="text-xs text-muted-foreground">{stagingOverall}</span>}
+                        </div>
+                        {(stagingUploading || uploadProgress > 0) && (
+                          <div className="space-y-1">
+                            <Progress value={uploadProgress} />
+                            <p className="text-xs text-muted-foreground">التقدّم: {uploadProgress}%</p>
+                          </div>
+                        )}
                       </div>
                     )}
+
                     <p className="text-xs text-muted-foreground">
-                      The video is uploaded, transcribed and added as the last
-                      lesson. Use the dub button above to dub it into{" "}
-                      {language}.
+                      يتم رفع كل فيديو وربطه بملف الترجمة المطابق له (إن وُجد) بالترتيب، ثم إضافته للكورس بنفس الترتيب. عند الدبلجة لاحقاً سيُستخدم الفيديو مع ملف الترجمة/التوقيت المرتبط به لكل درس.
                     </p>
                   </div>
                   {course.videos.length === 0 ? (
@@ -1214,116 +1401,7 @@ export default function CourseDetailClient({
                     </ol>
                   )}
 
-                  {(allVideos.some((v) => !inCourse.has(v._id)) || available.length > 0) && (
-                    <div className="space-y-2 rounded-lg border border-dashed p-3">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                          Add an existing lesson
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <Label htmlFor="lessonCourseFilter" className="text-xs text-muted-foreground whitespace-nowrap">
-                            Filter by course
-                          </Label>
-                          <select
-                            id="lessonCourseFilter"
-                            value={lessonCourseFilter}
-                            onChange={(e) => setLessonCourseFilter(e.target.value)}
-                            className={cn(fieldClass, "h-8 w-auto min-w-[180px] text-xs")}
-                          >
-                            <option value="all">All courses</option>
-                            <option value="none">Not in any course</option>
-                            {allCourses
-                              .filter((c) => c._id !== id)
-                              .map((c) => (
-                                <option key={c._id} value={c._id}>
-                                  {c.title}{c.language ? ` (${c.language})` : ""}
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-                      </div>
-                      <div className="space-y-1">
-                        {available.length === 0 ? (
-                          <p className="px-1 py-2 text-sm text-muted-foreground">
-                            No lessons match this filter.
-                          </p>
-                        ) : (
-                          available.map((video) => {
-                            const dubLangs = Array.from(
-                              new Set((video.dubs || []).map((d) => d.language).filter(Boolean)),
-                            );
-                            const publishedLangs = Array.from(
-                              new Set(
-                                (video.lessonVideos || [])
-                                  .filter((l) => l.youtubeVideoId || l.youtubeUrl)
-                                  .map((l) => l.language)
-                                  .filter(Boolean),
-                              ),
-                            );
-                            const owners = videoToCourses.get(video._id) || [];
-                            return (
-                              <div
-                                key={video._id}
-                                className="flex flex-col gap-2 rounded-md border border-transparent px-2 py-2 hover:border-border hover:bg-muted/50 sm:flex-row sm:items-center sm:gap-3"
-                              >
-                                <div className="min-w-0 flex-1 space-y-1">
-                                  <span className="block truncate text-sm font-medium">
-                                    {video.title}
-                                  </span>
-                                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                                    <span className="text-muted-foreground">Dubs:</span>
-                                    {dubLangs.length ? (
-                                      dubLangs.map((l) => (
-                                        <Badge key={l} variant="secondary" className="text-[10px]">
-                                          {l}
-                                        </Badge>
-                                      ))
-                                    ) : (
-                                      <span className="text-muted-foreground">none</span>
-                                    )}
-                                    <span className="ml-1 text-muted-foreground">• YouTube:</span>
-                                    {publishedLangs.length ? (
-                                      publishedLangs.map((l) => (
-                                        <Badge key={l} variant="default" className="text-[10px]">
-                                          {l} published
-                                        </Badge>
-                                      ))
-                                    ) : (
-                                      <Badge variant="outline" className="text-[10px]">
-                                        not published
-                                      </Badge>
-                                    )}
-                                    {owners.length > 0 && lessonCourseFilter === "all" && (
-                                      <>
-                                        <span className="ml-1 text-muted-foreground">• Courses:</span>
-                                        {owners.slice(0, 2).map((c) => (
-                                          <Badge key={c._id} variant="outline" className="text-[10px]">
-                                            {c.title}{c.language ? ` (${c.language})` : ""}
-                                          </Badge>
-                                        ))}
-                                        {owners.length > 2 && (
-                                          <span className="text-muted-foreground">+{owners.length - 2}</span>
-                                        )}
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => addVideo(video._id)}
-                                  className="shrink-0 self-start sm:self-center"
-                                >
-                                  <Plus className="mr-1 size-3.5" />
-                                  Add
-                                </Button>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    </div>
-                  )}
+
 
                 </CardContent>
               </Card>

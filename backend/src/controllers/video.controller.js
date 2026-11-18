@@ -1,4 +1,4 @@
-import { asyncHandler } from "../utils/asyncHandler.js";
+﻿import { asyncHandler } from "../utils/asyncHandler.js";
 const YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3";
 // Every connected account keeps its own tokens, because the channel a video
 // is published to can live on another Google account than the default one.
@@ -23,12 +23,16 @@ import { publishProgress, subscribeProgress } from "../lib/progressBus.js";
 import {
   analyzeTranscript,
   answerQuestion,
-  translateTranscriptSegments,
-  translatePublishMetadata,
+  condenseTranslationForDuration,
+  evaluateTranslationSegments,
+  generateEducationalScript,
   findUntranslatedSegments,
+  improvePublishSeo,
+  translatePublishMetadata,
+  translateTranscriptSegments,
 } from "../services/aiMetadata.service.js";
 import { generateDubbedVideo } from "../services/dubbing.service.js";
-import { EDGE_VOICE_OPTIONS, VOICES } from "../services/tts.service.js";
+import { EDGE_VOICE_OPTIONS, VOICES, synthesizeSpeech } from "../services/tts.service.js";
 import { parseSubtitle } from "../services/subtitle.service.js";
 import { generateLessonVideo } from "../services/lessonVideo.service.js";
 import { ElevenLabsClient } from "elevenlabs";
@@ -91,17 +95,7 @@ const STAGE_LABELS = {
   failed: "Processing failed",
 };
 
-const uploadBuffer = (buffer, options) =>
-  new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      options,
-      (error, response) => {
-        if (error) return reject(error);
-        resolve(response);
-      },
-    );
-    stream.end(buffer);
-  });
+
 
 const LANGUAGE_NAMES = {
   english: "en",
@@ -1449,16 +1443,47 @@ export const listGoogleVoices = asyncHandler(async (req, res) => {
   }
 
   const language = String(req.query.language || "").trim().toLowerCase();
-  const baseToCode = {
-    ar: "ar-XA", de: "de-DE", en: "en-US", es: "es-ES", fr: "fr-FR",
-    hi: "hi-IN", it: "it-IT", ja: "ja-JP", ko: "ko-KR", nl: "nl-NL",
-    pl: "pl-PL", pt: "pt-BR", ru: "ru-RU", tr: "tr-TR", zh: "cmn-CN",
-    cmn: "cmn-CN",
+  const baseToCodes = {
+    ar: ["ar-XA"],
+    de: ["de-DE"],
+    en: ["en-US", "en-GB"],
+    es: ["es-ES", "es-US"],
+    fr: ["fr-FR", "fr-CA"],
+    hi: ["hi-IN"],
+    it: ["it-IT"],
+    ja: ["ja-JP"],
+    ko: ["ko-KR"],
+    nl: ["nl-NL"],
+    pl: ["pl-PL"],
+    pt: ["pt-BR", "pt-PT"],
+    ru: ["ru-RU"],
+    tr: ["tr-TR"],
+    zh: ["cmn-CN"],
+    cmn: ["cmn-CN"],
+  };
+
+  const genderLabel = (g) => {
+    const v = String(g || "").toUpperCase();
+    if (v === "MALE") return "Male";
+    if (v === "FEMALE") return "Female";
+    if (v === "NEUTRAL") return "Neutral";
+    return "Unknown";
+  };
+
+  const voiceType = (name) => {
+    const n = String(name || "");
+    if (n.includes("Standard")) return "Standard";
+    if (n.includes("Wavenet")) return "WaveNet";
+    if (n.includes("Neural2")) return "Neural2";
+    if (n.includes("Studio")) return "Studio";
+    if (n.includes("Polyglot")) return "Polyglot";
+    if (n.includes("News")) return "News";
+    return "Other";
   };
 
   const codes = language
-    ? [baseToCode[language] || language]
-    : Object.values(baseToCode);
+    ? (baseToCodes[language] || [language])
+    : Array.from(new Set(Object.values(baseToCodes).flat()));
 
   const data = {};
   for (const code of codes) {
@@ -1468,18 +1493,47 @@ export const listGoogleVoices = asyncHandler(async (req, res) => {
         `https://texttospeech.googleapis.com/v1/voices?languageCode=${encodeURIComponent(code)}&key=${encodeURIComponent(env.googleTtsApiKey)}`,
       );
       const json = await r.json().catch(() => ({}));
-      const names = (json.voices || []).map((v) => v.name).filter(Boolean);
       const base = code.split("-")[0].toLowerCase();
-      data[base] = Array.from(new Set([...(data[base] || []), ...names]));
+      const items = (json.voices || [])
+        .map((v) => {
+          const name = String(v?.name || "").trim();
+          if (!name) return null;
+          const type = voiceType(name);
+          const gender = genderLabel(v?.ssmlGender);
+          return {
+            name,
+            gender,
+            type,
+            isStandard: type === "Standard",
+            languageCode: code,
+            label: `${name} â€” ${type} â€” ${gender}`,
+          };
+        })
+        .filter(Boolean);
+
+      const existing = data[base] || [];
+      const byName = new Map(existing.map((x) => [x.name, x]));
+      for (const item of items) byName.set(item.name, item);
+      data[base] = Array.from(byName.values()).sort((a, b) => {
+        if (a.isStandard !== b.isStandard) return a.isStandard ? -1 : 1;
+        if (a.gender !== b.gender) return a.gender.localeCompare(b.gender);
+        return a.name.localeCompare(b.name);
+      });
     } catch (error) {
       console.warn("[listGoogleVoices] failed for", code, error?.message);
     }
   }
 
+  // Backward-compatible plain names list for older clients.
+  const voicesByName = {};
+  for (const [lang, items] of Object.entries(data)) {
+    voicesByName[lang] = items.map((i) => i.name);
+  }
+
   res.status(200).json({
     success: true,
     message: "Google voices",
-    data: { voices: data, provider: "google" },
+    data: { voices: data, voicesByName, provider: "google" },
   });
 });
 export const listYouTubePlaylists = asyncHandler(async (req, res) => {
@@ -1507,6 +1561,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
 
   const language = String(req.params.language || "").trim();
   const requestedVoice = String(req.body?.voice || "").trim();
+  const updateOnly = req.body?.updateOnly === true || req.body?.updateOnly === "true";
 
   const languageDubs = (video.dubs || []).filter((item) => item.language === language && item.url);
   const dub =
@@ -1535,68 +1590,116 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
             ? "lesson"
             : null;
 
-  if (!source) {
-    const err = new Error(
-      "Nothing to publish for this language yet. Dub the original video or generate a study-journey lesson first.",
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-  if (source === "dub" && !dub) {
-    const err = new Error("No dubbed video found for this language. Dub the original video first.");
-    err.statusCode = 404;
-    throw err;
-  }
-  if (source === "lesson" && !lessonEntry) {
-    const err = new Error("Generated lesson video not found for this language");
-    err.statusCode = 404;
-    throw err;
+  // In metadata-only mode we update an already published YouTube video (no re-upload).
+  // Resolve the target published record up front and relax local render requirements.
+  let lesson = null;
+  if (updateOnly) {
+    if (!source) {
+      const err = new Error("Cannot update on YouTube: no published lesson/source found for this language.");
+      err.statusCode = 400;
+      throw err;
+    }
+    lesson =
+      (video.lessonVideos || []).find(
+        (item) =>
+          item.language === language &&
+          (item.source || "lesson") === source &&
+          item.youtubeVideoId &&
+          (source !== "dub" || !requestedVoice || String(item.voice || "") === String(requestedVoice)),
+      ) ||
+      (video.lessonVideos || []).find(
+        (item) =>
+          item.language === language &&
+          (item.source || "lesson") === source &&
+          item.youtubeVideoId,
+      ) ||
+      null;
+    if (!lesson?.youtubeVideoId) {
+      const err = new Error(
+        "No published YouTube video found to update for this language/source. Publish it first (upload) before updating metadata.",
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+  } else {
+    if (!source) {
+      const err = new Error(
+        "Nothing to publish for this language yet. Dub the original video or generate a study-journey lesson first.",
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    if (source === "dub" && !dub) {
+      const err = new Error("No dubbed video found for this language. Dub the original video first.");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (source === "lesson" && !lessonEntry) {
+      const err = new Error("Generated lesson video not found for this language");
+      err.statusCode = 404;
+      throw err;
+    }
   }
 
-  const mediaUrl = source === "dub" ? dub.url : lessonEntry.url;
-  const mediaDuration = source === "dub" ? Number(dub.durationSeconds || 0) : Number(lessonEntry.durationSeconds || 0);
+  const mediaUrl = updateOnly
+    ? (lesson?.url || (source === "dub" ? dub?.url : lessonEntry?.url) || "")
+    : (source === "dub" ? dub.url : lessonEntry.url);
+  const mediaDuration = updateOnly
+    ? Number(lesson?.durationSeconds || (source === "dub" ? dub?.durationSeconds : lessonEntry?.durationSeconds) || 0)
+    : (source === "dub" ? Number(dub.durationSeconds || 0) : Number(lessonEntry.durationSeconds || 0));
   const translation = (video.translations || []).find((item) => item.language === language);
 
   // Each (language, source) pair keeps its own publish record so publishing the
   // dub does not overwrite the study-journey entry.
-  let lesson = (video.lessonVideos || []).find(
-    (item) =>
-      item.language === language &&
-      (item.source || "lesson") === source &&
-      (source !== "dub" || String(item.voice || "") === String(dub?.voice || "")),
-  );
-  // When publishing a new dub for a language that already has a published
-  // lesson, update the existing YouTube video instead of creating a new
-  // lesson entry / uploading a duplicate video to the playlist.
-  // A different voice means different audio, which YouTube cannot swap inside
-  // an existing video: that case uploads a new video and removes the old one.
-  if (!lesson && source === "dub" && !requestedVoice) {
+  if (!updateOnly) {
     lesson = (video.lessonVideos || []).find(
       (item) =>
         item.language === language &&
-        (item.source || "lesson") === "dub" &&
-        item.youtubeVideoId,
+        (item.source || "lesson") === source &&
+        (source !== "dub" || String(item.voice || "") === String(dub?.voice || "")),
     );
-  }
+    // When publishing a new dub for a language that already has a published
+    // lesson, update the existing YouTube video instead of creating a new
+    // lesson entry / uploading a duplicate video to the playlist.
+    // A different voice means different audio, which YouTube cannot swap inside
+    // an existing video: that case uploads a new video and removes the old one.
+    if (!lesson && source === "dub" && !requestedVoice) {
+      lesson = (video.lessonVideos || []).find(
+        (item) =>
+          item.language === language &&
+          (item.source || "lesson") === "dub" &&
+          item.youtubeVideoId,
+      );
+    }
 
-  if (!lesson) {
-    lesson = {
-      language,
-      source,
-      url: mediaUrl,
-      storagePath: source === "dub" ? dub.storagePath || null : lessonEntry.storagePath || null,
-      durationSeconds: mediaDuration,
-      voice: source === "dub" ? dub.voice || null : lessonEntry.voice || null,
-      script: translation?.transcript || "",
-      segments: translation?.segments || [],
-      subtitlesUrl: null,
-      createdAt: new Date(),
-    };
-    video.lessonVideos = [...(video.lessonVideos || []), lesson];
+    if (!lesson) {
+      lesson = {
+        language,
+        source,
+        url: mediaUrl,
+        storagePath: source === "dub" ? dub.storagePath || null : lessonEntry.storagePath || null,
+        durationSeconds: mediaDuration,
+        voice: source === "dub" ? dub.voice || null : lessonEntry.voice || null,
+        script: translation?.transcript || "",
+        segments: translation?.segments || [],
+        subtitlesUrl: null,
+        createdAt: new Date(),
+      };
+      video.lessonVideos = [...(video.lessonVideos || []), lesson];
+    } else {
+      lesson.source = source;
+      lesson.url = mediaUrl;
+      lesson.durationSeconds = mediaDuration;
+      if (!lesson.segments?.length && translation?.segments?.length) {
+        lesson.segments = translation.segments;
+      }
+      if (!lesson.script && translation?.transcript) {
+        lesson.script = translation.transcript;
+      }
+    }
   } else {
-    lesson.source = source;
-    lesson.url = mediaUrl;
-    lesson.durationSeconds = mediaDuration;
+    // Keep existing record/source/voice/media as-is; only metadata/thumbnail/playlist fields are updated.
+    lesson.source = lesson.source || source;
     if (!lesson.segments?.length && translation?.segments?.length) {
       lesson.segments = translation.segments;
     }
@@ -1707,13 +1810,16 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
           .findIndex((entry) => String(entry.video) === String(video._id))
       : null;
   // Older published copies of this lesson that a new upload replaces.
-  const stalePublishedRecords = (video.lessonVideos || []).filter(
-    (item) =>
-      item !== lesson &&
-      item.language === language &&
-      (item.source || "lesson") === source &&
-      item.youtubeVideoId,
-  );
+  // Metadata-only updates must never delete/replace existing YouTube videos.
+  const stalePublishedRecords = updateOnly
+    ? []
+    : (video.lessonVideos || []).filter(
+        (item) =>
+          item !== lesson &&
+          item.language === language &&
+          (item.source || "lesson") === source &&
+          item.youtubeVideoId,
+      );
 
   const user = await User.findById(req.user._id).select(YOUTUBE_TOKEN_FIELDS);
   const channelId = req.body?.channelId ? String(req.body.channelId).trim() : (lesson.youtubeChannelId || null);
@@ -1795,6 +1901,13 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   let youtubeVideoId = lesson.youtubeVideoId;
 
   if (!isUpdate) {
+    if (updateOnly) {
+      const err = new Error(
+        "Cannot update on YouTube without re-uploading because no existing YouTube video ID was found for this lesson.",
+      );
+      err.statusCode = 400;
+      throw err;
+    }
     const mediaRes = await fetch(mediaUrl);
     if (!mediaRes.ok) {
       const err = new Error(`Failed to download the ${source} video for upload (${mediaRes.status})`);
@@ -1893,9 +2006,8 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     if (stale.youtubeVideoId) protectedVideoIds.delete(stale.youtubeVideoId);
   }
 
-  // The channel is the source of truth: remove the older copies of this
-  // lesson, keep this upload in the playlist exactly once, and put it in the
-  // position of the lesson inside the course.
+  // The channel is the source of truth: keep this video in the playlist at the
+  // correct position. In metadata-only mode, never delete other YouTube videos.
   const reconcile = await reconcilePublishedLesson({
     accessToken,
     channelId: channel?.id || lesson.youtubeChannelId || null,
@@ -1905,7 +2017,7 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
     title,
     playlistId: lesson.youtubePlaylistId || null,
     position: coursePosition,
-    deleteDuplicates: true,
+    deleteDuplicates: !updateOnly,
     protectedVideoIds,
   });
   if (reconcile.playlistItemId) {
@@ -1916,19 +2028,21 @@ export const publishLessonVideo = asyncHandler(async (req, res) => {
   }
 
   // A new upload (new voice) replaces the old video instead of leaving it on
-  // the channel as a second copy of the same lesson.
-  for (const stale of stalePublishedRecords) {
-    if (!stale.youtubeVideoId || stale.youtubeVideoId === youtubeVideoId) continue;
-    try {
-      await deleteYouTubeVideo(accessToken, stale.youtubeVideoId);
-    } catch (error) {
-      console.warn("[publishLessonVideo] old video removal failed:", error?.message);
+  // the channel as a second copy of the same lesson. Never run in metadata-only mode.
+  if (!updateOnly) {
+    for (const stale of stalePublishedRecords) {
+      if (!stale.youtubeVideoId || stale.youtubeVideoId === youtubeVideoId) continue;
+      try {
+        await deleteYouTubeVideo(accessToken, stale.youtubeVideoId);
+      } catch (error) {
+        console.warn("[publishLessonVideo] old video removal failed:", error?.message);
+      }
+      stale.youtubeVideoId = null;
+      stale.youtubeUrl = null;
+      stale.youtubePublishedAt = null;
+      stale.youtubePlaylistId = null;
+      stale.youtubePlaylistItemId = null;
     }
-    stale.youtubeVideoId = null;
-    stale.youtubeUrl = null;
-    stale.youtubePublishedAt = null;
-    stale.youtubePlaylistId = null;
-    stale.youtubePlaylistItemId = null;
   }
 
   lesson.youtubeVideoId = youtubeVideoId;
@@ -2165,6 +2279,149 @@ export const uploadCanvasThumbnail = asyncHandler(async (req, res) => {
   });
 });
 
+const buildNanoBananaThumbnailPrompt = ({ title, language, meta, lessonNumber, courseTitle }) => {
+  const isArabic = String(language || '').toLowerCase().startsWith('ar');
+  const cleanTitle = String(title || meta?.titles?.[0] || '').trim().replace(/^\d+\s*[.\-–:)]\s*/, '');
+  const tags = Array.isArray(meta?.tags) ? meta.tags.map((t) => String(t || '').trim()).filter(Boolean) : [];
+  const keyPoints = Array.isArray(meta?.keyPoints) ? meta.keyPoints.map((t) => String(t || '').trim()).filter(Boolean) : [];
+  const summary = String(meta?.summary || '').trim();
+  const chapters = Array.isArray(meta?.chapters) ? meta.chapters.map((c) => String(c?.title || '').trim()).filter(Boolean) : [];
+  const techTerms = tags.slice(0, 12).join(', ');
+  const learnPoints = keyPoints.slice(0, 5).join('; ');
+  const chapterHints = chapters.slice(0, 4).join(', ');
+  const lessonLabel = lessonNumber ? (isArabic ? `الدرس ${lessonNumber}` : `Lesson ${lessonNumber}`) : '';
+  const courseCtx = courseTitle ? `Course: ${String(courseTitle).trim()}. ` : '';
+
+  return [
+    'Create a professional, high-quality YouTube educational thumbnail background image (16:9, 1280x720) for a tech lesson.',
+    courseCtx + (lessonLabel ? `${lessonLabel}. ` : '') + `Lesson title: "${cleanTitle || 'Educational lesson'}".`,
+    techTerms ? `Technologies and tools covered: ${techTerms}.` : 'Technologies and tools: infer from the lesson title and present them clearly as modern tech visuals.',
+    learnPoints ? `What learners will gain/learn: ${learnPoints}.` : (summary ? `Learning outcome: ${summary.slice(0, 220)}.` : 'Show a clear learning/progress outcome visually.'),
+    chapterHints ? `Key topics/sections: ${chapterHints}.` : '',
+    'Visual direction: modern cinematic educational tech aesthetic, clean composition, strong focal subject, depth and lighting, subtle abstract UI/code/network/system elements relevant to the technologies, high contrast, vibrant but professional colors, polished and premium look.',
+    'Style: professional digital illustration / photorealistic 3D tech visualization blend, sharp details, suitable as a thumbnail background.',
+    'Important: no text, no letters, no words, no numbers, no logos, no watermarks, no human faces, no clutter. Leave clear visual space for title overlay.',
+  ].filter(Boolean).join(' ');
+};
+
+const generateImageWithNanoBanana = async (prompt) => {
+  const apiKey = String(env.geminiApiKey || '').trim();
+  if (!apiKey) return { error: 'GEMINI_API_KEY is not configured' };
+
+  const preferred = [
+    'gemini-2.5-flash-image',
+    'gemini-2.5-flash-preview-image-generation',
+    'gemini-2.0-flash-preview-image-generation',
+    'gemini-2.0-flash-exp-image-generation',
+    'gemini-3.1-flash-image-preview',
+  ];
+  let models = [...preferred];
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    const listData = await listRes.json().catch(() => ({}));
+    const available = Array.isArray(listData?.models) ? listData.models : [];
+    const imageModels = available
+      .filter((m) => {
+        const name = String(m?.name || '').toLowerCase();
+        const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+        const supportsGenerate = methods.includes('generateContent');
+        const looksImage = name.includes('image') || name.includes('imagen');
+        return supportsGenerate && looksImage;
+      })
+      .map((m) => String(m.name || '').replace(/^models\//, ''))
+      .filter(Boolean);
+    if (imageModels.length) {
+      const set = new Set([...preferred.filter((p) => imageModels.includes(p)), ...imageModels]);
+      models = [...set];
+    }
+  } catch {
+    // fall back to preferred list
+  }
+
+  let lastError = null;
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error?.message || `Gemini image generation failed (${res.status}) for ${model}`;
+        lastError = msg;
+        // try next model on not found / unsupported
+        if (res.status === 404 || /not found|not supported/i.test(msg)) continue;
+        continue;
+      }
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const imgPart = parts.find((p) => p.inlineData?.data);
+      if (imgPart?.inlineData?.data) {
+        const mime = imgPart.inlineData.mimeType || 'image/png';
+        return { imageDataUrl: `data:${mime};base64,${imgPart.inlineData.data}`, provider: 'nano-banana', model };
+      }
+      lastError = `No image returned by ${model}`;
+    } catch (e) {
+      lastError = e?.message || String(e);
+    }
+  }
+  return { error: lastError || 'Nano Banana image generation failed' };
+};
+
+export const generateAiThumbnail = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error('Video not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error('Not authorized to update this video');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.body?.language || req.query?.language || 'en').trim() || 'en';
+  const lessonNumber = req.body?.lessonNumber ?? null;
+  const courseTitle = String(req.body?.courseTitle || '').trim();
+  const originalLanguage = video.transcriptLanguage || video.originalLanguage || 'en';
+  const isOriginal = language.toLowerCase().startsWith(String(originalLanguage).toLowerCase());
+  const cacheKey = language.toLowerCase();
+  let meta = video.aiMetadata ? video.aiMetadata.toObject() : {};
+  const localized = video.aiMetadata?.localized || {};
+  if (!isOriginal) {
+    if (localized[cacheKey]) meta = { ...meta, ...localized[cacheKey] };
+    else {
+      try { meta = await translatePublishMetadata({ metadata: meta, targetLanguage: language, originalLanguage }); } catch {}
+    }
+  }
+
+  const prompt = buildNanoBananaThumbnailPrompt({
+    title: String(req.body?.title || '').trim() || video.title || '',
+    language,
+    meta,
+    lessonNumber,
+    courseTitle,
+  });
+
+  // Prompt-only mode: user generates the image externally (e.g. Nano Banana) and uploads it.
+  res.status(200).json({
+    success: true,
+    message: 'Thumbnail prompt generated',
+    data: {
+      prompt,
+      imageDataUrl: null,
+      provider: null,
+      model: null,
+      warning: null,
+    },
+  });
+});
+
 export const getPublishPrefill = asyncHandler(async (req, res) => {
   const video = await Video.findById(req.params.id);
   if (!video) {
@@ -2172,7 +2429,7 @@ export const getPublishPrefill = asyncHandler(async (req, res) => {
     err.statusCode = 404;
     throw err;
   }
-  if (!isOwnerOrAdmin(video, req.user)) {
+  if (!isOwnerOrAdminVideo(video, req.user)) {
     const err = new Error("Not authorized to view this video");
     err.statusCode = 403;
     throw err;
@@ -2223,6 +2480,51 @@ export const getPublishPrefill = asyncHandler(async (req, res) => {
   });
 });
 
+export const improveVideoSeo = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error("Not authorized to update this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.body?.language || req.query?.language || "en").trim() || "en";
+  const originalLanguage = video.transcriptLanguage || video.originalLanguage || "en";
+  const isOriginal = language.toLowerCase().startsWith(originalLanguage.toLowerCase());
+  const cacheKey = language.toLowerCase();
+  let metadata = video.aiMetadata ? video.aiMetadata.toObject() : {};
+  const localized = video.aiMetadata?.localized || {};
+  if (!isOriginal) {
+    if (localized[cacheKey]) {
+      metadata = { ...metadata, ...localized[cacheKey] };
+    } else {
+      metadata = await translatePublishMetadata({ metadata, targetLanguage: language, originalLanguage });
+    }
+  }
+
+  const improved = await improvePublishSeo({
+    metadata,
+    targetLanguage: language,
+    context: {
+      currentTitle: String(req.body?.currentTitle || "").trim(),
+      videoTitle: video.title || "",
+      courseTitle: String(req.body?.courseTitle || "").trim(),
+      lessonNumber: req.body?.lessonNumber ?? null,
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "SEO suggestions generated",
+    data: { improved, language },
+  });
+});
+
 export const cancelLessonGeneration = asyncHandler(async (req, res) => {
   const video = await Video.findById(req.params.id);
   if (!video) {
@@ -2265,6 +2567,51 @@ export const listEdgeVoices = asyncHandler(async (req, res) => {
     message: "Edge voices",
     data: { voices: data, language: language || null },
   });
+});
+
+export const previewVoice = asyncHandler(async (req, res) => {
+  const voice = String(req.body?.voice || "").trim();
+  const language = String(req.body?.language || "en").trim() || "en";
+  const providerHint = String(req.body?.provider || "").trim().toLowerCase();
+  if (!voice) {
+    const err = new Error("Voice is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const sampleTextByLang = {
+    ar: "Ù…Ø±Ø­Ø¨Ø§Ù‹ØŒ Ù‡Ø°Ø§ Ø§Ø®ØªØ¨Ø§Ø± Ù„ØµÙˆØª Ø§Ù„Ø¯Ø¨Ù„Ø¬Ø©. Ø³Ù†Ù†Ø·Ù‚ Ø§Ù„Ù…ØµØ·Ù„Ø­Ø§Øª Ø§Ù„ØªÙ‚Ù†ÙŠØ© Ø¨ÙˆØ¶ÙˆØ­ Ù…Ø«Ù„ OpenVPN Ùˆ sudo.",
+    es: "Hola, esta es una prueba de voz para doblaje. Pronunciaremos tÃ©rminos tÃ©cnicos como OpenVPN y sudo.",
+    en: "Hello, this is a dubbing voice preview. We will pronounce technical terms clearly like OpenVPN and sudo.",
+    fr: "Bonjour, ceci est un test de voix de doublage. Nous prononcerons clairement des termes techniques comme OpenVPN et sudo.",
+    de: "Hallo, dies ist ein Sprachtest fÃ¼r die Vertonung. Wir sprechen technische Begriffe wie OpenVPN und sudo klar aus.",
+  };
+  const base = language.toLowerCase().split("-")[0];
+  const text = String(req.body?.text || sampleTextByLang[base] || sampleTextByLang.en);
+
+  const looksLikeEdgeVoice = /^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/.test(voice);
+  const looksLikeGoogleVoice = !looksLikeEdgeVoice && /^[a-z]{2,3}-[A-Z]{2}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(voice);
+  const provider = providerHint || (looksLikeEdgeVoice ? "edge" : looksLikeGoogleVoice ? "google" : "edge");
+
+  const result = await synthesizeSpeech(text, voice, {
+    provider,
+    googleVoice: looksLikeGoogleVoice ? voice : undefined,
+    rate: provider === "edge" ? "-2%" : undefined,
+  }).catch((error) => {
+    const message = String(error?.message || error || "Preview failed");
+    const err = new Error(message);
+    err.statusCode = error?.statusCode || 502;
+    throw err;
+  });
+  const buffer = result?.buffer;
+  if (!buffer?.length) {
+    const err = new Error("Could not synthesize preview audio");
+    err.statusCode = 502;
+    throw err;
+  }
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("Cache-Control", "no-store");
+  res.status(200).send(Buffer.from(buffer));
 });
 
 export const listYouTubeChannels = asyncHandler(async (req, res) => {
@@ -2391,6 +2738,10 @@ export const deleteDub = asyncHandler(async (req, res) => {
       ),
   );
   video.dubs = (video.dubs || []).filter((d) => d !== target && !(d.language === target.language && String(d.voice || "") === String(target.voice || "")));
+  // Start completely fresh for this language on next dub: remove cached translation
+  // so it is re-translated and re-timed from the current (uploaded) reference segments.
+  video.translations = (video.translations || []).filter((t) => String(t.language) !== String(language));
+  video.targetLanguages = (video.targetLanguages || []).filter((l) => String(l) !== String(language));
 
   await video.save();
 
@@ -2514,15 +2865,18 @@ export const translateVideo = asyncHandler(async (req, res) => {
     sourceLanguage: originalLanguage,
   });
   if (untranslated.length > 0) {
-    video.dubbing = {
-      language,
-      status: "failed",
-      progress: 0,
-      error: `Translation incomplete: ${untranslated.length} of ${segments.length} segments are still in ${originalLanguage}. The AI provider is most likely rate limited - please try again.`,
-      startedAt: video.dubbing?.startedAt || new Date(),
-      completedAt: new Date(),
-    };
-    await video.save();
+    const fresh = await Video.findById(video._id);
+    if (fresh) {
+      fresh.dubbing = {
+        language,
+        status: "failed",
+        progress: 0,
+        error: `Translation incomplete: ${untranslated.length} of ${segments.length} segments are still in ${originalLanguage}. The AI provider is most likely rate limited - please try again.`,
+        startedAt: fresh.dubbing?.startedAt || new Date(),
+        completedAt: new Date(),
+      };
+      await fresh.save();
+    }
     const err = new Error(
       `Translation to ${language} is incomplete: ${untranslated.length} of ${segments.length} segments could not be translated. The AI provider is most likely rate limited - please try again.`,
     );
@@ -2560,14 +2914,103 @@ export const translateVideo = asyncHandler(async (req, res) => {
     ),
   };
 
-  const existing = (video.translations || []).filter(
-    (t) => t.language !== language,
-  );
-  video.translations = [...existing, translation];
+  const saveTranslation = async () => {
+    const fresh = await Video.findById(video._id);
+    if (!fresh) {
+      const err = new Error("Video not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const existing = (fresh.translations || []).filter((t) => t.language !== language);
+    fresh.translations = [...existing, translation];
+    if (!fresh.targetLanguages) fresh.targetLanguages = [];
+    if (!fresh.targetLanguages.includes(language)) {
+      fresh.targetLanguages.push(language);
+    }
+    await fresh.save();
+    return fresh;
+  };
 
-  if (!video.targetLanguages) video.targetLanguages = [];
-  if (!video.targetLanguages.includes(language)) {
-    video.targetLanguages.push(language);
+  let saved;
+  try {
+    saved = await saveTranslation();
+  } catch (e) {
+    if (e?.name === "VersionError") {
+      saved = await saveTranslation();
+    } else {
+      throw e;
+    }
+  }
+  emitVideoProgress(saved);
+
+  res.status(200).json({
+    success: true,
+    message: `Transcript translated to ${language}`,
+    data: { video: await Video.findById(saved._id).lean() },
+  });
+});
+
+export const importTranscriptReference = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error("Not authorized to update this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const file = req.file;
+  if (!file?.buffer?.length) {
+    const err = new Error("Upload an .srt or .vtt subtitle file");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const parsed = parseSubtitle(file.buffer.toString("utf8"), file.originalname || "subtitle.srt");
+  const segments = (parsed?.segments || [])
+    .map((s) => ({
+      start: Number(s.start) || 0,
+      end: Number(s.end) || 0,
+      text: String(s.text || "").trim(),
+      // Seed spokenText with text; translation pipeline will generate/refine spokenText per target language.
+      spokenText: String(s.text || "").trim(),
+    }))
+    .filter((s) => s.text);
+
+  if (!segments.length) {
+    const err = new Error("Could not parse any timed segments from the uploaded subtitle file");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const transcriptLanguage = String(
+    req.body?.language || video.transcriptLanguage || video.originalLanguage || "en",
+  ).trim() || "en";
+
+  video.transcript = String(parsed?.text || segments.map((s) => s.text).join(" ")).trim();
+  video.transcriptSegments = segments;
+  video.transcriptLanguage = transcriptLanguage;
+  video.originalLanguage = video.originalLanguage || transcriptLanguage;
+  const ext = String(file.originalname || "").split(".").pop()?.toLowerCase() || parsed?.format || null;
+  video.transcriptReferenceFile = {
+    name: String(file.originalname || "subtitles"),
+    format: ext,
+    segmentCount: segments.length,
+    uploadedAt: new Date(),
+    language: transcriptLanguage,
+  };
+  // This file is the timed dubbing reference; clear cached translations so target-language dubs
+  // are regenerated from these exact segments/timings.
+  video.translations = [];
+  video.targetLanguages = [];
+
+  if (video.durationSeconds > 0 && video.transcriptSegments.length > 0) {
+    const last = video.transcriptSegments[video.transcriptSegments.length - 1];
+    last.end = Math.max(Number(last.end) || 0, Number(video.durationSeconds) || 0);
   }
 
   await video.save();
@@ -2575,7 +3018,7 @@ export const translateVideo = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     success: true,
-    message: `Transcript translated to ${language}`,
+    message: `Imported ${segments.length} timed segments as dubbing reference`,
     data: { video: await Video.findById(video._id).lean() },
   });
 });

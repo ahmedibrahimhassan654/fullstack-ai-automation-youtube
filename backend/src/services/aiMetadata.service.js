@@ -572,7 +572,7 @@ const isTechnicalLiteral = (text = '') => {
   // kept as-is by the model (or TTS should read them literally).
   if (/https?:\/\/|www\.|[A-Za-z]:[\\/]|\.{1,2}[\\/]/.test(v)) return true;
   if (/[`|<>$]/.test(v)) return true;
-  if (/(^|\s)(sudo|apt|apt-get|dnf|yum|pacman|brew|pip3?|npm|npx|pnpm|yarn|git|docker|kubectl|chmod|chown|chgrp|cd|ls|cat|echo|grep|sed|awk|curl|wget|ssh|scp|tar|zip|unzip|make|python3?|node|java|bash|sh|zsh|powershell|pwsh)\b/i.test(v)) return true;
+  if (/(^|\s)(sudo|apt|apt-get|dnf|yum|pacman|brew|pip3?|npm|npx|pnpm|yarn|git|docker|kubectl|chmod|chown|chgrp|cd|ls|cat|echo|grep|sed|awk|curl|wget|ssh|scp|tar|zip|unzip|make|python3?|node|java|bash|sh|zsh|powershell|pwsh|ifconfig|ipconfig|macchanger|netdiscover|nmap|airmon-ng|aircrack-ng|wireshark|tcpdump)\b/i.test(v)) return true;
   if (/(^|\s)--?[A-Za-z][\w-]*/.test(v)) return true;
   if (/\b[\w.-]+\.(?:run|sh|bash|zsh|ps1|bat|cmd|exe|msi|deb|rpm|AppImage|iso|img|tar|gz|zip|7z|py|js|ts|go|rs|c|cpp|h|java|kt|rb|php|pl|sql|conf|cfg|ini|yaml|yml|json|md|txt)\b/i.test(v)) return true;
   if (/[\\/][\w.-]+/.test(v)) return true;
@@ -580,6 +580,15 @@ const isTechnicalLiteral = (text = '') => {
   const letters = (v.match(/[A-Za-z]/g) || []).length;
   const nonSpace = v.replace(/\s+/g, '').length;
   if (nonSpace > 0 && letters / nonSpace < 0.45 && /[0-9./:_-]/.test(v)) return true;
+  // Spelled-out commands/identifiers (e.g. "macchanger -r eth0", "S E T H 0",
+  // interface names) are often kept in Latin script and should not block dubbing.
+  const tokens = v.split(/\s+/).filter(Boolean);
+  const hasDigit = /\d/.test(v);
+  const singleLetterTokens = tokens.filter((t) => /^[A-Za-z]$/.test(t)).length;
+  const shortCodeTokens = tokens.filter((t) => /^[A-Za-z0-9_.:-]{1,4}$/.test(t)).length;
+  if (tokens.length > 0 && (singleLetterTokens >= 2 || (hasDigit && shortCodeTokens >= 2))) return true;
+  const latinOnly = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\s]+$/u.test(v);
+  if (latinOnly && hasDigit && tokens.length <= 8) return true;
   return false;
 };
 
@@ -800,11 +809,12 @@ const callQualityChat = async (messages, extra = {}) => {
 
 const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context = [] }) => {
   const system =
-    'You are a professional subtitle translator. Translate each segment text to the requested target language. ' +
-    'IMPORTANT: never translate technical terms, product names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example React, Node.js, Express, MongoDB, API, Docker, npm install, GitHub) and keep them inside the translated sentence. ' +
-    'TECHNICAL TERMS MUST BE COPIED CHARACTER FOR CHARACTER from the source: same letters, same order, same casing, no missing or extra letter, no merged or split words. A misspelled term (for example "erminal" instead of "terminal", or "gues edition" instead of "Guest Additions") makes the lesson unusable. ' +
-    'GRAMMAR: use correct grammatical gender, number, person and pronoun agreement in the target language, and keep the subject/verb agreement of the original sentence. ' +
-    'PRESERVE THE SOURCE WORD ORDER AND MEANING: keep the number of content words as close as possible to the source so the dub stays in sync with the original audio; do not drop, merge or reorder words. Each translated segment must be a complete, natural sentence that a native speaker can pronounce fluently. ' +
+    'You are a professional subtitle translator and dubbing script translator. Translate each segment text to the requested target language. ' +
+    'IMPORTANT: never translate technical terms, product names, website names, framework/library names, API names, CLI commands, file paths or code identifiers. Keep them exactly as written in clear English/Latin script (for example OpenVPN, VPNBook, UDP, IP address, YouTube, myip.com, sudo, killall, cd, ls, pwd, whoami, Ctrl+Shift+C, Ctrl+Shift+V, npm install, GitHub) and keep them inside the translated sentence. ' +
+    'TECHNICAL TERMS MUST BE COPIED CHARACTER FOR CHARACTER from the source: same letters, same order, same casing, no missing or extra letter, no merged or split words. Linux commands and flags must remain correct commands (cd means change directory, ls, pwd, whoami, sudo, killall, apt, etc.). ' +
+    'Remove meaningless filler words and hesitations from the translated output (for example yeah, yep, um, uh, oh, okay, good to go) unless they carry essential meaning; do not add filler words. ' +
+    'GRAMMAR AND MEANING: use correct tense, mood, gender, number, person and pronoun agreement in the target language, matching the source intent and timing/context (e.g. install/instalar/instalación in the correct form). Translate process-control phrases accurately (e.g. "kill the process/terminal operation" means stop/terminate it), while keeping command names unchanged. ' +
+    'Keep the meaning faithful and the phrasing natural and clear for dubbing; preserve timing suitability and avoid unnecessary wordiness. Each translated segment must be clear and pronounceable. ' +
     (String(targetLanguage).toLowerCase().startsWith('ar')
       ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
       : '') +
@@ -917,22 +927,17 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
     ? 'Keep every number EXACTLY as it appears in the input, do not convert it and do not change its value: the ' +
       languageName +
       ' voice reads the digits the way a native speaker says them. '
-    : 'Write every number as ' +
+    : 'Write every number clearly for a ' +
       languageName +
-      ' words (' +
+      ' speaker (' +
       numberExamples +
-      '), without changing its value. ';
+      ') when helpful for pronunciation, without changing its value. ';
 
-  const termRule = usesLatinScript
-    ? 'Keep every technical name, product name, command and code identifier exactly as it is written, because that is already how they are pronounced in ' +
-      languageName +
-      '. '
-    : 'Write every technical name, product name, command and code identifier the way a ' +
-      languageName +
-      ' speaker pronounces it, using ' +
-      languageName +
-      ' letters only (for example "Kali Linux" becomes "كالي لينكس", "ISO" becomes "إيزو", "Node.js" becomes "نود جي إس"). ' +
-      'The pronunciation must contain every sound of the term: never drop the first or last letter, never merge two words into one, and never replace a term with a vague paraphrase such as "هذه الإضافات" instead of the name itself. ';
+  const termRule =
+    'Keep every technical name, product name, tool name, command, file/path, acronym and code identifier EXACTLY as written in English/Latin script (for example OpenVPN, sudo, UDP, Kali Linux, apt, /etc/hosts). ' +
+    'Do not transliterate these terms into ' +
+    languageName +
+    ' script and do not replace them with paraphrases; keep them in the sentence so the TTS voice can pronounce them in English clearly. ';
 
   const system =
     'You prepare ' +
@@ -947,11 +952,6 @@ const generateSpokenVersions = async ({ segments, targetLanguage, strict = false
     'Keep the meaning and the tone identical, and use natural, professional ' +
     languageName +
     ' with correct grammar and correct number agreement. ' +
-    (strict
-      ? 'IMPORTANT: the result must contain no Latin letters at all. Every Latin word must be written in ' +
-        languageName +
-        ' letters. '
-      : '') +
     'Return ONLY valid JSON: {"segments":["spoken sentence 1","spoken sentence 2"]}. ' +
     'Return exactly ' +
     input.length +
@@ -1028,7 +1028,7 @@ const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
     `Given each sentence and its original meaning, rewrite it as ONE clear, natural spoken sentence for TTS in ${languageName} ` +
     `so pronunciation, meaning, and flow are easy to understand. Keep the meaning faithful to the original. ` +
     `Use correct grammar and natural phrasing; keep correct gender, number and pronoun agreement; for Arabic add/keep full tashkeel where helpful for pronunciation. ` +
-    `Keep every technical name, command and code identifier exactly as it appears in the given sentence: never drop, shorten, merge or reorder its letters, and never replace it with a paraphrase. ` +
+    `Keep every technical name, tool, command, path, acronym and code identifier in clear English/Latin script exactly as written (e.g. OpenVPN, sudo, UDP, Kali Linux): do not transliterate them into ${languageName} script and do not paraphrase them. ` +
     `Return ONLY valid JSON: {"segments":["spoken sentence 1", ...]} in the same order and same count (${input.length}).`;
 
   const batches = chunkArray(input, 10);
@@ -1146,8 +1146,29 @@ const translateBatchResilient = async ({ batch, targetLanguage, highQuality, con
   if (translated) return translated;
 
   if (batch.length === 1) {
+    const sourceText = String(batch[0].text || '').trim();
+    const target = languageBase(targetLanguage);
+    const scriptPattern = TARGET_SCRIPT_PATTERNS[target];
+    const targetCharsInSource = scriptPattern ? countMatches(sourceText, scriptPattern) : 0;
+    const looksTechnicalOrUntranslatable =
+      !sourceText ||
+      targetCharsInSource > 0 ||
+      /[A-Za-z0-9]/.test(sourceText);
+    if (looksTechnicalOrUntranslatable) {
+      console.warn(
+        '[translateSegmentsOnce] using source text for untranslatable segment:',
+        sourceText.slice(0, 80),
+      );
+      return [
+        {
+          start: batch[0].start,
+          end: batch[0].end,
+          text: sourceText,
+        },
+      ];
+    }
     const err = new Error(
-      `Could not translate a segment into ${targetLanguage}: "${String(batch[0].text).slice(0, 80)}"`,
+      `Could not translate a segment into ${targetLanguage}: "${sourceText.slice(0, 80)}"`,
     );
     err.code = 'TRANSLATION_FAILED';
     err.statusCode = 502;
@@ -1535,40 +1556,12 @@ export const translateTranscriptSegments = async ({
         if (value) currentSegments[segment.index].spokenText = value;
       });
 
-      // The model sometimes leaves a technical name in Latin script. Those
-      // sentences are rewritten once more with a stricter instruction.
-      const leftovers = needsSpoken
-        .filter((segment) => {
-          const value = spoken.get(segment.index);
-          return !value || /[A-Za-z]/.test(value);
-        })
-        .map((segment) => ({
-          ...currentSegments[segment.index],
-          index: segment.index,
-        }));
-
-      if (leftovers.length > 0) {
-        const retry = await generateSpokenVersions({
-          segments: leftovers,
-          targetLanguage,
-          strict: true,
-        });
-        let fixed = 0;
-        leftovers.forEach((segment) => {
-          const value = retry.get(segment.index);
-          if (value && !/[A-Za-z]/.test(value)) {
-            currentSegments[segment.index].spokenText = value;
-            fixed += 1;
-          }
-        });
-        console.log(
-          `[translate] spoken version: ${spoken.size}/${needsSpoken.length} written, ${fixed}/${leftovers.length} leftovers rewritten in Arabic`,
-        );
-      } else {
-        console.log(
-          `[translate] spoken version generated for ${spoken.size}/${needsSpoken.length} segment(s) with technical names`,
-        );
-      }
+      // Keep English technical terms/commands in Latin script for spoken text so
+      // TTS can pronounce them clearly in English (same voice). Do not force a
+      // "no Latin letters" rewrite that would transliterate terms away.
+      console.log(
+        `[translate] spoken version generated for ${spoken.size}/${needsSpoken.length} segment(s) with technical names`,
+      );
     }
   }
 
@@ -1848,4 +1841,83 @@ export const condenseTranslationForDuration = async ({ text, targetLanguage, max
   const sliced = clean.slice(0, limit);
   const lastSpace = sliced.lastIndexOf(' ');
   return (lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced).trim();
+};
+
+export const improvePublishSeo = async ({ metadata, targetLanguage = 'en', context = {} }) => {
+  const meta = metadata && typeof metadata === 'object' ? metadata : {};
+  const lang = String(targetLanguage || 'en').split('-')[0];
+  const source = {
+    currentTitle: String(context.currentTitle || meta?.titles?.[0] || '').trim(),
+    titles: Array.isArray(meta?.titles) ? meta.titles.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    descriptions: Array.isArray(meta?.descriptions) ? meta.descriptions.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    summary: String(meta?.summary || '').trim(),
+    chapters: Array.isArray(meta?.chapters) ? meta.chapters.map((c) => ({ time: c?.time || '00:00', title: String(c?.title || '').trim() })) : [],
+    keyPoints: Array.isArray(meta?.keyPoints) ? meta.keyPoints.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    openQuestions: Array.isArray(meta?.openQuestions) ? meta.openQuestions.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    tags: Array.isArray(meta?.tags) ? meta.tags.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    videoTitle: String(context.videoTitle || '').trim(),
+    courseTitle: String(context.courseTitle || '').trim(),
+    lessonNumber: context.lessonNumber ?? null,
+  };
+
+  const content = await callChatCompletion(
+    [
+      {
+        role: 'system',
+        content:
+          `You are a YouTube SEO and educational copywriting expert. Improve publish metadata in ${targetLanguage} (${lang}) using the provided AI-generated lesson data. ` +
+          'Goals: maximize clarity and discoverability while staying accurate to the lesson. ' +
+          'Keep technical terms, product names, CLI commands, file paths, and code identifiers in their correct original/English form when appropriate. ' +
+          'Return ONLY valid JSON with keys: title, description, tags, hashtags, openQuestions, keyPoints. ' +
+          'Rules: ' +
+          'title: one compelling, keyword-rich YouTube title (30-65 chars when possible), include lesson number if provided and relevant. ' +
+          'description: a well-structured YouTube description in plain text with: a strong 1-2 line hook/summary, "What you will learn" bullets from key points, chapters/timestamps section if chapters exist (format "00:00 - Title"), a short CTA to like/share/subscribe, and 3-8 relevant hashtags at the very end on a new line. Do not invent facts. ' +
+          'tags: 8-15 relevant tags/keywords (no #). ' +
+          'hashtags: 3-8 hashtags (with #). ' +
+          'openQuestions: exactly 3 engaging questions viewers can answer in comments, each ending with "?". ' +
+          'keyPoints: 3-6 concise key learning points.',
+      },
+      {
+        role: 'user',
+        content:
+          `Lesson context (JSON):\n${JSON.stringify(source)}\n\n` +
+          'Produce the best SEO-optimized publish metadata based on this data.',
+      },
+    ],
+    {
+      temperature: 0.4,
+      maxTokens: 4500,
+      responseFormat: { type: 'json_object' },
+    },
+  );
+
+  const parsed = parseJson(content) || {};
+  const tags = Array.isArray(parsed.tags)
+    ? parsed.tags.map((v) => stripMarkdown(String(v || '')).replace(/^#+/, '').trim()).filter(Boolean)
+    : source.tags;
+  const hashtags = Array.isArray(parsed.hashtags)
+    ? parsed.hashtags.map((v) => {
+        const t = stripMarkdown(String(v || '')).trim().replace(/^#+/, '').replace(/\s+/g, '');
+        return t ? `#${t}` : '';
+      }).filter(Boolean)
+    : [];
+  let description = stripMarkdown(String(parsed.description || '')).trim();
+  if (description && hashtags.length && !/#\w/.test(description)) {
+    description = `${description}\n\n${hashtags.join(' ')}`.trim();
+  }
+  const openQuestions = Array.isArray(parsed.openQuestions) && parsed.openQuestions.length
+    ? parsed.openQuestions.map((v) => stripMarkdown(String(v || '')).trim()).filter(Boolean).slice(0, 3)
+    : source.openQuestions.slice(0, 3);
+  const keyPoints = Array.isArray(parsed.keyPoints) && parsed.keyPoints.length
+    ? parsed.keyPoints.map((v) => stripMarkdown(String(v || '')).trim()).filter(Boolean).slice(0, 8)
+    : source.keyPoints;
+
+  return {
+    title: stripMarkdown(String(parsed.title || '')).trim() || source.currentTitle || source.titles[0] || '',
+    description: description || source.descriptions[0] || source.summary || '',
+    tags,
+    hashtags,
+    openQuestions,
+    keyPoints,
+  };
 };

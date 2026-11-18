@@ -219,6 +219,15 @@ const videoSchema = new mongoose.Schema(
     transcript: { type: String, default: '' },
     transcriptSegments: { type: [transcriptSegmentSchema], default: [] },
     transcriptLanguage: { type: String, default: 'en' },
+    // Metadata of the user-uploaded timed subtitle/reference file (.srt/.vtt) used as dubbing source.
+    // This is NOT an AI-generated translation/subtitle.
+    transcriptReferenceFile: {
+      name: { type: String, default: null },
+      format: { type: String, default: null },
+      segmentCount: { type: Number, default: 0 },
+      uploadedAt: { type: Date, default: null },
+      language: { type: String, default: null },
+    },
     originalLanguage: { type: String, default: 'en' },
     targetLanguages: { type: [String], default: [] },
     translations: { type: [translationSchema], default: [] },

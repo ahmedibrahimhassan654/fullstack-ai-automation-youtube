@@ -6,6 +6,7 @@ import courseRoutes from './course.routes.js';
 import publishQueueRoutes from './publishQueue.routes.js';
 import adminRoutes from './admin.routes.js';
 import billingRoutes from './billing.routes.js';
+import seoRoutes from './seo.routes.js';
 import { protectSSE } from '../middleware/auth.middleware.js';
 import * as video from '../controllers/video.controller.js';
 
@@ -24,5 +25,6 @@ router.use('/courses', courseRoutes);
 router.use('/publish-queue', publishQueueRoutes);
 router.use('/admin', adminRoutes);
 router.use('/billing', billingRoutes);
+router.use('/seo', seoRoutes);
 
 export default router;
