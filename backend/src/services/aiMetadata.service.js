@@ -816,7 +816,7 @@ const buildTranslationMessages = ({ batch, targetLanguage, highQuality, context 
     'GRAMMAR AND MEANING: use correct tense, mood, gender, number, person and pronoun agreement in the target language, matching the source intent and timing/context (e.g. install/instalar/instalación in the correct form). Translate process-control phrases accurately (e.g. "kill the process/terminal operation" means stop/terminate it), while keeping command names unchanged. ' +
     'Keep the meaning faithful and the phrasing natural and clear for dubbing; preserve timing suitability and avoid unnecessary wordiness. Each translated segment must be clear and pronounceable. ' +
     (String(targetLanguage).toLowerCase().startsWith('ar')
-      ? 'For Arabic, always use Modern Standard Arabic with complete tashkeel/diacritics for correct pronunciation. '
+      ? 'For Arabic, always use clear, understandable, and grammatically correct Modern Standard Arabic (فصحى) with complete tashkeel/diacritics for correct pronunciation. Keep the phrasing natural and suitable for spoken dubbing while maintaining proper Arabic grammar. '
       : '') +
     (highQuality
       ? 'Produce a HIGH-QUALITY translation: accurate meaning, natural phrasing, correct grammar, consistent terminology, and faithful tone. Avoid literal word-by-word translation; adapt idioms naturally. '
@@ -1674,7 +1674,7 @@ export const generateEducationalScript = async ({ video, targetLanguage }) => {
           '1) Accurate and practical technical instructions: verify every command, configuration, version, and code concept before using it; never use placeholders or outdated syntax; provide sequential numbered steps and beginner troubleshooting callouts where useful. ' +
           '2) Natural voiceover flow for TTS: write conversational active sentences, break breathless clauses into short dynamic statements, and pace naturally for spoken delivery. ' +
           (targetLanguage.startsWith('ar')
-            ? 'Use grammatically correct Modern Standard Arabic, tashkeel where pronunciation matters, and handle technical English terms by writing an Arabic explanation followed by the English term in parentheses on first use, for example "الاختراق (Hacking)", "المحاكاة (Simulation)", "التصدّي (Mitigation)". '
+            ? 'Use clear, understandable, and grammatically correct Modern Standard Arabic (فصحى), with tashkeel/diacritics where pronunciation matters. Handle technical English terms by writing an Arabic explanation followed by the English term in parentheses on first use when helpful, for example "الاختراق (Hacking)", "المحاكاة (Simulation)", "التصدّي (Mitigation)", while keeping commands/code identifiers in English. '
             : '') +
           'Break explanations into sequential, numbered steps that a viewer can replicate directly on screen. Provide practical setup/troubleshooting callouts where useful. ' +
           `The final spoken narration must last no more than ${duration} seconds. Use at most ${Math.max(300, Math.floor(duration * 9))} characters total, including spaces and punctuation. ` +
