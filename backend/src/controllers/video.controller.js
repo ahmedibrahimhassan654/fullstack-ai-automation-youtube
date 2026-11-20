@@ -2280,27 +2280,28 @@ export const uploadCanvasThumbnail = asyncHandler(async (req, res) => {
 });
 
 const buildNanoBananaThumbnailPrompt = ({ title, language, meta, lessonNumber, courseTitle }) => {
-  const isArabic = String(language || '').toLowerCase().startsWith('ar');
   const cleanTitle = String(title || meta?.titles?.[0] || '').trim().replace(/^\d+\s*[.\-–:)]\s*/, '');
   const tags = Array.isArray(meta?.tags) ? meta.tags.map((t) => String(t || '').trim()).filter(Boolean) : [];
   const keyPoints = Array.isArray(meta?.keyPoints) ? meta.keyPoints.map((t) => String(t || '').trim()).filter(Boolean) : [];
   const summary = String(meta?.summary || '').trim();
   const chapters = Array.isArray(meta?.chapters) ? meta.chapters.map((c) => String(c?.title || '').trim()).filter(Boolean) : [];
   const techTerms = tags.slice(0, 12).join(', ');
+  const topicHints = chapters.slice(0, 4).join(', ');
+  const mainTakeaway = keyPoints[keyPoints.length - 1] || keyPoints[0] || summary || cleanTitle || 'the key result of the lesson';
   const learnPoints = keyPoints.slice(0, 5).join('; ');
-  const chapterHints = chapters.slice(0, 4).join(', ');
-  const lessonLabel = lessonNumber ? (isArabic ? `الدرس ${lessonNumber}` : `Lesson ${lessonNumber}`) : '';
+  const lessonLabel = lessonNumber ? `Lesson ${lessonNumber}` : '';
   const courseCtx = courseTitle ? `Course: ${String(courseTitle).trim()}. ` : '';
 
   return [
-    'Create a professional, high-quality YouTube educational thumbnail background image (16:9, 1280x720) for a tech lesson.',
-    courseCtx + (lessonLabel ? `${lessonLabel}. ` : '') + `Lesson title: "${cleanTitle || 'Educational lesson'}".`,
-    techTerms ? `Technologies and tools covered: ${techTerms}.` : 'Technologies and tools: infer from the lesson title and present them clearly as modern tech visuals.',
-    learnPoints ? `What learners will gain/learn: ${learnPoints}.` : (summary ? `Learning outcome: ${summary.slice(0, 220)}.` : 'Show a clear learning/progress outcome visually.'),
-    chapterHints ? `Key topics/sections: ${chapterHints}.` : '',
-    'Visual direction: modern cinematic educational tech aesthetic, clean composition, strong focal subject, depth and lighting, subtle abstract UI/code/network/system elements relevant to the technologies, high contrast, vibrant but professional colors, polished and premium look.',
-    'Style: professional digital illustration / photorealistic 3D tech visualization blend, sharp details, suitable as a thumbnail background.',
-    'Important: no text, no letters, no words, no numbers, no logos, no watermarks, no human faces, no clutter. Leave clear visual space for title overlay.',
+    'Create a highly realistic, photorealistic, real-world YouTube educational thumbnail background image (16:9, 1280x720).',
+    courseCtx + (lessonLabel ? `${lessonLabel}. ` : '') + `Lesson topic: "${cleanTitle || 'Educational lesson'}". Make the main subject and scene clearly communicate this topic at a glance.`,
+    techTerms ? `Technologies/tools/context to show realistically in the scene: ${techTerms}.` : 'Show realistic tools, devices, environment, and objects that clearly represent the lesson topic.',
+    topicHints ? `Topic elements/steps to reflect visually: ${topicHints}.` : '',
+    learnPoints ? `What the lesson teaches: ${learnPoints}.` : '',
+    `Lesson conclusion/takeaway to visualize: ${mainTakeaway}. Represent this conclusion/result clearly inside the same realistic scene using visual cues and markers (for example: a correct setup/result on screen or device, a completed connection/process, a green checkmark icon/indicator, success status light, highlighted target area, arrow or path showing the outcome, comparison of before/after state, or other clear visual symbols) — naturally integrated into the real-world environment, not as overlay text.`,
+    'Visual direction: realistic photography/cinematic realism, natural lighting, believable materials and depth of field, clean and uncluttered composition, strong focal point on the topic, clear visual storytelling that shows both the topic and its conclusion.',
+    'Style: ultra-realistic, high detail, sharp focus, professional educational look, high contrast and vibrant but natural colors.',
+    'Important: no text, no letters, no words, no numbers, no logos, no watermarks, no human faces. Leave clear visual space for a title overlay.',
   ].filter(Boolean).join(' ');
 };
 
