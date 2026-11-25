@@ -1068,73 +1068,84 @@ const refineSpokenForVoice = async ({ segments, targetLanguage }) => {
 
 const translateBatchOnce = async ({ batch, targetLanguage, highQuality, context = [], provider = null }) => {
   const messages = buildTranslationMessages({ batch, targetLanguage, highQuality, context });
-  let content = '';
-  try {
-    content = highQuality
-      ? await callQualityChat(messages, {
-          temperature: 0.15,
-          maxTokens: 8000,
-          responseFormat: { type: 'json_object' },
-          provider,
-        })
-      : await callQualityChat(messages, {
-          fast: true,
-          temperature: 0.1,
-          maxTokens: 8000,
-          responseFormat: { type: 'json_object' },
-          provider,
-        });
-  } catch (e) {
-    console.error('[translateSegmentsOnce] chat error:', e?.message);
-    return null;
-  }
+  const maxAttempts = 3;
 
-  const parsed = parseJson(content);
-  const rawSegments = parsed?.segments;
-  if (!Array.isArray(rawSegments) || rawSegments.length !== batch.length) {
-    console.warn(
-      '[translateSegmentsOnce] batch rejected: expected',
-      batch.length,
-      'segments, got',
-      rawSegments?.length ?? 'none',
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    let content = '';
+    try {
+      content = highQuality
+        ? await callQualityChat(messages, {
+            temperature: attempt === 0 ? 0.15 : 0.05,
+            maxTokens: 8000,
+            responseFormat: { type: 'json_object' },
+            provider,
+          })
+        : await callQualityChat(messages, {
+            fast: true,
+            temperature: attempt === 0 ? 0.1 : 0.05,
+            maxTokens: 8000,
+            responseFormat: { type: 'json_object' },
+            provider,
+          });
+    } catch (e) {
+      console.error('[translateSegmentsOnce] chat error:', e?.message);
+      if (attempt === maxAttempts - 1) return null;
+      continue;
+    }
+
+    const parsed = parseJson(content);
+    const rawSegments = parsed?.segments;
+    if (!Array.isArray(rawSegments) || rawSegments.length !== batch.length) {
+      console.warn(
+        '[translateSegmentsOnce] batch rejected: expected',
+        batch.length,
+        'segments, got',
+        rawSegments?.length ?? 'none',
+        `(attempt ${attempt + 1}/${maxAttempts})`,
+      );
+      if (attempt === maxAttempts - 1) return null;
+      continue;
+    }
+
+    // Accept the compact array of strings as well as an object array.
+    const translated = rawSegments.map((seg, index) => ({
+      start: batch[index].start,
+      end: batch[index].end,
+      text: stripMarkdown(
+        typeof seg === 'string' ? seg : String(seg?.t ?? seg?.text ?? ''),
+      ),
+    }));
+
+    // The model still occasionally drops a letter from a technical term
+    // ("erminal", "gues edition"). The glossary repair is deterministic, so it
+    // runs on every segment before the translation is accepted.
+    translated.forEach((seg, index) => {
+      seg.text = repairTechnicalTerms({
+        text: seg.text,
+        sourceText: batch[index].text,
+        targetLanguage,
+      }).text;
+    });
+
+    const wrongLanguage = translated.find(
+      (seg, index) =>
+        !seg.text || !isTargetLanguageText(seg.text, targetLanguage, batch[index].text),
     );
-    return null;
+    if (wrongLanguage) {
+      console.warn(
+        '[translateSegmentsOnce] batch rejected: segment',
+        wrongLanguage.text?.slice(0, 60) || '(empty)',
+        'is not in the target language',
+        `(attempt ${attempt + 1}/${maxAttempts})`,
+      );
+      if (attempt === maxAttempts - 1) return null;
+      continue;
+    }
+
+    return translated;
   }
 
-  // Accept the compact array of strings as well as an object array.
-  const translated = rawSegments.map((seg, index) => ({
-    start: batch[index].start,
-    end: batch[index].end,
-    text: stripMarkdown(
-      typeof seg === 'string' ? seg : String(seg?.t ?? seg?.text ?? ''),
-    ),
-  }));
-
-  // The model still occasionally drops a letter from a technical term
-  // ("erminal", "gues edition"). The glossary repair is deterministic, so it
-  // runs on every segment before the translation is accepted.
-  translated.forEach((seg, index) => {
-    seg.text = repairTechnicalTerms({
-      text: seg.text,
-      sourceText: batch[index].text,
-      targetLanguage,
-    }).text;
-  });
-
-  const wrongLanguage = translated.find(
-    (seg, index) =>
-      !seg.text || !isTargetLanguageText(seg.text, targetLanguage, batch[index].text),
-  );
-  if (wrongLanguage) {
-    console.warn(
-      '[translateSegmentsOnce] batch rejected: segment',
-      wrongLanguage.text?.slice(0, 60) || '(empty)',
-      'is not in the target language',
-    );
-    return null;
-  }
-
-  return translated;
+  return null;
 };
 
 /**
@@ -1150,10 +1161,61 @@ const translateBatchResilient = async ({ batch, targetLanguage, highQuality, con
     const target = languageBase(targetLanguage);
     const scriptPattern = TARGET_SCRIPT_PATTERNS[target];
     const targetCharsInSource = scriptPattern ? countMatches(sourceText, scriptPattern) : 0;
+
+    // Last-chance: a very explicit single-sentence translation prompt. This
+    // recovers segments where the batch-format response was malformed/empty.
+    if (sourceText && !isTechnicalLiteral(sourceText)) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const simple = await callQualityChat(
+            [
+              {
+                role: 'system',
+                content:
+                  `Translate the user's sentence into ${targetLanguage}. Return ONLY valid JSON: {"text":"..."} . ` +
+                  'Keep technical terms, product names, commands, file paths and code identifiers in English/Latin script. ' +
+                  (target.startsWith('ar')
+                    ? 'For Arabic, use clear, grammatically correct Modern Standard Arabic (فصحى) with complete tashkeel/diacritics. '
+                    : '') +
+                  'Do not return empty text. Do not return the source unchanged unless it is already in the target language.',
+              },
+              { role: 'user', content: sourceText },
+            ],
+            {
+              highQuality: true,
+              temperature: attempt === 0 ? 0.2 : 0.05,
+              maxTokens: 1200,
+              responseFormat: { type: 'json_object' },
+              provider,
+            },
+          );
+          const parsed = parseJson(simple);
+          const candidate = stripMarkdown(String(parsed?.text ?? parsed?.translation ?? parsed?.translated ?? '')).trim();
+          if (candidate) {
+            const repaired = repairTechnicalTerms({
+              text: candidate,
+              sourceText,
+              targetLanguage,
+            }).text;
+            if (repaired && isTargetLanguageText(repaired, targetLanguage, sourceText)) {
+              return [{ start: batch[0].start, end: batch[0].end, text: repaired }];
+            }
+            console.warn(
+              '[translateSegmentsOnce] single-segment retry rejected:',
+              repaired?.slice(0, 60) || '(empty)',
+              `(attempt ${attempt + 1}/2)`,
+            );
+          }
+        } catch (e) {
+          console.warn('[translateSegmentsOnce] single-segment retry error:', e?.message);
+        }
+      }
+    }
+
     const looksTechnicalOrUntranslatable =
       !sourceText ||
       targetCharsInSource > 0 ||
-      /[A-Za-z0-9]/.test(sourceText);
+      isTechnicalLiteral(sourceText);
     if (looksTechnicalOrUntranslatable) {
       console.warn(
         '[translateSegmentsOnce] using source text for untranslatable segment:',

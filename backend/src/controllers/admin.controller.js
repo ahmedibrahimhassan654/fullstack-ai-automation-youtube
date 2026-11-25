@@ -1,6 +1,6 @@
-import { asyncHandler } from '../utils/asyncHandler.js';
-import User from '../models/User.js';
-import Video from '../models/Video.js';
+import { asyncHandler } from "../utils/asyncHandler.js";
+import User from "../models/User.js";
+import Video from "../models/Video.js";
 
 export const getStats = asyncHandler(async (req, res) => {
   const [
@@ -12,11 +12,11 @@ export const getStats = asyncHandler(async (req, res) => {
     connectedChannels,
   ] = await Promise.all([
     User.countDocuments(),
-    User.countDocuments({ role: 'admin' }),
+    User.countDocuments({ role: "admin" }),
     User.countDocuments({ isActive: true }),
     Video.countDocuments(),
-    Video.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-    User.countDocuments({ 'youtube.channelId': { $ne: null } }),
+    Video.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+    User.countDocuments({ "youtube.channelId": { $ne: null } }),
   ]);
 
   const statusMap = videosByStatus.reduce((acc, item) => {
@@ -50,16 +50,20 @@ export const getUsers = asyncHandler(async (req, res) => {
   const skip = (page - 1) * limit;
 
   const filter = {};
-  if (req.query.role && ['user', 'admin'].includes(req.query.role)) filter.role = req.query.role;
+  if (req.query.role && ["user", "admin"].includes(req.query.role))
+    filter.role = req.query.role;
   if (req.query.search) {
     const q = String(req.query.search).trim();
-    filter.$or = [{ name: new RegExp(q, 'i') }, { email: new RegExp(q, 'i') }];
+    filter.$or = [{ name: new RegExp(q, "i") }, { email: new RegExp(q, "i") }];
   }
-  if (req.query.active !== undefined) filter.isActive = req.query.active === 'true';
+  if (req.query.active !== undefined)
+    filter.isActive = req.query.active === "true";
 
   const [items, total] = await Promise.all([
     User.find(filter)
-      .select('-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken')
+      .select(
+        "-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken",
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -84,20 +88,21 @@ export const getUsers = asyncHandler(async (req, res) => {
 export const updateUserRole = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { role } = req.body || {};
-  if (!['user', 'admin'].includes(role)) {
-    const err = new Error('Invalid role');
+  if (!["user", "admin"].includes(role)) {
+    const err = new Error("Invalid role");
     err.statusCode = 400;
     throw err;
   }
-  if (id === req.user._id.toString() && role !== 'admin') {
-    const err = new Error('You cannot remove your own admin role');
+  if (id === req.user._id.toString() && role !== "admin") {
+    const err = new Error("You cannot remove your own admin role");
     err.statusCode = 400;
     throw err;
   }
-  const user = await User.findByIdAndUpdate(id, { role }, { new: true })
-    .select('-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken');
+  const user = await User.findByIdAndUpdate(id, { role }, { new: true }).select(
+    "-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken",
+  );
   if (!user) {
-    const err = new Error('User not found');
+    const err = new Error("User not found");
     err.statusCode = 404;
     throw err;
   }
@@ -107,20 +112,25 @@ export const updateUserRole = asyncHandler(async (req, res) => {
 export const updateUserStatus = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { isActive } = req.body || {};
-  if (typeof isActive !== 'boolean') {
-    const err = new Error('isActive must be boolean');
+  if (typeof isActive !== "boolean") {
+    const err = new Error("isActive must be boolean");
     err.statusCode = 400;
     throw err;
   }
   if (id === req.user._id.toString() && isActive === false) {
-    const err = new Error('You cannot deactivate your own account');
+    const err = new Error("You cannot deactivate your own account");
     err.statusCode = 400;
     throw err;
   }
-  const user = await User.findByIdAndUpdate(id, { isActive }, { new: true })
-    .select('-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken');
+  const user = await User.findByIdAndUpdate(
+    id,
+    { isActive },
+    { new: true },
+  ).select(
+    "-password -sessionRefreshToken -youtube.accessToken -youtube.refreshToken",
+  );
   if (!user) {
-    const err = new Error('User not found');
+    const err = new Error("User not found");
     err.statusCode = 404;
     throw err;
   }
@@ -133,14 +143,17 @@ export const getVideos = asyncHandler(async (req, res) => {
   const skip = (page - 1) * limit;
 
   const filter = {};
-  if (req.query.status && ['pending', 'processing', 'completed', 'failed'].includes(req.query.status)) {
+  if (
+    req.query.status &&
+    ["pending", "processing", "completed", "failed"].includes(req.query.status)
+  ) {
     filter.status = req.query.status;
   }
   if (req.query.userId) filter.user = req.query.userId;
 
   const [items, total] = await Promise.all([
     Video.find(filter)
-      .populate('user', 'name email role')
+      .populate("user", "name email role")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -160,9 +173,9 @@ export const getVideos = asyncHandler(async (req, res) => {
 export const deleteVideo = asyncHandler(async (req, res) => {
   const video = await Video.findByIdAndDelete(req.params.id);
   if (!video) {
-    const err = new Error('Video not found');
+    const err = new Error("Video not found");
     err.statusCode = 404;
     throw err;
   }
-  res.status(200).json({ success: true, message: 'Video deleted' });
+  res.status(200).json({ success: true, message: "Video deleted" });
 });
