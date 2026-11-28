@@ -2645,8 +2645,8 @@ export const listYouTubeChannels = asyncHandler(async (req, res) => {
   const seenChannels = new Set();
   for (const account of accounts) {
     const primaryChannelId = account.channelId || account.channels?.[0]?.channelId || null;
-    const accessToken = await getValidYouTubeAccessToken(user, primaryChannelId);
     try {
+      const accessToken = await getValidYouTubeAccessToken(user, primaryChannelId);
       const channelsRes = await youtubeFetch(
         accessToken,
         `${YOUTUBE_API_URL}/channels?part=snippet&mine=true&maxResults=50`,

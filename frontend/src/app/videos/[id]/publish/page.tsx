@@ -894,42 +894,66 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
             }
             return match?.id || list[0]?.id || "";
           });
+          if (!list.length) {
+            toast.error("لا توجد قنوات YouTube متاحة. تأكد من ربط حساب YouTube.");
+          }
+        } else {
+          toast.error(r.message || "تعذر تحميل قنوات YouTube. تأكد من ربط/تجديد اتصال YouTube.");
         }
+      }).catch((e) => {
+        toast.error(e instanceof Error ? e.message : "تعذر تحميل قنوات YouTube.");
       });
       api.get<{ connected?: boolean; channelTitle?: string | null }>("/api/auth/youtube/status").then((r) => {
         if (r.success) {
           setYtConnected(Boolean(r.data?.connected));
           setYtChannelTitle(r.data?.channelTitle || "");
+        } else {
+          toast.error(r.message || "تعذر التحقق من حالة اتصال YouTube.");
         }
+      }).catch((e) => {
+        toast.error(e instanceof Error ? e.message : "تعذر التحقق من حالة اتصال YouTube.");
       });
   }, [id, language, toast]);
 
   // The playlists belong to a channel, and every channel can sit on another
   // Google account, so they have to be loaded for the selected channel.
   useEffect(() => {
-    if (!channelId) return;
+    if (!channelId) {
+      setPlaylists([]);
+      return;
+    }
     let cancelled = false;
     api
       .get<{ playlists: { id: string; title: string }[] }>(
         `/api/videos/youtube/playlists?channelId=${encodeURIComponent(channelId)}`,
       )
       .then((r) => {
-        if (cancelled || !r.success || !r.data?.playlists) return;
-        setPlaylists(r.data.playlists);
-        // Auto-select the playlist that belongs to this course, so the user
-        // does not have to pick it manually (and never lands on a stale one).
-        setPlaylistId((current) => {
-          if (current && r.data!.playlists.some((p) => p.id === current)) return current;
-          const match = coursePlaylistId
-            ? r.data!.playlists.find((p) => p.id === coursePlaylistId)
-            : null;
-          return match?.id || r.data!.playlists[0]?.id || current;
-        });
+        if (cancelled) return;
+        if (r.success && r.data?.playlists) {
+          setPlaylists(r.data.playlists);
+          // Auto-select the playlist that belongs to this course, so the user
+          // does not have to pick it manually (and never lands on a stale one).
+          setPlaylistId((current) => {
+            if (current && r.data!.playlists.some((p) => p.id === current)) return current;
+            const match = coursePlaylistId
+              ? r.data!.playlists.find((p) => p.id === coursePlaylistId)
+              : null;
+            return match?.id || r.data!.playlists[0]?.id || current;
+          });
+        } else {
+          setPlaylists([]);
+          toast.error(r.message || "تعذر تحميل قوائم التشغيل (Playlists) لهذه القناة.");
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setPlaylists([]);
+        toast.error(e instanceof Error ? e.message : "تعذر تحميل قوائم التشغيل.");
       });
     return () => {
       cancelled = true;
     };
-  }, [channelId]);
+  }, [channelId, coursePlaylistId, toast]);
 
   // Auto-select the course playlist once both the playlist list and the
   // course playlist id are known (handles the case where the course loads
