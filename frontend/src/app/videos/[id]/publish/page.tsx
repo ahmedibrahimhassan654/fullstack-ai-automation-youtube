@@ -555,6 +555,8 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   const [lessonNumber, setLessonNumber] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [improvingSeo, setImprovingSeo] = useState(false);
+  const [seoPackage, setSeoPackage] = useState<any | null>(null);
+  const [applyingSeoPackage, setApplyingSeoPackage] = useState(false);
   const [aiThumbnailPrompt, setAiThumbnailPrompt] = useState("");
   const [thumbnailBgUpload, setThumbnailBgUpload] = useState<string>("");
   const [applyingThumbOverlay, setApplyingThumbOverlay] = useState(false);
@@ -646,7 +648,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
   })();
 
   const load = async () => {
-    const res = await api.get<{ video: VideoDetail; metadata?: VideoDetail["aiMetadata"]; language?: string }>(
+    const res = await api.get<{ video: VideoDetail; metadata?: VideoDetail["aiMetadata"]; language?: string; seoPackage?: any }>(
       `/api/videos/${id}/publish-prefill?language=${encodeURIComponent(language)}`,
     );
 
@@ -718,6 +720,7 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
         const v = res.data.video;
         setVideo(v);
         const meta = res.data?.metadata || v.aiMetadata || {};
+        if (res.data?.seoPackage) setSeoPackage(res.data.seoPackage);
         const isArabic = language.toLowerCase().startsWith("ar");
         const labels = isArabic
           ? {
@@ -1014,6 +1017,25 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
 
   const metadataOnlyUpdate = Boolean(existingPublish?.youtubeVideoId);
 
+  const applySeoPackage = () => {
+    const pkg = seoPackage;
+    const snippet = pkg?.youtube_video_resource?.snippet;
+    if (!snippet) {
+      toast.error("لا توجد حزمة SEO لتطبيقها. قم بتوليدها أولًا.");
+      return;
+    }
+    setApplyingSeoPackage(true);
+    try {
+      if (snippet.title) setTitle(String(snippet.title).slice(0, 100));
+      if (snippet.description) setDescription(String(snippet.description).slice(0, 5000));
+      if (Array.isArray(snippet.tags)) setTags(snippet.tags.filter(Boolean).join(", "));
+      if (snippet.categoryId) setCategoryId(String(snippet.categoryId));
+      toast.success("تم تطبيق حزمة YouTube SEO على بيانات النشر.");
+    } finally {
+      setApplyingSeoPackage(false);
+    }
+  };
+
   const publish = async () => {
     setPublishing(true);
     const res = await api.post<{ youtubeUrl?: string; youtubeVideoId?: string; mode?: string; source?: string; channelTitle?: string; playlistId?: string }>(
@@ -1139,7 +1161,53 @@ function PublishForm({ id, language, voice: voiceParam }: { id: string; language
                 >
                   {improvingSeo ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />Improving SEO…</>) : "Improve SEO"}
                 </Button>
+                {seoPackage?.youtube_video_resource?.snippet ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={applyingSeoPackage}
+                    onClick={applySeoPackage}
+                  >
+                    {applyingSeoPackage ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Apply YouTube SEO Package
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={improvingSeo || !video}
+                    onClick={async () => {
+                      setImprovingSeo(true);
+                      try {
+                        const res = await api.post<{ seoPackage: any; language: string }>(
+                          `/api/videos/${id}/youtube-seo-package`,
+                          { language, courseTitle, lessonNumber },
+                        );
+                        if (res.success && res.data?.seoPackage) {
+                          setSeoPackage(res.data.seoPackage);
+                          toast.success("تم توليد حزمة SEO. اضغط Apply لتطبيقها.");
+                        } else {
+                          toast.error(res.message || "تعذر توليد حزمة SEO.");
+                        }
+                      } catch (e: any) {
+                        toast.error(e?.message || "تعذر توليد حزمة SEO.");
+                      } finally {
+                        setImprovingSeo(false);
+                      }
+                    }}
+                  >
+                    {improvingSeo ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Generate SEO Package
+                  </Button>
+                )}
               </div>
+              {seoPackage?.youtube_video_resource?.snippet ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  YouTube SEO Package جاهزة: {seoPackage.youtube_video_resource.snippet.title || "—"}
+                </p>
+              ) : null}
             </CardHeader>
             <CardContent className="space-y-4">
               {!ytConnected && (

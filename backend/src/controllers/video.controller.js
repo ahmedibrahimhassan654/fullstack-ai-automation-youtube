@@ -28,6 +28,7 @@ import {
   generateEducationalScript,
   findUntranslatedSegments,
   improvePublishSeo,
+  generateYouTubeSeoPackage,
   translatePublishMetadata,
   translateTranscriptSegments,
 } from "../services/aiMetadata.service.js";
@@ -2471,12 +2472,18 @@ export const getPublishPrefill = asyncHandler(async (req, res) => {
   }
 
   const v = await Video.findById(video._id).lean();
+  const seoPackages = v?.aiMetadata?.youtubeSeoPackage;
+  const seoPackage =
+    seoPackages && typeof seoPackages === "object" && !Array.isArray(seoPackages)
+      ? seoPackages[cacheKey] || seoPackages[language.toLowerCase()] || null
+      : null;
   res.status(200).json({
     success: true,
     data: {
       video: v,
       metadata,
       language,
+      seoPackage,
     },
   });
 });
@@ -2523,6 +2530,98 @@ export const improveVideoSeo = asyncHandler(async (req, res) => {
     success: true,
     message: "SEO suggestions generated",
     data: { improved, language },
+  });
+});
+
+export const generateVideoSeoPackage = asyncHandler(async (req, res) => {
+  const video = await Video.findById(req.params.id);
+  if (!video) {
+    const err = new Error("Video not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isOwnerOrAdminVideo(video, req.user)) {
+    const err = new Error("Not authorized to update this video");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const language = String(req.body?.language || req.query?.language || "ar").trim() || "ar";
+  const originalLanguage = video.transcriptLanguage || video.originalLanguage || "en";
+  const isOriginal = language.toLowerCase().startsWith(originalLanguage.toLowerCase());
+  const cacheKey = language.toLowerCase();
+  let metadata = video.aiMetadata ? video.aiMetadata.toObject() : {};
+  const localized = video.aiMetadata?.localized || {};
+  if (!isOriginal) {
+    if (localized[cacheKey]) {
+      metadata = { ...metadata, ...localized[cacheKey] };
+    } else {
+      metadata = await translatePublishMetadata({ metadata, targetLanguage: language, originalLanguage });
+    }
+  }
+
+  // Resolve course context (playlist title, lesson number, next lesson topic)
+  let courseTitle = String(req.body?.courseTitle || "").trim();
+  let playlistTitle = String(req.body?.playlistTitle || "").trim();
+  let lessonNumber = req.body?.lessonNumber ?? null;
+  let nextLessonTopic = String(req.body?.nextLessonTopic || "").trim();
+  try {
+    const course = await Course.findOne({ "videos.video": video._id }).lean();
+    if (course) {
+      courseTitle = courseTitle || String(course.title || "").trim();
+      playlistTitle = playlistTitle || String(course.playlistTitle || course.title || "").trim();
+      const ordered = [...(course.videos || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const idx = ordered.findIndex((e) => String(e.video) === String(video._id));
+      if (idx >= 0 && lessonNumber == null) lessonNumber = idx + 1;
+      if (!nextLessonTopic && idx >= 0 && idx < ordered.length - 1) {
+        const nextEntry = ordered[idx + 1];
+        if (nextEntry?.video) {
+          const nextVideo = await Video.findById(nextEntry.video).select("title aiMetadata").lean();
+          nextLessonTopic = String(nextVideo?.title || nextVideo?.aiMetadata?.titles?.[0] || "").trim();
+        }
+      }
+    }
+  } catch {
+    // course context is optional
+  }
+
+  const transcriptSnippet = (Array.isArray(video.transcriptSegments) ? video.transcriptSegments : [])
+    .slice(0, 60)
+    .map((s) => String(s?.text || "").trim())
+    .filter(Boolean)
+    .join(" ");
+
+  const seoPackage = await generateYouTubeSeoPackage({
+    metadata,
+    targetLanguage: language,
+    context: {
+      videoTitle: video.title || "",
+      courseTitle,
+      playlistTitle,
+      lessonNumber,
+      nextLessonTopic,
+      transcriptSnippet,
+    },
+  });
+
+  if (!video.aiMetadata) video.aiMetadata = {};
+  const existingSeoPackages =
+    video.aiMetadata.youtubeSeoPackage &&
+    typeof video.aiMetadata.youtubeSeoPackage === "object" &&
+    !Array.isArray(video.aiMetadata.youtubeSeoPackage)
+      ? video.aiMetadata.youtubeSeoPackage
+      : {};
+  video.aiMetadata.youtubeSeoPackage = {
+    ...existingSeoPackages,
+    [cacheKey]: { ...seoPackage, generatedAt: new Date().toISOString() },
+  };
+  video.markModified("aiMetadata");
+  await video.save();
+
+  res.status(200).json({
+    success: true,
+    message: "YouTube SEO package generated",
+    data: { seoPackage, language },
   });
 });
 

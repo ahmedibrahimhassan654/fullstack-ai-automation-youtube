@@ -55,6 +55,7 @@ router.post('/:id/transcript/import', (req, res, next) => {
 }, video.importTranscriptReference);
 router.get('/:id/publish-prefill', video.getPublishPrefill);
 router.post('/:id/improve-seo', video.improveVideoSeo);
+router.post('/:id/youtube-seo-package', video.generateVideoSeoPackage);
 router.get('/:id/youtube', video.getVideoYouTube);
 router.get('/:id', video.getVideo);
 router.delete('/:id', video.deleteVideo);

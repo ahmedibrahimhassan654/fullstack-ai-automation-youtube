@@ -59,6 +59,7 @@ const aiMetadataSchema = new mongoose.Schema(
     model: { type: String, default: '' },
     generatedAt: { type: Date, default: null },
     localized: { type: mongoose.Schema.Types.Mixed, default: {} },
+    youtubeSeoPackage: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   { _id: false }
 );

@@ -6,7 +6,7 @@ import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/toast-provider";
-import { Loader2, ExternalLink } from "lucide-react";
+import { Loader2, ExternalLink, Copy } from "lucide-react";
 import { api, API_BASE } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import LessonVideoCard from "./lesson-card";
@@ -84,6 +84,7 @@ type AiMetadata = {
   decisions?: string[];
   openQuestions?: string[];
   model?: string;
+  youtubeSeoPackage?: Record<string, any> | null;
 };
 
 type TranscriptReferenceFile = {
@@ -232,6 +233,8 @@ export default function VideoDetailClient({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [startingProcess, setStartingProcess] = useState(false);
+  const [generatingSeoPackage, setGeneratingSeoPackage] = useState(false);
+  const [seoPackage, setSeoPackage] = useState<any | null>(null);
 
   const [editTitle, setEditTitle] = useState(initialVideo?.title || "");
   const [editDescription, setEditDescription] = useState(
@@ -348,6 +351,14 @@ export default function VideoDetailClient({
     // picked before the channel is known.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, channelLanguage]);
+
+  useEffect(() => {
+    const pkgs = video?.aiMetadata?.youtubeSeoPackage;
+    if (pkgs && typeof pkgs === "object" && !Array.isArray(pkgs)) {
+      const pick = pkgs.ar || pkgs.en || pkgs[Object.keys(pkgs)[0]] || null;
+      if (pick) setSeoPackage(pick);
+    }
+  }, [video?._id, (video?.aiMetadata as any)?.youtubeSeoPackage]);
 
   useEffect(() => {
     api
@@ -604,6 +615,37 @@ export default function VideoDetailClient({
       toast.error(res.message || "Failed to delete video.");
     }
     setDeleting(false);
+  };
+
+  const generateSeoPackage = async () => {
+    if (!video) return;
+    setGeneratingSeoPackage(true);
+    try {
+      const res = await api.post<{ seoPackage: any; language: string }>(
+        `/api/videos/${video._id}/youtube-seo-package`,
+        { language: "ar" },
+      );
+      if (res.success && res.data?.seoPackage) {
+        setSeoPackage(res.data.seoPackage);
+        toast.success("تم توليد حزمة SEO لليوتيوب.");
+      } else {
+        toast.error(res.message || "تعذر توليد حزمة SEO.");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذر توليد حزمة SEO.");
+    } finally {
+      setGeneratingSeoPackage(false);
+    }
+  };
+
+  const copySeoPackage = async () => {
+    if (!seoPackage) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(seoPackage, null, 2));
+      toast.success("تم نسخ JSON.");
+    } catch {
+      toast.error("تعذر النسخ.");
+    }
   };
 
   // Real-time updates via SSE instead of polling.
@@ -1098,6 +1140,67 @@ export default function VideoDetailClient({
                   </CardContent>
                 </Card>
               )}
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>YouTube SEO Package (JSON)</CardTitle>
+                  <CardDescription>
+                    توليد بيانات وصفية محسّنة لليوتيوب (عنوان، وصف، تاجات، عناوين A/B، صورة مصغرة، تعليق مثبت) بصيغة JSON جاهزة.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" onClick={generateSeoPackage} disabled={generatingSeoPackage || !video?.aiMetadata}>
+                      {generatingSeoPackage ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {generatingSeoPackage ? "جاري التوليد..." : "Generate SEO Package"}
+                    </Button>
+                    {seoPackage ? (
+                      <>
+                        <Button type="button" variant="outline" onClick={copySeoPackage}>
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copy JSON
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => router.push(`/videos/${id}/publish?language=ar`)}
+                        >
+                          Open Publish Page
+                        </Button>
+                      </>
+                    ) : null}
+                    {!video?.aiMetadata && (
+                      <span className="text-xs text-muted-foreground">قم بتشغيل المعالجة أولًا لتوليد AI metadata.</span>
+                    )}
+                  </div>
+
+                  {seoPackage ? (
+                    <div className="space-y-3">
+                      <div className="rounded-md border p-3 text-sm space-y-2">
+                        <div><span className="font-medium">Title:</span> {seoPackage?.youtube_video_resource?.snippet?.title || "—"}</div>
+                        <div><span className="font-medium">Category:</span> {seoPackage?.youtube_video_resource?.snippet?.categoryId || "—"}</div>
+                        <div><span className="font-medium">Tags:</span> {(seoPackage?.youtube_video_resource?.snippet?.tags || []).join(", ") || "—"}</div>
+                        <div><span className="font-medium">Thumbnail text:</span> {seoPackage?.thumbnail_generation?.arabic_overlay_text || "—"}</div>
+                        <div><span className="font-medium">Playlist:</span> {seoPackage?.playlist_and_retention?.recommended_playlist_title || "—"}</div>
+                        <div><span className="font-medium">Next video:</span> {seoPackage?.playlist_and_retention?.suggested_next_video_topic || "—"}</div>
+                      </div>
+                      <details className="rounded-md border">
+                        <summary className="cursor-pointer list-none p-3 font-medium text-sm">A/B Titles & Pinned Comment</summary>
+                        <div className="border-t p-3 text-sm space-y-2">
+                          <div><span className="font-medium">Search:</span> {seoPackage?.ab_test_titles?.search_focused || "—"}</div>
+                          <div><span className="font-medium">Problem solving:</span> {seoPackage?.ab_test_titles?.problem_solving || "—"}</div>
+                          <div><span className="font-medium">Series balanced:</span> {seoPackage?.ab_test_titles?.series_balanced || "—"}</div>
+                          <div className="whitespace-pre-wrap"><span className="font-medium">Pinned comment:</span>\n{seoPackage?.pinned_comment?.text || "—"}</div>
+                        </div>
+                      </details>
+                      <details className="rounded-md border">
+                        <summary className="cursor-pointer list-none p-3 font-medium text-sm">Full JSON</summary>
+                        <pre className="border-t p-3 text-xs overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(seoPackage, null, 2)}</pre>
+                      </details>
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
 
               <Card>
                 <CardHeader>

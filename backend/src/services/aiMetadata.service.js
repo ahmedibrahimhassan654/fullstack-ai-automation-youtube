@@ -1983,3 +1983,114 @@ export const improvePublishSeo = async ({ metadata, targetLanguage = 'en', conte
     keyPoints,
   };
 };
+
+export const generateYouTubeSeoPackage = async ({
+  metadata,
+  targetLanguage = 'ar',
+  context = {},
+}) => {
+  const meta = metadata && typeof metadata === 'object' ? metadata : {};
+  const lang = String(targetLanguage || 'ar').split('-')[0] || 'ar';
+  const source = {
+    videoTitle: String(context.videoTitle || '').trim(),
+    courseTitle: String(context.courseTitle || '').trim(),
+    playlistTitle: String(context.playlistTitle || context.courseTitle || '').trim(),
+    lessonNumber: context.lessonNumber ?? null,
+    nextLessonTopic: String(context.nextLessonTopic || '').trim(),
+    summary: String(meta?.summary || '').trim(),
+    titles: Array.isArray(meta?.titles) ? meta.titles.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    descriptions: Array.isArray(meta?.descriptions) ? meta.descriptions.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    tags: Array.isArray(meta?.tags) ? meta.tags.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    chapters: Array.isArray(meta?.chapters)
+      ? meta.chapters.map((c) => ({ time: String(c?.time || '00:00').trim(), title: String(c?.title || '').trim() })).filter((c) => c.title)
+      : [],
+    keyPoints: Array.isArray(meta?.keyPoints) ? meta.keyPoints.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    openQuestions: Array.isArray(meta?.openQuestions) ? meta.openQuestions.map((v) => String(v || '').trim()).filter(Boolean) : [],
+    transcriptSnippet: String(context.transcriptSnippet || '').trim().slice(0, 3500),
+  };
+
+  const system = [
+    'أنت محرك أتمتة متخصص في تحسين محركات البحث على YouTube (YouTube SEO) وصياغة البيانات الوصفية (Metadata) للدورات التقنية المدبلجة إلى اللغة العربية.',
+    'مهمتك هي استلام بيانات الدرس الأصلي وتوليد بيانات وصفية محسّنة بالكامل بصيغة JSON صالحة ومباشرة للربط مع YouTube Data API v3.',
+    'الأهداف: رفع CTR، زيادة مدة المشاهدة وساعات المشاهدة، وربط الدروس داخل قوائم التشغيل لتحويل المشاهد إلى مشترك.',
+    'قيود صارمة:',
+    '- الفيديو الأصلي ثابت ومدبلج كما هو؛ لا تفترض مقدمة إضافية أو تعديل مونتاجي.',
+    '- أخرج JSON فقط بدون أي نص خارج كائن JSON.',
+    '- snippet.title: بحد أقصى 100 حرف (يفضل 55-65)، يركز على الأداة والمهمة العملية دون أرقام دروس جامدة في البداية.',
+    '- snippet.description: بحد أقصى 5000 حرف، يبدأ بسطرين جذابين غنيين بالكلمات المفتاحية، ثم شرح مختصر، ثم الفصول الزمنية (00:00)، ثم دعوة للاشتراك ومتابعة قائمة التشغيل. استخدم \\n للأسطر الجديدة.',
+    '- snippet.tags: 12-15 عنصرًا، إجمالي الأحرف أقل من 500، تجمع بين المصطلحات العربية والإنجليزية التقنية.',
+    '- snippet.categoryId: "27" أو "28".',
+    '- snippet.defaultLanguage و snippet.defaultAudioLanguage: "ar".',
+    '- اكتب أسماء الأدوات والبروتوكولات والأنظمة بالإنجليزية بدقة كما يبحث عنها المستخدم العربي (مثل Kali Linux, OpenVPN, Tor Browser, Aircrack-ng, VirtualBox, WPA2/WPA3, Nmap, WhatWeb).',
+    '- إذا لم تتوفر توقيتات دقيقة، أنشئ فصولًا زمنية تقديرية منطقية تبدأ بـ 00:00 بناءً على تسلسل الشرح، ولا تخترع تفاصيل غير موجودة.',
+    'أعد JSON بنفس المخطط والمفاتيح التالية بالضبط:',
+    '{"youtube_video_resource":{"snippet":{"title":"","description":"","tags":[],"categoryId":"27","defaultLanguage":"ar","defaultAudioLanguage":"ar"}},"ab_test_titles":{"search_focused":"","problem_solving":"","series_balanced":""},"thumbnail_generation":{"arabic_overlay_text":"","visual_elements":[],"color_mood":""},"playlist_and_retention":{"recommended_playlist_title":"","suggested_next_video_topic":""},"pinned_comment":{"text":""}}',
+  ].join('\n');
+
+  const content = await callChatCompletion(
+    [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content:
+          `بيانات الدرس (JSON):\n${JSON.stringify(source)}\n\n` +
+          `اللغة المستهدفة: ${targetLanguage} (${lang}).\n` +
+          'ولّد كائن JSON النهائي المحسّن للنشر على YouTube وفق المخطط المطلوب.',
+      },
+    ],
+    {
+      temperature: 0.4,
+      maxTokens: 5000,
+      responseFormat: { type: 'json_object' },
+    },
+  );
+
+  const parsed = parseJson(content) || {};
+  const snippet = parsed?.youtube_video_resource?.snippet || parsed?.snippet || {};
+  const ab = parsed?.ab_test_titles || {};
+  const thumb = parsed?.thumbnail_generation || {};
+  const pr = parsed?.playlist_and_retention || {};
+  const pinned = parsed?.pinned_comment || {};
+
+  const tags = Array.isArray(snippet.tags)
+    ? snippet.tags.map((v) => stripMarkdown(String(v || '')).trim()).filter(Boolean).slice(0, 15)
+    : source.tags.slice(0, 15);
+  const totalTagChars = tags.join(',').length;
+  const safeTags = totalTagChars <= 500 ? tags : tags.slice(0, 12);
+
+  const title = stripMarkdown(String(snippet.title || '')).trim().slice(0, 100) || source.titles[0] || source.videoTitle || '';
+  const description = String(snippet.description || '').replace(/\r\n/g, '\n').trim().slice(0, 5000);
+  const categoryId = ['27', '28'].includes(String(snippet.categoryId || '')) ? String(snippet.categoryId) : '27';
+
+  return {
+    youtube_video_resource: {
+      snippet: {
+        title,
+        description,
+        tags: safeTags,
+        categoryId,
+        defaultLanguage: 'ar',
+        defaultAudioLanguage: 'ar',
+      },
+    },
+    ab_test_titles: {
+      search_focused: stripMarkdown(String(ab.search_focused || '')).trim(),
+      problem_solving: stripMarkdown(String(ab.problem_solving || '')).trim(),
+      series_balanced: stripMarkdown(String(ab.series_balanced || '')).trim(),
+    },
+    thumbnail_generation: {
+      arabic_overlay_text: stripMarkdown(String(thumb.arabic_overlay_text || '')).trim(),
+      visual_elements: Array.isArray(thumb.visual_elements)
+        ? thumb.visual_elements.map((v) => stripMarkdown(String(v || '')).trim()).filter(Boolean).slice(0, 6)
+        : [],
+      color_mood: stripMarkdown(String(thumb.color_mood || '')).trim(),
+    },
+    playlist_and_retention: {
+      recommended_playlist_title: stripMarkdown(String(pr.recommended_playlist_title || source.playlistTitle || source.courseTitle || '')).trim(),
+      suggested_next_video_topic: stripMarkdown(String(pr.suggested_next_video_topic || source.nextLessonTopic || '')).trim(),
+    },
+    pinned_comment: {
+      text: String(pinned.text || '').replace(/\r\n/g, '\n').trim(),
+    },
+  };
+};
